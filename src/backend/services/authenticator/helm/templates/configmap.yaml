@@ -37,6 +37,10 @@ data:
     opentelemetry:
       resource:
         service_name: "insight-authenticator"
+        attributes:
+          # The release the pod runs; the log_ctx span and the OTel resource
+          # both read it (semconv service.version).
+          service.version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
       exporter:
         kind: {{ .Values.opentelemetry.exporter.kind }}
         {{- with .Values.opentelemetry.exporter.endpoint }}
