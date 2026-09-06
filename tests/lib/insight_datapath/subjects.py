@@ -22,6 +22,7 @@ from typing import Any
 
 from insight_datapath import clickhouse as ch
 from insight_datapath.instance import InstanceConfig
+from insight_datapath.process import tail
 
 LOG = logging.getLogger("datapath.subjects")
 
@@ -67,33 +68,40 @@ class Subjects:
         The same invocation the deployed CronJob makes, so what a spec exercises is
         the run that happens in production rather than a test-only path.
         """
-        result = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--project-name",
-                self.project,
-                "--env-file",
-                str(self.env_file),
-                "-f",
-                "docker-compose.yml",
-                "exec",
-                "-T",
-                "-e",
-                f"APP__gears__identity_resolution__config__tenant_default_id={self.tenant_id}",
-                "identity-resolution",
-                "/app/identity-resolution",
-                "-c",
-                "/app/config/insight.yaml",
-                "seed",
-            ],
-            cwd=self.repo_root,
-            env={**os.environ, "COMPOSE_PROJECT_NAME": self.project},
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_s,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--project-name",
+                    self.project,
+                    "--env-file",
+                    str(self.env_file),
+                    "-f",
+                    "docker-compose.yml",
+                    "exec",
+                    "-T",
+                    "-e",
+                    f"APP__gears__identity_resolution__config__tenant_default_id={self.tenant_id}",
+                    "identity-resolution",
+                    "/app/identity-resolution",
+                    "-c",
+                    "/app/config/insight.yaml",
+                    "seed",
+                ],
+                cwd=self.repo_root,
+                env={**os.environ, "COMPOSE_PROJECT_NAME": self.project},
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as timeout:
+            raise SubjectError(
+                f"persons-seed did not finish within {timeout_s:.0f}s\n"
+                f"stdout tail:\n{tail(timeout.stdout)}\n"
+                f"stderr tail:\n{tail(timeout.stderr)}"
+            ) from timeout
         if result.returncode == 0:
             return
         reason = {

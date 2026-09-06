@@ -56,7 +56,9 @@ def test_an_instance_seeded_with_identity_alone_is_ours_to_write() -> None:
     refuse_a_seeded_warehouse(["identity"])
 
 
-def test_identity_is_never_cleared_because_the_caller_resolves_through_it() -> None:
+def test_identity_is_never_truncated_because_the_caller_resolves_through_it() -> None:
+    """The pipeline rebuilds `identity_inputs` wholesale on each spec; what neither the
+    reset nor anything else may do is empty it and leave it empty."""
     assert ("identity", "identity_inputs") in SERVICE_OWNED
     assert ("identity", "identity_persons") in SERVICE_OWNED
 

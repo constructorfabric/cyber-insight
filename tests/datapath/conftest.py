@@ -32,13 +32,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CALLER_FIXTURE = "dev_lead"
 
 
+_ENV_FILE_STEM = ".env.compose.test-stand"
+
+
 def _env_file() -> Path:
-    return Path(os.environ.get("INSIGHT_STAND_ENV_FILE", ".env.compose.test-stand"))
+    return Path(os.environ.get("INSIGHT_STAND_ENV_FILE", _ENV_FILE_STEM))
 
 
 def _instance_name() -> str:
-    """The compose project the instance runs under, taken from its env file's name."""
-    suffix = _env_file().name.removeprefix(".env.compose.test-stand")
+    """The compose project the instance runs under, from its env file's name.
+
+    `INSIGHT_STAND_ENV_FILE` is a public override, so a file dev-compose.sh did not
+    write is refused here rather than reaching `docker compose --project-name` as a
+    name nothing answers to.
+    """
+    name = _env_file().name
+    if not name.startswith(_ENV_FILE_STEM):
+        raise RuntimeError(
+            f"INSIGHT_STAND_ENV_FILE names {name!r}, which is not a test-stand env file: "
+            f"the compose project is read from a {_ENV_FILE_STEM}[-<instance>] name."
+        )
+    suffix = name.removeprefix(_ENV_FILE_STEM)
     return f"insight-{suffix.lstrip('-')}" if suffix.strip("-") else "insight"
 
 

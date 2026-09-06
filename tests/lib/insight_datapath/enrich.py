@@ -26,6 +26,7 @@ import yaml
 
 from insight_datapath import clickhouse as ch
 from insight_datapath.instance import InstanceConfig
+from insight_datapath.process import tail
 
 LOG = logging.getLogger("datapath.enrich")
 
@@ -57,19 +58,18 @@ def pull_image(image: str) -> None:
     if _image_is_local(image):
         return
     for attempt in range(1, _PULL_ATTEMPTS + 1):
-        result = subprocess.run(
-            ["docker", "pull", "--quiet", image], capture_output=True, text=True, check=False
-        )
-        if result.returncode == 0:
-            LOG.info("pulled %s", image)
-            return
-        LOG.warning(
-            "pull %d/%d of %s failed: %s",
-            attempt,
-            _PULL_ATTEMPTS,
-            image,
-            result.stderr.strip()[-300:],
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "pull", "--quiet", image], capture_output=True, text=True, check=False
+            )
+        except OSError as error:
+            reason = str(error)
+        else:
+            if result.returncode == 0:
+                LOG.info("pulled %s", image)
+                return
+            reason = result.stderr.strip()[-300:]
+        LOG.warning("pull %d/%d of %s failed: %s", attempt, _PULL_ATTEMPTS, image, reason)
         if attempt < _PULL_ATTEMPTS:
             time.sleep(_PULL_BACKOFF_S * attempt)
     raise EnrichError(f"could not pull {image} in {_PULL_ATTEMPTS} attempts")
@@ -164,41 +164,50 @@ class EnrichRunner:
             return
         for source_id in source_ids:
             LOG.info("running %s enrich for source_id=%s", step.name, source_id)
-            result = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "--project-name",
-                    self.project,
-                    "--env-file",
-                    str(self.env_file),
-                    "-f",
-                    "docker-compose.yml",
-                    "-f",
-                    _OVERLAY,
-                    "run",
-                    "--rm",
-                    "--no-deps",
-                    "--pull",
-                    "never",
-                    "enrich",
-                    f"--insight-source-id={source_id}",
-                    f"--clickhouse-host={_INTERNAL_CLICKHOUSE_HOST}",
-                    f"--clickhouse-port={_INTERNAL_CLICKHOUSE_PORT}",
-                    f"--clickhouse-user={self.cfg.ch_user}",
-                    "--batch-size=10000",
-                ],
-                cwd=self.repo_root,
-                env={
-                    **os.environ,
-                    "ENRICH_IMAGE": step.image,
-                    "COMPOSE_PROJECT_NAME": self.project,
-                },
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout_s,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "--project-name",
+                        self.project,
+                        "--env-file",
+                        str(self.env_file),
+                        "-f",
+                        "docker-compose.yml",
+                        "-f",
+                        _OVERLAY,
+                        "run",
+                        "--rm",
+                        "--no-deps",
+                        "--pull",
+                        "never",
+                        "enrich",
+                        f"--insight-source-id={source_id}",
+                        f"--clickhouse-host={_INTERNAL_CLICKHOUSE_HOST}",
+                        f"--clickhouse-port={_INTERNAL_CLICKHOUSE_PORT}",
+                        f"--clickhouse-user={self.cfg.ch_user}",
+                        "--batch-size=10000",
+                    ],
+                    cwd=self.repo_root,
+                    env={
+                        **os.environ,
+                        "ENRICH_IMAGE": step.image,
+                        "COMPOSE_PROJECT_NAME": self.project,
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_s,
+                )
+            except subprocess.TimeoutExpired as timeout:
+                raise EnrichError(
+                    f"{step.name} enrich did not finish within {timeout_s:.0f}s "
+                    f"for source_id={source_id}\n"
+                    f"image: {step.image}\n"
+                    f"stdout tail:\n{tail(timeout.stdout)}\n"
+                    f"stderr tail:\n{tail(timeout.stderr)}"
+                ) from timeout
             if result.returncode != 0:
                 raise EnrichError(
                     f"{step.name} enrich failed for source_id={source_id} (exit={result.returncode})\n"

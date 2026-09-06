@@ -31,6 +31,7 @@ from types import ModuleType
 
 from insight_datapath import clickhouse as ch
 from insight_datapath.instance import InstanceConfig
+from insight_datapath.process import tail
 
 LOG = logging.getLogger("datapath.schema")
 
@@ -183,26 +184,31 @@ def restart_analytics(
     whose warehouse was empty when it booted, every metric key is reported unknown
     until it looks again.
     """
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "--project-name",
-            project,
-            "--env-file",
-            str(env_file),
-            "-f",
-            "docker-compose.yml",
-            "restart",
-            "analytics",
-        ],
-        cwd=repo_root,
-        env={**os.environ, "COMPOSE_PROJECT_NAME": project},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout_s,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                project,
+                "--env-file",
+                str(env_file),
+                "-f",
+                "docker-compose.yml",
+                "restart",
+                "analytics",
+            ],
+            cwd=repo_root,
+            env={**os.environ, "COMPOSE_PROJECT_NAME": project},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as timeout:
+        raise RuntimeError(
+            f"analytics did not restart within {timeout_s:.0f}s:\n{tail(timeout.stderr)}"
+        ) from timeout
     if result.returncode != 0:
         raise RuntimeError(
             f"could not restart analytics (exit {result.returncode}):\n{result.stderr[-1000:]}"

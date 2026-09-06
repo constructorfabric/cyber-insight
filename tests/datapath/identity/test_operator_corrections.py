@@ -9,6 +9,10 @@ operator's answer.
 The review queue itself is not this lane's: on an instance seeded with identity alone
 nothing is queued, so an assertion here could only pass vacuously. Its contract lives in
 `tests/stand/api/identity/test_resolution.py`, against a stand whose roster fills it.
+
+The decisions this module records sit on roster accounts, which the stand seeder's
+preflight counts as identity data it did not write. Re-seeding the same instance after a
+run is refused for that reason; bring the instance down with its volumes first.
 """
 
 from __future__ import annotations

@@ -1474,7 +1474,7 @@ TEST_STAND_TREES=()
 TEST_STAND_INSTANCE=""
 TEST_STAND_PORT_OFFSET=0
 
-# Every published host port, with the base docker-compose.yml falls back to.
+# Every published host port, with the base each service falls back to.
 # INVARIANT: each default must equal that service's `${VAR:-N}` in
 # docker-compose.yml. An instance shifts from the base named here, so a stale
 # entry publishes a port the stack never binds.
