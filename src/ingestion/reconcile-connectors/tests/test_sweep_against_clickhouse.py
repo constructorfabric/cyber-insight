@@ -42,12 +42,39 @@ CH_PASSWORD = os.environ.get("SWEEP_TEST_CH_PASSWORD", "")  # RULE-DEFAULTS-OK: 
 
 TABLE = "ingestion_history.sync_events"
 CONNECTOR = "example-tracker"
+TENANT = "tenant-under-test"
+SOURCE = "main"
 CONNECTION = "connection-under-test"
 STUB_PORT = 38399
 TOKEN = "stub-token"
 
 BASE_HOUR = 8
 DAY = "2026-08-27"
+
+MIGRATIONS = Path(__file__).resolve().parents[2] / "scripts" / "migrations"
+
+#: The relation as a released install holds it: no identity columns. Written out
+#: rather than derived from the migration, so a future edit to the migration
+#: cannot quietly redefine what "before" meant and pass this by agreeing with
+#: itself.
+PRE_CHANGE_DDL = f"""
+CREATE TABLE {TABLE} (
+    event_id         UUID DEFAULT generateUUIDv4(),
+    ts               DateTime64(3, 'UTC') DEFAULT now64(3),
+    tick_id          String,
+    job_id           String,
+    connector        LowCardinality(String),
+    event            LowCardinality(String),
+    status           LowCardinality(String),
+    started_at       Nullable(DateTime64(3, 'UTC')),
+    job_updated_at   Nullable(DateTime64(3, 'UTC')),
+    duration_ms      Nullable(UInt64),
+    records_reported Nullable(UInt64)
+) ENGINE = MergeTree
+PARTITION BY toYYYYMM(ts)
+ORDER BY (event, connector, ts, event_id)
+TTL toDateTime(ts) + INTERVAL 6 MONTH
+"""
 
 
 def _stamp(hour_offset: int) -> str:
@@ -219,6 +246,23 @@ def _rows(sql: str) -> list[dict]:
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
+def _apply_migration(path: Path) -> None:
+    """Run one migration the way the deploy channel runs it.
+
+    `lib/ch-exec.sh` drops full-line `--` comments and splits on `;`, because the
+    HTTP interface takes one statement per request. Mirrored rather than
+    simplified: a migration this passes but that channel cannot split is a
+    migration that fails at deploy time only.
+    """
+    body = path.read_text(encoding="utf-8")
+    sql = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("--")
+    )
+    for statement in sql.split(";"):
+        if statement.strip():
+            _query(statement)
+
+
 def _count(sql: str) -> int:
     """`UInt64` crosses JSON as a string — ClickHouse quotes it so a JS reader
     cannot silently lose precision. Every numeric assertion here goes through
@@ -262,11 +306,19 @@ class TestSweptRowsLandAndResolve:
         """Each case states its own history, so it starts from no rows at all."""
         _query(f"TRUNCATE TABLE {TABLE}")
 
-    def _tick(self, tick_id: str) -> int:
+    def _tick(self, tick_id: str, descriptors: list[dict] | None = None) -> int:
         work = json.dumps(
             {
                 "tick_id": tick_id,
-                "connectors": [{"name": CONNECTOR, "connection_id": CONNECTION}],
+                "connectors": [
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": SOURCE,
+                        "connection_id": CONNECTION,
+                    }
+                ],
+                "descriptors": descriptors or [],
             }
         )
         return self.entry.run(io.StringIO(work))
@@ -452,8 +504,17 @@ class TestSweptRowsLandAndResolve:
             {
                 "tick_id": "tick-w",
                 "connectors": [
-                    {"name": CONNECTOR, "connection_id": CONNECTION},
-                    {"name": "awaiting-connection"},
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": SOURCE,
+                        "connection_id": CONNECTION,
+                    },
+                    {
+                        "name": "awaiting-connection",
+                        "tenant_id": TENANT,
+                        "source_id": SOURCE,
+                    },
                 ],
             }
         )
@@ -467,6 +528,280 @@ class TestSweptRowsLandAndResolve:
             )
         }
         assert configured == {CONNECTOR, "awaiting-connection"}
+
+    def test_two_instances_of_one_connector_land_as_separate_rows(self) -> None:
+        """Both share a name and neither shares a connection, so the identity
+        is the only thing in the row that tells them apart. An install running
+        both has to be able to read one instance failing while the other is
+        fine — under one name it would read whichever synced last."""
+        sibling_connection = "connection-of-the-sibling"
+        work = json.dumps(
+            {
+                "tick_id": "tick-i",
+                "connectors": [
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": SOURCE,
+                        "connection_id": CONNECTION,
+                    },
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": "second",
+                        "connection_id": sibling_connection,
+                    },
+                ],
+            }
+        )
+        with _StubMover() as mover:
+            # Newer than every fixture job, so the listing's ascending order
+            # still holds with it appended.
+            mover.oldest_first.append(
+                {
+                    "jobId": 4242,
+                    "connectionId": sibling_connection,
+                    "status": "failed",
+                    "lastUpdatedAt": _stamp(9),
+                    "startTime": _stamp(9),
+                    "duration": "PT1M",
+                    "rowsSynced": 0,
+                }
+            )
+            assert self.entry.run(io.StringIO(work)) == 0
+
+        assert (
+            _count(
+                f"SELECT count() AS n FROM {TABLE} "
+                f"WHERE event = 'connector.configured' AND connector = '{CONNECTOR}'"
+            )
+            == 2
+        ), "one connector installed twice is two configured rows, not one"
+
+        sibling = _rows(
+            f"SELECT connector, tenant_id, source_id, status FROM {TABLE} "
+            "WHERE event = 'sync.completed' AND job_id = '4242'"
+        )
+        assert sibling[0]["connector"] == CONNECTOR
+        assert sibling[0]["tenant_id"] == TENANT
+        assert sibling[0]["source_id"] == "second"
+        assert sibling[0]["status"] == "failed"
+
+    def _legacy_sync_row(self, job_id: str, connector: str = CONNECTOR) -> None:
+        """A row in the shape the ledger wrote before it carried an identity.
+
+        Every column named, none of the two that did not exist — which is what an
+        install upgrading with months of history holds the moment the columns
+        are added.
+        """
+        _query(
+            f"INSERT INTO {TABLE} (ts, tick_id, job_id, connector, event, status, "
+            "started_at, job_updated_at, duration_ms, records_reported) VALUES "
+            f"(now64(3), 'old', '{job_id}', '{connector}', 'sync.completed', "
+            f"'succeeded', NULL, toDateTime64('{_ch_stamp(_stamp(-2))}', 3, 'UTC'), "
+            "91000, 42)"
+        )
+
+    def _legacy_columns(self, job_id: str) -> list[dict]:
+        return _rows(
+            "SELECT job_id, toString(ts) AS ts, connector, event, status, "
+            "toString(job_updated_at) AS updated, duration_ms, records_reported "
+            f"FROM {TABLE} WHERE job_id = '{job_id}'"
+        )
+
+    def _identity(self, job_id: str) -> dict:
+        return _rows(
+            f"SELECT tenant_id, source_id FROM {TABLE} WHERE job_id = '{job_id}'"
+        )[0]
+
+    def test_history_recorded_before_the_identity_existed_is_adopted(self) -> None:
+        """The upgrade path, which no fresh install exercises.
+
+        Adding the columns leaves every retained row claiming no instance, and
+        the page groups by identity — so without this the connector shows twice,
+        once as its months of history and once as the thing syncing now.
+        """
+        self._legacy_sync_row("legacy-1")
+        before = self._legacy_columns("legacy-1")
+
+        with _StubMover():
+            assert self._tick("tick-h") == 0
+
+        after = self._legacy_columns("legacy-1")
+        assert len(after) == 1, "the row is given an identity, not replaced by a new one"
+        assert after[0] == before[0], "nothing but the identity may change"
+
+        identity = self._identity("legacy-1")
+        assert identity["tenant_id"] == TENANT
+        assert identity["source_id"] == SOURCE
+
+    def test_a_later_tick_leaves_the_adopted_history_alone(self) -> None:
+        """The predicate that found the rows is the predicate that updates them,
+        so a settled row is not rewritten once a tick for ever."""
+        self._legacy_sync_row("legacy-1")
+        with _StubMover():
+            assert self._tick("tick-h") == 0
+            settled = self._legacy_columns("legacy-1")
+            assert self._tick("tick-i") == 0
+
+        assert self._legacy_columns("legacy-1") == settled
+        assert self._identity("legacy-1")["source_id"] == SOURCE
+
+    def test_an_ambiguously_owned_history_keeps_its_empty_identity(self) -> None:
+        """Two instances share the name, and the connection that told their jobs
+        apart is not in these rows. An identity written here would be a guess
+        that reads as a fact ever after."""
+        self._legacy_sync_row("legacy-1")
+        work = json.dumps(
+            {
+                "tick_id": "tick-j",
+                "connectors": [
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": SOURCE,
+                        "connection_id": CONNECTION,
+                    },
+                    {
+                        "name": CONNECTOR,
+                        "tenant_id": TENANT,
+                        "source_id": "second",
+                        "connection_id": "connection-of-the-sibling",
+                    },
+                ],
+            }
+        )
+        with _StubMover():
+            assert self.entry.run(io.StringIO(work)) == 0
+
+        identity = self._identity("legacy-1")
+        assert identity["tenant_id"] == ""
+        assert identity["source_id"] == ""
+
+    def test_a_departed_connector_that_synced_and_left_nothing_stays_unidentified(
+        self,
+    ) -> None:
+        """It has recorded syncs, and its identity is what says whose work those
+        were. With no Secret and nothing it wrote, that is not a thing to infer
+        from how other connectors happen to be named."""
+        self._legacy_sync_row("legacy-2", connector="departed-tracker")
+
+        with _StubMover():
+            assert self._tick("tick-k") == 0
+
+        identity = self._identity("legacy-2")
+        assert identity["tenant_id"] == ""
+        assert identity["source_id"] == ""
+
+    def test_a_departed_connector_is_recovered_from_what_it_recorded(self) -> None:
+        """Its Secret is gone and its rows are not: a connector that ever moved
+        one wrote the identity it ran under into it, and that outlives the
+        Secret.
+
+        The read is the half no unit test can stand in for — the relation is
+        found through `system.tables` and the identity read out of it, both
+        against a real server.
+        """
+        _query("CREATE DATABASE IF NOT EXISTS bronze_departed_tracker")
+        _query("DROP TABLE IF EXISTS bronze_departed_tracker.rows")
+        _query(
+            "CREATE TABLE bronze_departed_tracker.rows "
+            "(tenant_id String, source_id String, payload String) "
+            "ENGINE = MergeTree ORDER BY tuple()"
+        )
+        _query(
+            "INSERT INTO bronze_departed_tracker.rows VALUES "
+            f"('{TENANT}', 'departed-tracker-reports', 'x')"
+        )
+        self._legacy_sync_row("legacy-3", connector="departed-tracker")
+
+        with _StubMover():
+            code = self._tick(
+                "tick-r",
+                descriptors=[
+                    {"name": "departed-tracker", "namespace": "bronze_departed_tracker"}
+                ],
+            )
+        assert code == 0
+
+        identity = self._identity("legacy-3")
+        assert identity["tenant_id"] == TENANT
+        assert identity["source_id"] == "departed-tracker-reports", (
+            "the identity must come from what the connector recorded, not from "
+            "the shape of its name"
+        )
+
+    def test_a_relation_holding_two_identities_recovers_nothing(self) -> None:
+        """More than one is not a majority to take: it would mean the era this
+        recovers from was not single-instance after all."""
+        _query("CREATE DATABASE IF NOT EXISTS bronze_two_faced")
+        _query("DROP TABLE IF EXISTS bronze_two_faced.rows")
+        _query(
+            "CREATE TABLE bronze_two_faced.rows (tenant_id String, source_id String) "
+            "ENGINE = MergeTree ORDER BY tuple()"
+        )
+        _query(f"INSERT INTO bronze_two_faced.rows VALUES ('{TENANT}', 'a'), ('{TENANT}', 'b')")
+        self._legacy_sync_row("legacy-4", connector="two-faced")
+
+        with _StubMover():
+            code = self._tick(
+                "tick-t",
+                descriptors=[{"name": "two-faced", "namespace": "bronze_two_faced"}],
+            )
+        assert code == 0
+
+        identity = self._identity("legacy-4")
+        assert identity["tenant_id"] == ""
+        assert identity["source_id"] == ""
+
+    def test_an_install_upgrading_with_history_keeps_its_rows_and_gains_identity(
+        self,
+    ) -> None:
+        """The whole upgrade path in one case: the relation in its pre-change
+        shape, a row already in it, the migrations, then a tick.
+
+        A fresh install exercises none of this — it creates the relation already
+        carrying the columns — and CI builds from scratch every time, so this is
+        the only place the path an install with months of history actually takes
+        is run at all.
+        """
+        _query(f"DROP TABLE {TABLE}")
+        _query(PRE_CHANGE_DDL)
+        _query(
+            f"INSERT INTO {TABLE} (ts, tick_id, job_id, connector, event, status, "
+            "started_at, job_updated_at, duration_ms, records_reported) VALUES "
+            f"(now64(3), 'old', 'kept', '{CONNECTOR}', 'sync.completed', 'succeeded', "
+            f"NULL, toDateTime64('{_ch_stamp(_stamp(-2))}', 3, 'UTC'), 91000, 42)"
+        )
+
+        for migration in sorted(MIGRATIONS.glob("*connector-sync-history*.sql")):
+            _apply_migration(migration)
+
+        migrated = self._legacy_columns("kept")
+        assert len(migrated) == 1, "the row survives the migration"
+        assert self._identity("kept") == {"tenant_id": "", "source_id": ""}, (
+            "the migration adds the columns; only the reconcile tick can know "
+            "which instance this install actually has"
+        )
+
+        with _StubMover():
+            assert self._tick("tick-u") == 0
+
+        assert self._legacy_columns("kept") == migrated, (
+            "the same row, not a replacement — nothing but the identity may change"
+        )
+        assert self._identity("kept") == {"tenant_id": TENANT, "source_id": SOURCE}
+
+    def test_the_seal_keeps_the_empty_identity_it_is_meant_to_have(self) -> None:
+        """It is about the tick, not about anything that synced."""
+        with _StubMover():
+            assert self._tick("tick-l") == 0
+
+        seal = _rows(
+            f"SELECT tenant_id, source_id FROM {TABLE} WHERE event = 'sweep.completed'"
+        )
+        assert seal[0]["tenant_id"] == ""
+        assert seal[0]["source_id"] == ""
 
     def test_a_job_that_fell_below_the_read_start_stops_reading_as_running(self) -> None:
         """The floor's own cost, paid honestly.

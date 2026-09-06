@@ -19,11 +19,13 @@ import {
   describeAge,
   describeConnector,
   describeDuration,
+  describeInstance,
   describeRecording,
   describeSync,
   formatDuration,
   formatRecords,
   formatStarted,
+  instanceKey,
 } from "@/lib/portal/connector-health";
 
 const MINUTE = 60_000;
@@ -47,6 +49,48 @@ function row(over: Partial<ConnectorHealth> = {}): ConnectorHealth {
     ...over,
   };
 }
+
+describe("which installation of a connector a row is", () => {
+  it("names both halves, because a source id is unique only within a tenant", () => {
+    expect(
+      describeInstance({ tenant_id: "acme", source_id: "claude-team-second" }),
+    ).toBe("acme / claude-team-second");
+  });
+
+  it("prints absence as absence rather than naming an instance nobody recorded", () => {
+    // History recorded before the ledger carried the identity that no single
+    // installation could be shown to own.
+    expect(describeInstance({})).toBe(UNMEASURED);
+    expect(describeInstance({ tenant_id: null, source_id: null })).toBe(UNMEASURED);
+  });
+
+  it("does not hide the half it does have", () => {
+    expect(describeInstance({ tenant_id: "acme" })).toBe(`acme / ${UNMEASURED}`);
+  });
+
+  it("keys two installations of one connector apart", () => {
+    // Keyed on the name alone they collide: React reuses one row's node for
+    // the other, and opening one row opens the other's history.
+    const first = instanceKey({
+      connector: "claude-team",
+      tenant_id: "acme",
+      source_id: "main",
+    });
+    const second = instanceKey({
+      connector: "claude-team",
+      tenant_id: "acme",
+      source_id: "second",
+    });
+
+    expect(first).not.toBe(second);
+  });
+
+  it("keys an unidentified row apart from an identified one", () => {
+    expect(instanceKey({ connector: "alpha" })).not.toBe(
+      instanceKey({ connector: "alpha", tenant_id: "acme", source_id: "main" }),
+    );
+  });
+});
 
 describe("what a row says", () => {
   it("gives every recorded status its own word", () => {

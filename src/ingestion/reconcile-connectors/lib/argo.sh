@@ -35,20 +35,67 @@ ARGO_CRON_NAME_MAX_CHARS=52
 
 # INVARIANT: a DNS-1123 name segment ends alphanumeric; truncation can leave a
 # separator at the tail.
-argo_cron_workflow_name() {
-  local connector="$1" tenant="$2"
-  local tenant_prefix="${tenant:0:${ARGO_CRON_TENANT_CHARS}}"
+_argo_tenant_prefix() {
+  local tenant_prefix="${1:0:${ARGO_CRON_TENANT_CHARS}}"
   while [[ "$tenant_prefix" == *[-.] ]]; do
     tenant_prefix="${tenant_prefix%?}"
   done
+  printf '%s' "$tenant_prefix"
+}
 
-  local name="${connector}-${tenant_prefix}-sync"
+# The instance's own label inside its connector's name.
+#
+# A source id conventionally repeats the connector it belongs to
+# (`claude-team-invoices-main`), and the name it goes into already carries that
+# — a repeat costs the budget twice and reads as a stutter. A source id that
+# does NOT start with the connector's name is used whole: it is outside the
+# convention, and shortening it by some other rule would be inventing one.
+argo_instance_label() {
+  local connector="$1" source_id="$2"
+  printf '%s' "${source_id#"${connector}-"}"
+}
+
+argo_cron_workflow_name() {
+  local connector="$1" tenant="$2" source_id="$3"
+  if [[ -z "${source_id}" ]]; then
+    printf '%s: a CronWorkflow name needs the instance it schedules; got an empty source id.\n' \
+      "$connector" >&2
+    return 1
+  fi
+  local tenant_prefix label
+  tenant_prefix="$(_argo_tenant_prefix "$tenant")"
+  label="$(argo_instance_label "$connector" "$source_id")"
+
+  local name="${connector}-${label}-${tenant_prefix}-sync"
   if (( ${#name} > ARGO_CRON_NAME_MAX_CHARS )); then
-    printf 'CronWorkflow name %s is %s characters; Argo accepts at most %s. Shorten the connector slug.\n' \
+    printf 'CronWorkflow name %s is %s characters; Argo accepts at most %s. Shorten the connector slug or the source id.\n' \
       "$name" "${#name}" "${ARGO_CRON_NAME_MAX_CHARS}" >&2
     return 1
   fi
   printf '%s' "$name"
+}
+
+# INVARIANT: two instances of one connector must never render one name.
+#
+# The label drops a repeated connector prefix, so two source ids differing only
+# by that prefix collapse onto each other. Applied, the second would replace the
+# first's schedule under the same object — the connector would look scheduled
+# while one of its instances silently stopped syncing. Checked across a
+# connector's whole instance set before anything is applied.
+argo_assert_distinct_cron_names() {
+  local connector="$1" tenant="$2"
+  shift 2
+  local source_id name
+  local -A claimed_by=()
+  for source_id in "$@"; do
+    name="$(argo_cron_workflow_name "$connector" "$tenant" "$source_id")" || return 1
+    if [[ -n "${claimed_by[$name]:-}" ]]; then
+      printf '%s: source ids %s and %s both name their CronWorkflow %s; one would replace the other. Give one a source id that does not collapse onto the other.\n' \
+        "$connector" "${claimed_by[$name]}" "$source_id" "$name" >&2
+      return 1
+    fi
+    claimed_by[$name]="$source_id"
+  done
 }
 
 # An installation may still hold a CronWorkflow named with the whole tenant id.
@@ -57,6 +104,33 @@ argo_cron_workflow_name() {
 argo_cron_workflow_name_full_tenant() {
   local connector="$1" tenant="$2"
   printf '%s-%s-sync' "$connector" "$tenant"
+}
+
+# And one named before the instance label joined the name. Same hazard: it
+# schedules on its own, so an install that keeps both syncs twice per window.
+argo_cron_workflow_name_without_instance() {
+  local connector="$1" tenant="$2"
+  printf '%s-%s-sync' "$connector" "$(_argo_tenant_prefix "$tenant")"
+}
+
+# The names an earlier release of this loop could hold for the same instance,
+# one per line and never the one in use now.
+#
+# Emitted without repeats: the two shapes coincide when the tenant is no longer
+# than the bound, and deleting one name twice would read in the log as two
+# objects removed.
+_argo_superseded_names() {
+  local connector="$1" tenant="$2" current="$3"
+  local candidate
+  local -A emitted=()
+  for candidate in \
+    "$(argo_cron_workflow_name_full_tenant "$connector" "$tenant")" \
+    "$(argo_cron_workflow_name_without_instance "$connector" "$tenant")"; do
+    [[ "${candidate}" != "${current}" ]] || continue
+    [[ -z "${emitted[$candidate]:-}" ]] || continue
+    emitted[$candidate]=1
+    printf '%s\n' "${candidate}"
+  done
 }
 
 _argo_delete_cronworkflow_named() {
@@ -81,7 +155,7 @@ argo_render_cronworkflow() {
   local connector="$1" connection_name="$2" schedule="$3" tenant="$4"
   local insight_source_id="$5" dbt_select="$6" enrich_image="$7"
   local cron_name
-  cron_name="$(argo_cron_workflow_name "$connector" "$tenant")" || return 1
+  cron_name="$(argo_cron_workflow_name "$connector" "$tenant" "$insight_source_id")" || return 1
   python3 "${ARGO_PY_DIR}/render_cronworkflow.py" \
     --connector "$connector" \
     --connection-name "$connection_name" \
@@ -98,6 +172,14 @@ argo_render_cronworkflow() {
 argo_apply_cronworkflow() {
   local connector="$1" connection_name="$2" schedule="$3" tenant="$4"
   local insight_source_id="$5" dbt_select="$6" enrich_image="$7"
+
+  # INVARIANT: resolved before anything is rendered or applied. Argo rejects an
+  # over-cap name only AFTER a successful apply, leaving an object that carries
+  # a SpecError and never schedules — so the length has to stop the apply, not
+  # merely the render.
+  local current_name
+  current_name="$(argo_cron_workflow_name "$connector" "$tenant" "$insight_source_id")" || return 1
+
   local rendered apply_out
   rendered="$(argo_render_cronworkflow "$connector" "$connection_name" \
                 "$schedule" "$tenant" "$insight_source_id" \
@@ -109,28 +191,53 @@ argo_apply_cronworkflow() {
   fi
   printf '%s\n' "$apply_out"
 
-  # INVARIANT: exit 2 means the apply succeeded but the legacy full-tenant
-  # CronWorkflow was not removed — both schedule the sync until it is gone.
-  local bounded_name full_tenant_name
-  bounded_name="$(argo_cron_workflow_name "$connector" "$tenant")" || return 1
-  full_tenant_name="$(argo_cron_workflow_name_full_tenant "$connector" "$tenant")"
-  if [[ "${full_tenant_name}" != "${bounded_name}" ]]; then
-    _argo_delete_cronworkflow_named "${full_tenant_name}" >/dev/null || return 2
-  fi
+  # INVARIANT: exit 2 means the apply succeeded but a superseded CronWorkflow
+  # was not removed — both schedule the sync until it is gone.
+  local superseded
+  while IFS= read -r superseded; do
+    [[ -n "${superseded}" ]] || continue
+    _argo_delete_cronworkflow_named "${superseded}" >/dev/null || return 2
+  done < <(_argo_superseded_names "$connector" "$tenant" "${current_name}")
 }
 
 argo_delete_cronworkflow() {
-  local connector="$1" tenant="$2"
-  local bounded_name full_tenant_name rc=0
-  full_tenant_name="$(argo_cron_workflow_name_full_tenant "$connector" "$tenant")"
-  _argo_delete_cronworkflow_named "${full_tenant_name}" || rc=1
+  local connector="$1" tenant="$2" source_id="$3"
+  local current_name superseded rc=0
 
   # A name over the cap was never applied, so there is nothing to remove under
-  # it — removal still has to clear the full-tenant object above.
-  bounded_name="$(argo_cron_workflow_name "$connector" "$tenant")" || return "$rc"
-  if [[ "${bounded_name}" != "${full_tenant_name}" ]]; then
-    _argo_delete_cronworkflow_named "${bounded_name}" || rc=1
-  fi
+  # it — removal still has to clear the superseded objects below.
+  current_name="$(argo_cron_workflow_name "$connector" "$tenant" "$source_id")" || current_name=""
+
+  while IFS= read -r superseded; do
+    [[ -n "${superseded}" ]] || continue
+    _argo_delete_cronworkflow_named "${superseded}" || rc=1
+  done < <(_argo_superseded_names "$connector" "$tenant" "${current_name}")
+
+  [[ -n "${current_name}" ]] || return "$rc"
+  _argo_delete_cronworkflow_named "${current_name}" || rc=1
+  return "$rc"
+}
+
+# Only this instance's own schedule. Its siblings keep theirs, and the shapes
+# that name no instance are left where they are: they are shared, and removing
+# one instance is not a reason to touch what the others may still be using.
+argo_delete_instance_cronworkflow() {
+  local connector="$1" tenant="$2" source_id="$3"
+  local name
+  name="$(argo_cron_workflow_name "$connector" "$tenant" "$source_id")" || return 1
+  _argo_delete_cronworkflow_named "${name}"
+}
+
+# Only the shapes that name no instance — for a connector with no source left to
+# read an instance id out of, which is every connector that was never installed
+# here and every one whose last instance has just gone.
+argo_delete_superseded_cronworkflows() {
+  local connector="$1" tenant="$2"
+  local name rc=0
+  while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    _argo_delete_cronworkflow_named "${name}" || rc=1
+  done < <(_argo_superseded_names "$connector" "$tenant" "")
   return "$rc"
 }
 

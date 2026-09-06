@@ -930,7 +930,9 @@ class SyncHistoryResponse(BaseModel):
         extra='forbid',
     )
     connector: str
+    source_id: str | None = Field(None, description="The installation's own id within that tenant. Absent with `tenant_id`.")
     syncs: list[SyncFact] = Field(..., description='A bounded window, newest first — not the full retained history.')
+    tenant_id: str | None = Field(None, description='Tenant of the installation the window was narrowed to, echoed back.\nAbsent where the caller asked for the connector rather than one\ninstallation of it, in which case the window spans every instance under\nthat name.')
     window: int = Field(..., description='How many rows this window holds at most, so the page can say the list\nis a window rather than everything.', ge=0)
 
 
@@ -1081,6 +1083,8 @@ class ConnectorHealth(BaseModel):
     configured: bool = Field(..., description='Present in the newest sealed snapshot of the set the controller manages.')
     connector: str
     last_sync: SyncFact | None = None
+    source_id: str | None = Field(None, description="The installation's own id within that tenant. Absent with `tenant_id`.")
+    tenant_id: str | None = Field(None, description='Tenant of the installation this row is. Absent together with\n`source_id` on history recorded before the ledger carried the identity\nthat no single instance could be shown to own — unattributed, which is a\ndifferent answer from attributed to something named "".')
 
 
 class ConnectorHealthResponse(BaseModel):

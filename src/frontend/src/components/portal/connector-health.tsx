@@ -1,6 +1,10 @@
 import { useState } from "react";
 
-import type { ConnectorHealth, SyncFact } from "@/api/connector-health-client";
+import type {
+  ConnectorHealth,
+  ConnectorInstanceRef,
+  SyncFact,
+} from "@/api/connector-health-client";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import { Badge } from "@/components/ui/badge";
@@ -16,10 +20,12 @@ import {
   UNMEASURED,
   describeConnector,
   describeDuration,
+  describeInstance,
   describeRecording,
   describeSync,
   formatRecords,
   formatStarted,
+  instanceKey,
   type ConnectorTone,
 } from "@/lib/portal/connector-health";
 import { useConnectorHealth, useConnectorSyncs } from "@/queries/connector-health";
@@ -36,7 +42,19 @@ const TONE_STYLE: Record<ConnectorTone, string> = {
   idle: "bg-muted text-muted-foreground",
 };
 
-const COLUMNS = 5;
+const COLUMNS = 6;
+
+/**
+ * A DOM id for one row's disclosure panel.
+ *
+ * The identity's own separator is not one an id may carry through a CSS
+ * selector, and neither half can contain an underscore — the service refuses
+ * anything outside lowercase letters, digits and hyphens — so the swap stays
+ * one identity to one id.
+ */
+function panelIdFor(row: ConnectorHealth): string {
+  return `connector-syncs-${instanceKey(row).replaceAll("/", "_")}`;
+}
 
 export function ConnectorHealthPane() {
   const { data, isPending, isError, refetch } = useConnectorHealth();
@@ -88,6 +106,9 @@ export function ConnectorHealthPane() {
             <TableHeader>
               <TableRow>
                 <TableHead>Connector</TableHead>
+                {/* One connector can be configured more than once; this is the
+                    only cell that tells those rows apart. */}
+                <TableHead>Instance</TableHead>
                 <TableHead>State</TableHead>
                 <TableHead>Last sync started</TableHead>
                 <TableHead className="text-right">Duration</TableHead>
@@ -97,14 +118,15 @@ export function ConnectorHealthPane() {
             <TableBody>
               {data.connectors.map((row) => {
                 const state = describeConnector(row);
-                // Keyed on the connector, not on the row's position. The page
-                // polls, so a position can come to mean a different connector
-                // between renders and the wrong row would open. The name is
-                // safe to key on: the read groups by connector, so the response
-                // cannot carry two rows sharing one.
-                const open = expanded === row.connector;
-                const panelId = `connector-syncs-${row.connector}`;
-                const toggle = () => setExpanded(open ? null : row.connector);
+                // Keyed on the whole identity, not on the row's position and
+                // not on the name. The page polls, so a position can come to
+                // mean a different row between renders; and two installations
+                // of one connector share the name, so keying on it would open
+                // the wrong one's history.
+                const key = instanceKey(row);
+                const open = expanded === key;
+                const panelId = panelIdFor(row);
+                const toggle = () => setExpanded(open ? null : key);
                 return [
                   // The whole row opens the connector, by the same rule every
                   // console listing follows — `activatesRow` is shared with
@@ -117,7 +139,7 @@ export function ConnectorHealthPane() {
                   // table. An inner button would be a second focus stop for the
                   // one thing the row already does.
                   <TableRow
-                    key={row.connector}
+                    key={key}
                     data-state-name={state.state}
                     data-state={open ? "selected" : undefined}
                     tabIndex={0}
@@ -134,6 +156,9 @@ export function ConnectorHealthPane() {
                     className="cursor-pointer select-text"
                   >
                     <TableCell className="font-medium">{row.connector}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {describeInstance(row)}
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant="secondary"
@@ -151,9 +176,9 @@ export function ConnectorHealthPane() {
                     </TableCell>
                   </TableRow>,
                   open ? (
-                    <TableRow key={`syncs-${row.connector}`}>
+                    <TableRow key={`syncs-${key}`}>
                       <TableCell colSpan={COLUMNS} id={panelId} className="bg-muted/40">
-                        <RecentSyncs connector={row.connector} asOf={data.as_of} />
+                        <RecentSyncs instance={row} asOf={data.as_of} />
                       </TableCell>
                     </TableRow>
                   ) : null,
@@ -192,8 +217,14 @@ function DurationCell({
   );
 }
 
-function RecentSyncs({ connector, asOf }: { connector: string; asOf: string }) {
-  const { data, isPending, isError, refetch } = useConnectorSyncs(connector);
+function RecentSyncs({
+  instance,
+  asOf,
+}: {
+  instance: ConnectorInstanceRef;
+  asOf: string;
+}) {
+  const { data, isPending, isError, refetch } = useConnectorSyncs(instance);
 
   if (isPending) return <CenteredSpinner className="min-h-24" />;
   if (isError || data === undefined) {

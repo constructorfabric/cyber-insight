@@ -189,18 +189,35 @@ _adopt_one_connector() {
   fi
 
   # @cpt-begin:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-match
-  local secret_name
-  if ! secret_name="$(disc_match_descriptor_to_secret "${name}")"; then
+  local instances
+  if ! instances="$(disc_instances_of "${name}")"; then
+    adopt_warn_orphan "${name}" "cannot read the connector Secrets — skipping"
+    _ADOPT_SKIPPED=$((_ADOPT_SKIPPED + 1))
+    return 0
+  fi
+  local instance_count
+  instance_count="$(printf '%s' "${instances}" | grep -c . || true)"
+  if [[ "${instance_count}" -eq 0 ]]; then
     # @cpt-begin:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-skip
     adopt_warn_orphan "${name}" "no Secret found in Kubernetes for this connector — skipping"
     _ADOPT_SKIPPED=$((_ADOPT_SKIPPED + 1))
     # @cpt-end:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-skip
     return 0
   fi
+  # This pass adopts resources that predate the annotations, and it reads which
+  # instance they belong to from the one Secret the connector has. With two
+  # there is nothing in those resources to tell them apart — the connections
+  # would take one instance's cfg-hash and the schedule would be named after it
+  # — so it refuses rather than picking.
+  if [[ "${instance_count}" -gt 1 ]]; then
+    log_line ERROR "${name}: ${instance_count} Secrets configure this connector; multi-instance adoption is unsupported — refusing to guess which instance the existing resources belong to. Nothing was changed."
+    return 1
+  fi
+  local secret_name source_id_label cfg_hash
+  source_id_label="$(printf '%s' "${instances}" | head -1 | cut -f1)"
+  secret_name="$(printf '%s' "${instances}" | head -1 | cut -f2)"
+  cfg_hash="$(printf '%s' "${instances}" | head -1 | cut -f3)"
   # @cpt-end:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-match
-
-  local cfg_hash
-  cfg_hash="$(disc_compute_cfg_hash "${secret_name}")"
 
   # @cpt-begin:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-if-matched
   local definition_ids_json
@@ -262,23 +279,19 @@ for x in json.load(sys.stdin): print(x)')
   if [[ "${dry_run}" -eq 1 ]]; then
     printf 'CHANGE  %s: would create/update Argo CronWorkflow\n' "${name}"
   else
-    local conn_name; conn_name="$(reconcile_compute_connection_name "${name}")"
-    local schedule;  schedule="$(reconcile_compute_schedule "${name}")"
+    local conn_name; conn_name="$(reconcile_compute_connection_name "${name}" "${source_id_label}")"
+    local schedule;  schedule="$(reconcile_compute_schedule "${name}" "${secret_name}")"
     local tenant;    tenant="$(reconcile_compute_tenant "${name}")"
-    # source_id_label is needed by the rendered CronWorkflow as
-    # `insight_source_id` for ingestion-pipeline. Pull from the
-    # connector's Secret annotation (set by apply.sh).
-    local source_id_label
-    source_id_label="$(kubectl -n "${INSIGHT_NAMESPACE}" get secret "${secret_name}" \
-      -o jsonpath='{.metadata.annotations.insight\.cyberfabric\.com/source-id}' 2>/dev/null || true)"
-    [[ -n "${source_id_label}" ]] || source_id_label="main"
+    # `source_id_label` — read above off the connector's one instance — is what
+    # the rendered CronWorkflow carries as `insight_source_id` for
+    # ingestion-pipeline, and what the schedule is named after.
     # ADOPT_DRY_RUN guarded above (would_call branch).
     local apply_rc=0
     argo_apply_cronworkflow "${name}" "${conn_name}" "${schedule}" "${tenant}" \
                             "${source_id_label}" "${dbt_select}" \
                             "${enrich_image}" >/dev/null 2>&1 || apply_rc=$?
     if [[ "${apply_rc}" -eq 0 ]]; then
-      log_line INFO "${name}: created Argo CronWorkflow $(argo_cron_workflow_name "${name}" "${tenant}")"
+      log_line INFO "${name}: created Argo CronWorkflow $(argo_cron_workflow_name "${name}" "${tenant}" "${source_id_label}")"
     elif [[ "${apply_rc}" -eq 2 ]]; then
       log_line ERROR "${name}: created Argo CronWorkflow but failed to remove legacy CronWorkflow $(argo_cron_workflow_name_full_tenant "${name}" "${tenant}")"
       return 1

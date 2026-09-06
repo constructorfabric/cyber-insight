@@ -1,6 +1,8 @@
 import type {
   ConnectorHealth,
   ConnectorHealthSummary,
+  ConnectorInstance,
+  ConnectorInstanceRef,
   SyncFact,
   SyncStatus,
 } from "@/api/connector-health-client";
@@ -256,6 +258,34 @@ export function describeAge(ageInMs: number): string {
  * asserting something no one recorded.
  */
 export const UNMEASURED = "—";
+
+/**
+ * What tells one installation of a connector from another.
+ *
+ * Both halves, because a source id is unique only within a tenant. Absence is
+ * printed as absence: history recorded before the ledger carried the identity
+ * that no single installation could be shown to own has none, and naming one
+ * here would put an instance on the page that nobody recorded.
+ */
+export function describeInstance(row: ConnectorInstance): string {
+  const tenant = row.tenant_id ?? "";
+  const source = row.source_id ?? "";
+  if (tenant === "" && source === "") return UNMEASURED;
+  return `${tenant === "" ? UNMEASURED : tenant} / ${source === "" ? UNMEASURED : source}`;
+}
+
+/**
+ * A stable identity for one row, for React keys and query keys.
+ *
+ * The name alone is not one. Two installations of a connector share it, so a
+ * key built from it collides: React reuses one row's node for the other, and
+ * opening one row opens the other's history. The separator is safe because
+ * neither half can contain it — the service refuses anything outside lowercase
+ * letters, digits and hyphens.
+ */
+export function instanceKey(row: ConnectorInstanceRef): string {
+  return [row.connector, row.tenant_id ?? "", row.source_id ?? ""].join("/");
+}
 
 /**
  * A duration, or absence.

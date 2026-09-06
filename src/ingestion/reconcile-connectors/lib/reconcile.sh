@@ -178,29 +178,27 @@ reconcile_cascade_delete() {
   local connections_json
   connections_json="$(ab_list_connections "${workspace_id}")"
 
-  # Delete connections bound to connector's sources (by name prefix).
+  # Delete every source this connector owns, and with each one the schedule of
+  # the instance it belongs to. The instance's own id is read back out of the
+  # source's name rather than from a Secret: there is no Secret — that is why
+  # this path is running at all.
   # RECONCILE_DRY_RUN guard at top of reconcile_cascade_delete short-circuits.
-  local removed_sources=0
-  while IFS= read -r conn_id; do
-    [[ -n "${conn_id}" ]] || continue
-    ab_delete_source "${conn_id}" >/dev/null 2>&1 || true
+  local removed_sources=0 cron_out=""
+  local airbyte_source_id instance
+  while IFS=$'\t' read -r airbyte_source_id instance; do
+    [[ -n "${airbyte_source_id}" ]] || continue
+    ab_delete_source "${airbyte_source_id}" >/dev/null 2>&1 || true
     removed_sources=$((removed_sources + 1))
+    # kubectl --ignore-not-found prints "… deleted" only when the object
+    # existed, so non-empty output = a CronWorkflow was actually removed.
+    cron_out+="$(argo_delete_cronworkflow "${connector}" "${tenant}" "${instance}" 2>/dev/null || true)"
   done < <(printf '%s' "${sources_json}" \
-    | python3 -c '
-import json, sys
-target = sys.argv[1]
-for s in json.load(sys.stdin):
-    n = s.get("name", "")
-    if n == target or n.startswith(f"{target}-"):
-        print(s.get("sourceId", ""))
-' "${connector}" 2>/dev/null || true)
+    | python3 "${_RECONCILE_PY_DIR}/select_connector_sources.py" "${connector}" "${tenant}" \
+      2>/dev/null || true)
 
-  # Delete the per-connector CronWorkflow.
-  # RECONCILE_DRY_RUN guard at top of reconcile_cascade_delete short-circuits.
-  # kubectl --ignore-not-found prints "… deleted" only when the object
-  # existed, so non-empty output = a CronWorkflow was actually removed.
-  local cron_out
-  cron_out="$(argo_delete_cronworkflow "${connector}" "${tenant}" 2>/dev/null || true)"
+  # A connector with no source left to read an instance out of still has the
+  # schedule shapes that name no instance, from a release before one did.
+  cron_out+="$(argo_delete_superseded_cronworkflows "${connector}" "${tenant}" 2>/dev/null || true)"
 
   # A missing Secret is stateless: this tick cannot tell "deleted since the
   # last tick" from "never existed on this cluster". What it CAN tell is
@@ -845,8 +843,10 @@ reconcile_connections() {
     # ab_resolve_tags creates any missing tags in the workspace and echoes
     # the resolved Tag-object array.
     tags_json="$(ab_resolve_tags "${workspace_id}" "${tag_names_json}")"
-    local conn_name
-    conn_name="$(reconcile_compute_connection_name "${connector_name}")"
+    # Named after the source it binds, which is what the two names have always
+    # been: `{connector}-{source_id}-{tenant}` plus `-conn`. Resolving the
+    # instance again here would answer with whichever one the API listed first.
+    local conn_name="${source_name}-conn"
     local new_conn_json new_conn_id
     # RECONCILE_DRY_RUN guarded by short-circuit at top of bootstrap branch.
     # Per-connector ClickHouse schema comes ONLY from
@@ -1208,71 +1208,63 @@ reconcile_dry_run() {
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # _reconcile_one_connector <name> <connector_dir> <version> <type> <cdk_image> \
-#                          <enrich_image> <dbt_select> <opt_dry_run> \
-#                          <opt_no_sync_trigger> <opt_connector>
-# Per-connector body extracted from the main loop so a single connector's
-# failure can't kill the whole reconcile run. We deliberately do NOT enable
-# `set -e` here — failures bubble up through explicit `if ! ...; then`
-# branches and are reported via return codes.
+#                          <enrich_image> <dbt_select> <namespace> <source_id> \
+#                          <secret_name> <cfg_hash> <opt_dry_run> \
+#                          <opt_no_sync_trigger> <opt_connector> <opt_source_id>
+# One INSTANCE of one connector — a descriptor and the Secret that configures
+# it. Extracted from the main loop so a single instance's failure can't kill the
+# whole reconcile run. We deliberately do NOT enable `set -e` here — failures
+# bubble up through explicit `if ! ...; then` branches and are reported via
+# return codes.
+#
+# An empty <secret_name> is a descriptor no Secret names: not installed here.
 # Returns 0 on success, non-zero on any per-layer failure.
 # ---------------------------------------------------------------------------
 _reconcile_one_connector() {
   local name="$1" connector_dir="$2" version="$3" type="$4" cdk_image="$5" enrich_image="$6" dbt_select="$7"
-  local opt_dry_run="$8" opt_no_sync_trigger="$9" opt_connector="${10}"
+  local ns_format="$8" source_id_label="$9" secret_name="${10}" cfg_hash="${11}"
+  local opt_dry_run="${12}" opt_no_sync_trigger="${13}" opt_connector="${14}" opt_source_id="${15}"
   set +e  # explicit per-call error handling below
 
   if [[ -n "${opt_connector}" && "${name}" != "${opt_connector}" ]]; then
     _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
     return 0
   fi
+  # Narrowing to one instance never widens: `--source-id` is only accepted
+  # beside `--connector`, so the connector has already matched here.
+  if [[ -n "${opt_source_id}" && "${source_id_label}" != "${opt_source_id}" ]]; then
+    _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
+    return 0
+  fi
 
-  # Missing Secret -> cascade-delete chain (per ADR-0007 / KEY DECISION #7).
-  # Distinguish exit codes: 0=missing, 1=exists, 2=transient API failure.
-  # Only act on 0 — treating 2 as "missing" would cascade-delete prod
-  # sources on a flaky kubectl/RBAC blip.
-  local _missing_rc
-  valsec_secret_missing_p "${name}"
-  _missing_rc=$?
-  case ${_missing_rc} in
-    0)
-      if ! reconcile_cascade_delete "${name}"; then
-        return 1
-      fi
-      # Only an actual removal is a change; an uninstalled descriptor (no
-      # Secret, no Airbyte/Argo resources) is a skip — otherwise every
-      # not-configured connector inflates the changed-count each tick.
-      if [[ "${_RECONCILE_CASCADE_REMOVED:-0}" -eq 1 ]]; then
-        _RECONCILE_CHANGED=$((_RECONCILE_CHANGED + 1))
-      else
-        _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
-      fi
-      return 0
-      ;;
-    2)
-      log_line WARN "${name}: secret lookup failed (transient API error) — skipping this run, will retry next tick"
+  # No Secret names this descriptor -> cascade-delete chain (per ADR-0007 /
+  # KEY DECISION #7). One read of the Secrets decided it for every connector at
+  # once, so this cannot be the connector the API happened not to answer about
+  # — a failed read stopped the tick before the loop began.
+  if [[ -z "${secret_name}" ]]; then
+    if ! reconcile_cascade_delete "${name}"; then
+      return 1
+    fi
+    # Only an actual removal is a change; an uninstalled descriptor (no
+    # Secret, no Airbyte/Argo resources) is a skip — otherwise every
+    # not-configured connector inflates the changed-count each tick.
+    if [[ "${_RECONCILE_CASCADE_REMOVED:-0}" -eq 1 ]]; then
+      _RECONCILE_CHANGED=$((_RECONCILE_CHANGED + 1))
+    else
       _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
-      return 0
-      ;;
-  esac
-  # rc=1 → secret exists, fall through to layer reconciliation.
+    fi
+    return 0
+  fi
 
   # Invalid Secret -> WARN + skip (per ADR-0007 / KEY DECISION #7).
   local missing_field=""
-  if ! missing_field="$(valsec_check_secret "${name}" "${INSIGHT_NAMESPACE}" "${connector_dir}" 2>/dev/null)"; then
-    log_line WARN "${name}: required field \"${missing_field:-unknown}\" missing in Secret — skipping"
+  if ! missing_field="$(valsec_check_secret "${name}" "${INSIGHT_NAMESPACE}" "${connector_dir}" "${secret_name}" 2>/dev/null)"; then
+    log_line WARN "${name}/${source_id_label}: required field \"${missing_field:-unknown}\" missing in Secret — skipping"
     _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
     return 0
   fi
 
-  local secret_name
-  if ! secret_name="$(disc_match_descriptor_to_secret "${name}")"; then
-    reconcile__log WARN "${name}" "no Secret found in Kubernetes for this connector — skipping"
-    _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
-    return 0
-  fi
-
-  local cfg_hash secret_data_json
-  cfg_hash="$(disc_compute_cfg_hash "${secret_name}")"
+  local secret_data_json
   secret_data_json="$(kubectl -n "${INSIGHT_NAMESPACE}" get secret "${secret_name}" \
     -o json 2>/dev/null \
     | python3 "${_RECONCILE_PY_DIR}/extract_secret_data.py")"
@@ -1303,10 +1295,6 @@ _reconcile_one_connector() {
 
   # Layer 2 — source
   local tenant_id="${INSIGHT_TENANT_ID:-}"
-  local source_id_label
-  source_id_label="$(kubectl -n "${INSIGHT_NAMESPACE}" get secret "${secret_name}" \
-    -o jsonpath='{.metadata.annotations.insight\.cyberfabric\.com/source-id}' 2>/dev/null || true)"
-  [[ -n "${source_id_label}" ]] || source_id_label="main"
   local expected_source_name="${name}-${source_id_label}-${tenant_id}"
 
   # Fields the platform owns rather than the tenant. The K8s Secret carries
@@ -1338,8 +1326,6 @@ _reconcile_one_connector() {
   # descriptor.connection.namespace — no bronze_<slug> fallback. Missing/empty
   # → WARN + skip (a hyphenated slug would otherwise create a mismatched DB,
   # e.g. bronze_bitbucket-cloud vs the descriptor's bronze_bitbucket_cloud).
-  local ns_format
-  ns_format="$(python3 "${_RECONCILE_PY_DIR}/parse_descriptor.py" --descriptor "${connector_dir}/descriptor.yaml" --field connection.namespace 2>/dev/null)"
   if [[ -z "${ns_format}" ]]; then
     reconcile__log WARN "${name}" "descriptor connection.namespace is missing/empty — skipping connector (no bronze_<slug> fallback). Set connection.namespace in ${connector_dir}/descriptor.yaml."
     _RECONCILE_FAILED=$((_RECONCILE_FAILED + 1))
@@ -1432,8 +1418,8 @@ _reconcile_one_connector() {
 
   # CronWorkflow apply (idempotent — kubectl apply no-op when YAML unchanged).
   local conn_name schedule tenant
-  conn_name="$(reconcile_compute_connection_name "${name}")"
-  schedule="$(reconcile_compute_schedule "${name}")"
+  conn_name="$(reconcile_compute_connection_name "${name}" "${source_id_label}")"
+  schedule="$(reconcile_compute_schedule "${name}" "${secret_name}")"
   tenant="$(reconcile_compute_tenant "${name}")"
   if [[ "${RECONCILE_DRY_RUN:-0}" -eq 1 ]]; then  # RULE-DEFAULTS-OK: feature flag — OFF when caller doesn't opt in
     log_line INFO "${name}: would create/update Argo CronWorkflow"
@@ -1480,11 +1466,61 @@ _reconcile_one_connector() {
   return "${rc}"
 }
 
+# ---------------------------------------------------------------------------
+# reconcile_prune_removed_instances <plan_tsv> [opt_connector] [opt_source_id]
+# One connector configured twice loses one Secret: that instance's source and
+# schedule go, and its sibling keeps running. Neither of the existing removal
+# paths covers it — the cascade fires only when a connector has NO Secret, and
+# the orphan GC only when the connector itself is unknown.
+# ---------------------------------------------------------------------------
+reconcile_prune_removed_instances() {
+  local plan_tsv="$1" opt_connector="${2:-}" opt_source_id="${3:-}"
+
+  if [[ "${RECONCILE_NO_GC:-0}" -eq 1 ]]; then  # RULE-DEFAULTS-OK: feature flag — OFF when caller doesn't opt in
+    reconcile__log INFO "prune" "skipped (--no-gc set)"
+    return 0
+  fi
+  # INVARIANT: never against a plan narrowed to one instance. This pass asks
+  # which of a connector's sources the plan no longer holds, and a plan holding
+  # one instance answers that every sibling has been removed.
+  if [[ -n "${opt_source_id}" ]]; then
+    reconcile__log INFO "prune" "skipped (--source-id narrows the plan to one instance)"
+    return 0
+  fi
+
+  local tenant="${INSIGHT_TENANT_ID:-}"
+  local workspace_id sources_json plan_file
+  workspace_id="$(ab_workspace_id)" || return 0
+  sources_json="$(ab_list_sources "${workspace_id}")" || return 0
+  plan_file="$(mktemp -t insight-plan.XXXXXX)" || return 0
+  printf '%s\n' "${plan_tsv}" > "${plan_file}"
+
+  local airbyte_source_id connector instance
+  while IFS=$'\t' read -r airbyte_source_id connector instance; do
+    [[ -n "${airbyte_source_id}" ]] || continue
+    if [[ "${RECONCILE_DRY_RUN:-0}" -eq 1 ]]; then  # RULE-DEFAULTS-OK: feature flag — OFF when caller doesn't opt in
+      reconcile__log CHANGE "${connector}" \
+        "would remove instance ${instance}: no Secret names it and its siblings are still configured"
+      continue
+    fi
+    ab_delete_source "${airbyte_source_id}" >/dev/null 2>&1 || true
+    argo_delete_instance_cronworkflow "${connector}" "${tenant}" "${instance}" >/dev/null 2>&1 || true
+    reconcile__log CHANGE "${connector}" \
+      "removed instance ${instance}: no Secret names it and its siblings are still configured"
+    _RECONCILE_CHANGED=$((_RECONCILE_CHANGED + 1))
+  done < <(printf '%s' "${sources_json}" \
+    | python3 "${_RECONCILE_PY_DIR}/find_removed_instances.py" \
+        "${plan_file}" "${tenant}" "${opt_connector}" 2>/dev/null || true)
+
+  rm -f "${plan_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
+}
+
 reconcile_run() {
   local opt_dry_run="${1:-0}"
   local opt_no_sync_trigger="${2:-0}"
   local opt_no_gc="${3:-0}"
   local opt_connector="${4:-}"
+  local opt_source_id="${5:-}"
 
   [[ "${opt_dry_run}" -eq 1 ]] && export RECONCILE_DRY_RUN=1
   [[ "${opt_no_gc}" -eq 1 ]]   && export RECONCILE_NO_GC=1
@@ -1496,32 +1532,50 @@ reconcile_run() {
 
   log_init
 
-  local descriptors_tsv
-  descriptors_tsv="$(disc_load_descriptors)"
+  # INVARIANT: the desired state is read once, and a read that failed stops the
+  # tick. Every destructive path below is driven by "this instance is not in the
+  # plan", so a plan that is short because the API blinked would delete live
+  # sources — and a plan that is short because two Secrets claim one instance
+  # would delete whichever of them lost the race.
+  local plan_tsv
+  if ! plan_tsv="$(disc_load_instances)"; then
+    log_line ERROR "cannot read the connector Secrets; reconciling nothing this tick"
+    log_run_summary "${_RECONCILE_CHANGED}" 1
+    log_close
+    return 2
+  fi
 
   # NOTE: `IFS=$'\t' read` is WRONG for this TSV. TAB is IFS-whitespace, so bash
   # COALESCES runs of tabs into a single delimiter and trims leading/trailing ones
   # — i.e. empty fields silently disappear and every later column shifts left.
-  # The descriptor TSV has empty fields by design (cdk_image is empty for every
-  # nocode connector; enrich_image is empty for all but jira), so a row like
-  #   jira\t<dir>\t<ver>\tnocode\t<EMPTY cdk>\t<enrich>\t<dbt_select>
+  # The plan has empty fields by design (cdk_image is empty for every nocode
+  # connector; enrich_image is empty for all but jira; the three instance
+  # columns are empty for a connector no Secret names), so a row like
+  #   jira\t<dir>\t<ver>\tnocode\t<EMPTY cdk>\t<enrich>\t<dbt_select>\t...
   # would parse as cdk_image=<enrich>, enrich_image=<dbt_select>, dbt_select=''.
   # That mis-feeds argo_apply_cronworkflow (enrich image := dbt selector) and
   # bricks the jira enrich step. Re-delimit on US (\037, non-whitespace → no
   # coalescing) so empty fields are preserved. Process substitution (not a pipe)
   # keeps the loop in the current shell so _RECONCILE_* counters persist.
-  while IFS=$'\037' read -r name connector_dir version type cdk_image enrich_image dbt_select; do
+  local name connector_dir version type cdk_image enrich_image dbt_select ns_format
+  local source_id secret_name cfg_hash
+  while IFS=$'\037' read -r name connector_dir version type cdk_image enrich_image dbt_select \
+        ns_format source_id secret_name cfg_hash; do
     [[ -n "${name}" ]] || continue
     if ! _reconcile_one_connector "${name}" "${connector_dir}" "${version}" "${type}" "${cdk_image}" "${enrich_image}" "${dbt_select}" \
-         "${opt_dry_run}" "${opt_no_sync_trigger}" "${opt_connector}"; then
+         "${ns_format}" "${source_id}" "${secret_name}" "${cfg_hash}" \
+         "${opt_dry_run}" "${opt_no_sync_trigger}" "${opt_connector}" "${opt_source_id}"; then
       log_line ERROR "${name}: reconcile failed (continuing with next)"
       _RECONCILE_FAILED=$((_RECONCILE_FAILED + 1))
     fi
-  done < <(printf '%s\n' "${descriptors_tsv}" | tr '\t' '\037')
+  done < <(printf '%s\n' "${plan_tsv}" | tr '\t' '\037')
   # shellcheck disable=SC2034
   : "${connector_dir:=}"  # silence unused-variable warning when no descriptors
 
-  # Layer 4 — GC (skipped when --no-gc).
+  # Layer 4a — instances whose Secret is gone while their siblings' remain.
+  reconcile_prune_removed_instances "${plan_tsv}" "${opt_connector}" "${opt_source_id}"
+
+  # Layer 4b — GC (skipped when --no-gc).
   reconcile_gc_orphans
 
   # Layer 5 — record what the mover says about every sync. Deliberately last

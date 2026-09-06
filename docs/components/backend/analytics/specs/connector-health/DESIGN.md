@@ -196,6 +196,8 @@ column the reader and the writer will disagree about.
 | `tick_id` | the tick that recorded it | the tick | the tick |
 | `job_id` | the mover's job identity | empty | empty |
 | `connector` | the synced connector | the member connector | empty |
+| `tenant_id` | the instance's tenant | the instance's tenant | empty |
+| `source_id` | the instance's source id | the instance's source id | empty |
 | `status` | the mapped outcome | empty | empty |
 | `started_at` | the job's own start, else its first attempt's; NULL if not started | NULL | NULL |
 | `job_updated_at` | always present | NULL | NULL |
@@ -212,8 +214,24 @@ out-of-range one — it clamps a `DateTime64` and wraps a `UInt64`. A year-1000 
 what the mover reported. A stamp or a count the column cannot hold is therefore treated as
 absent, and a job carrying no usable moment at all is not recorded.
 
-**Resolution.** The summary takes, per connector, the newest `sync.completed` by the mover's
-own last-update stamp for the job; the configured set is the membership of the newest *sealed*
+**The unit is the connector instance, not the connector.** One connector can be configured
+more than once — a second Secret naming its own source id, reading a different account of the
+same vendor — so its name identifies the software, not the thing that synced. Every read
+therefore keys on `(connector, tenant_id, source_id)`. Keyed on the name alone, two instances
+resolve to a single newest sync and whichever ran last stands for the pair, so a failing
+instance reads as healthy because its sibling succeeded.
+
+Rows recorded before the ledger carried the identity hold it empty. The reconcile sweep fills
+those in from the instance the install actually has, and only where one instance can be shown
+to own them: a connector this install configures exactly once owns every row under its name,
+while a connector configured twice, or no longer configured at all, keeps the empty identity.
+Neither case is guessable after the fact — the connection that separated two instances' jobs
+is not in the rows, and a removed connector's Secret is gone while its history remains — and a
+guess written here would read as a recorded fact ever after.
+
+**Resolution.** The summary takes, per connector instance, the newest `sync.completed` by the
+mover's own last-update stamp for the job; the configured set is the membership of the newest
+*sealed*
 tick. Sealing
 matters: without keying on the marker, a snapshot still being written would read as the whole
 set, and a connector removed a moment ago would come back for one tick.
@@ -404,6 +422,8 @@ design.
   "connectors": [
     {
       "connector": "example-tracker",
+      "tenant_id": "example-tenant",
+      "source_id": "example-tracker-main",
       "configured": true,
       "last_sync": {
         "job_id": "8412",
@@ -418,11 +438,17 @@ design.
 ```
 
 `GET /v1/connector-health/{connector}/syncs` — one connector's recent syncs, newest first,
-bounded:
+bounded. `tenant_id` and `source_id` are optional query parameters that narrow the window to
+one installation; both or neither, because a source id is unique only within a tenant, and
+half an identity is refused rather than widened back to every installation. The pair is echoed
+in the answer, so a caller can tell a window about one installation from a window about all of
+them:
 
 ```json
 {
   "connector": "example-tracker",
+  "tenant_id": "example-tenant",
+  "source_id": "example-tracker-main",
   "window": 50,
   "syncs": [
     {

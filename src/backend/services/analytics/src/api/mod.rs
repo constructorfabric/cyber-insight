@@ -241,6 +241,20 @@ pub(crate) fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) ->
         .authenticated()
         .no_license_required()
         .path_param("connector", "Connector name, as the descriptors spell it")
+        .query_param_typed(
+            "tenant_id",
+            false,
+            "Tenant of one installation of the connector. Required alongside \
+             source_id; omit both to span every installation",
+            "string",
+        )
+        .query_param_typed(
+            "source_id",
+            false,
+            "Source id of one installation, as its Secret annotates it. \
+             Required alongside tenant_id",
+            "string",
+        )
         .json_response_with_schema::<connector_health_domain::SyncHistoryResponse>(
             openapi,
             StatusCode::OK,

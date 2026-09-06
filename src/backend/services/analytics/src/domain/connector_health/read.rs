@@ -9,7 +9,8 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-use super::model::{ConnectorSummary, LastSync, LedgerFacts, SyncStatus};
+use super::model::{ConnectorSummary, InstanceKey, LastSync, LedgerFacts, SyncStatus};
+use super::name::{SourceId, TenantId};
 
 /// DDL owned by `scripts/migrations/20260827000000_connector-sync-history.sql`;
 /// the query-path role holds `SELECT` here and nothing that writes.
@@ -126,7 +127,15 @@ const UNPACK_WINNER: &str = "winner.1 AS resolved_job_id, \
      winner.4 AS resolved_job_updated_at, winner.5 AS resolved_duration_ms, \
      winner.6 AS resolved_records_reported";
 
-/// The newest sync per connector.
+/// The columns that identify one installation of a connector.
+///
+/// INVARIANT: the summary groups by all three. Grouping by the name alone
+/// resolves two instances of one connector to a single newest sync, so the one
+/// that synced last stands for the pair and the other disappears — including
+/// when the one that disappeared is the one that is failing.
+const INSTANCE_COLUMNS: &str = "connector, tenant_id, source_id";
+
+/// The newest sync per connector instance.
 ///
 /// An aggregate, not a sort. Sorting the relation by a column outside its sort
 /// key reads and orders the whole retention window to answer with one row per
@@ -134,12 +143,12 @@ const UNPACK_WINNER: &str = "winner.1 AS resolved_job_id, \
 /// digits, and the service caps its own query memory.
 static LAST_SYNC_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT connector, {UNPACK_WINNER} \
-         FROM (SELECT connector, argMax(tuple({SYNC_COLUMNS}), ord) AS winner \
-               FROM (SELECT connector, {SYNC_COLUMNS}, {order} AS ord \
+        "SELECT {INSTANCE_COLUMNS}, {UNPACK_WINNER} \
+         FROM (SELECT {INSTANCE_COLUMNS}, argMax(tuple({SYNC_COLUMNS}), ord) AS winner \
+               FROM (SELECT {INSTANCE_COLUMNS}, {SYNC_COLUMNS}, {order} AS ord \
                      FROM {TABLE} WHERE event = '{SYNC_COMPLETED}') \
-               GROUP BY connector \
-               ORDER BY connector LIMIT ?)",
+               GROUP BY {INSTANCE_COLUMNS} \
+               ORDER BY {INSTANCE_COLUMNS} LIMIT ?)",
         order = &*ROW_ORDER
     )
 });
@@ -147,7 +156,7 @@ static LAST_SYNC_SQL: LazyLock<String> = LazyLock::new(|| {
 /// The set the controller managed on one sealed tick.
 static CONFIGURED_SET_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT DISTINCT connector FROM {TABLE} \
+        "SELECT DISTINCT {INSTANCE_COLUMNS} FROM {TABLE} \
          WHERE event = '{CONNECTOR_CONFIGURED}' AND tick_id = ?"
     )
 });
@@ -156,19 +165,29 @@ static CONFIGURED_SET_SQL: LazyLock<String> = LazyLock::new(|| {
 ///
 /// Narrowed by the sort key's first two columns before anything is grouped, so
 /// the aggregate sees one connector's rows rather than the whole relation.
-static SYNC_HISTORY_SQL: LazyLock<String> = LazyLock::new(|| {
+static SYNC_HISTORY_SQL: LazyLock<String> = LazyLock::new(|| sync_history(""));
+
+/// The same window, narrowed to one installation of that connector.
+///
+/// A second statement rather than one predicate switching on a sentinel value:
+/// they differ by a clause, and a statement assembled per request is one the
+/// guards below cannot read.
+static INSTANCE_HISTORY_SQL: LazyLock<String> =
+    LazyLock::new(|| sync_history(" AND tenant_id = ? AND source_id = ?"));
+
+fn sync_history(scope: &str) -> String {
     format!(
         "SELECT {UNPACK_WINNER} \
          FROM (SELECT argMax(tuple({SYNC_COLUMNS}), ord) AS winner, \
                       max(ord) AS newest \
                FROM (SELECT {SYNC_COLUMNS}, {order} AS ord \
                      FROM {TABLE} \
-                     WHERE event = '{SYNC_COMPLETED}' AND connector = ?) \
+                     WHERE event = '{SYNC_COMPLETED}' AND connector = ?{scope}) \
                GROUP BY job_id) \
          ORDER BY newest DESC LIMIT ?",
         order = &*ROW_ORDER
     )
-});
+}
 
 /// `UNKNOWN_TABLE` and `UNKNOWN_DATABASE`. The ledger is absent on an install
 /// whose migration has not run and on a stand where nothing records, and the
@@ -207,6 +226,8 @@ struct IntervalRow {
 #[derive(Debug, Deserialize, clickhouse::Row)]
 struct SyncRow {
     connector: String,
+    tenant_id: String,
+    source_id: String,
     #[serde(rename = "resolved_job_id")]
     job_id: String,
     #[serde(rename = "resolved_status")]
@@ -252,6 +273,18 @@ struct HistoryRow {
 #[derive(Debug, Deserialize, clickhouse::Row)]
 struct ConnectorRow {
     connector: String,
+    tenant_id: String,
+    source_id: String,
+}
+
+impl ConnectorRow {
+    fn into_key(self) -> InstanceKey {
+        InstanceKey {
+            connector: self.connector,
+            tenant_id: self.tenant_id,
+            source_id: self.source_id,
+        }
+    }
 }
 
 pub(crate) async fn read_health(
@@ -306,7 +339,7 @@ pub(crate) async fn read_health(
 async fn configured_set(
     ch: &insight_clickhouse::Client,
     tick_id: Option<&str>,
-) -> Result<HashSet<String>, clickhouse::error::Error> {
+) -> Result<HashSet<InstanceKey>, clickhouse::error::Error> {
     let Some(tick_id) = tick_id else {
         return Ok(HashSet::new());
     };
@@ -315,20 +348,28 @@ async fn configured_set(
         .bind(tick_id)
         .fetch_all::<ConnectorRow>()
         .await?;
-    Ok(rows.into_iter().map(|row| row.connector).collect())
+    Ok(rows.into_iter().map(ConnectorRow::into_key).collect())
 }
 
+/// One connector's window, or one installation's.
+///
+/// `scope` absent spans every instance under the name, which is what a caller
+/// naming only the connector asked for — and what an install with one instance
+/// of it gets either way.
 pub(crate) async fn read_syncs(
     ch: &insight_clickhouse::Client,
     connector: &str,
+    scope: Option<&(TenantId, SourceId)>,
 ) -> Result<Vec<LastSync>, clickhouse::error::Error> {
-    let rows = match ch
-        .query(&SYNC_HISTORY_SQL)
-        .bind(connector)
-        .bind(HISTORY_WINDOW)
-        .fetch_all::<HistoryRow>()
-        .await
-    {
+    let query = match scope {
+        Some((tenant_id, source_id)) => ch
+            .query(&INSTANCE_HISTORY_SQL)
+            .bind(connector)
+            .bind(tenant_id.as_str())
+            .bind(source_id.as_str()),
+        None => ch.query(&SYNC_HISTORY_SQL).bind(connector),
+    };
+    let rows = match query.bind(HISTORY_WINDOW).fetch_all::<HistoryRow>().await {
         Ok(rows) => rows,
         Err(error) if absent_ledger(&error) => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -354,10 +395,10 @@ impl HistoryRow {
 /// A connector that was never configured and never synced appears in neither,
 /// so it cannot be listed — the reader may read this one relation and nothing
 /// else, and no record of such a connector exists in it.
-fn merge(syncs: Vec<SyncRow>, configured: &HashSet<String>) -> Vec<ConnectorSummary> {
-    let mut by_connector: HashMap<String, Option<LastSync>> = configured
+fn merge(syncs: Vec<SyncRow>, configured: &HashSet<InstanceKey>) -> Vec<ConnectorSummary> {
+    let mut by_instance: HashMap<InstanceKey, Option<LastSync>> = configured
         .iter()
-        .map(|connector| (connector.clone(), None))
+        .map(|instance| (instance.clone(), None))
         .collect();
 
     for row in syncs {
@@ -369,14 +410,19 @@ fn merge(syncs: Vec<SyncRow>, configured: &HashSet<String>) -> Vec<ConnectorSumm
             duration_ms: row.duration_ms,
             records_reported: row.records_reported,
         };
-        by_connector.insert(row.connector, Some(sync));
+        let key = InstanceKey {
+            connector: row.connector,
+            tenant_id: row.tenant_id,
+            source_id: row.source_id,
+        };
+        by_instance.insert(key, Some(sync));
     }
 
-    let mut summaries: Vec<ConnectorSummary> = by_connector
+    let mut summaries: Vec<ConnectorSummary> = by_instance
         .into_iter()
-        .map(|(connector, last_sync)| ConnectorSummary {
-            configured: configured.contains(&connector),
-            connector,
+        .map(|(instance, last_sync)| ConnectorSummary {
+            configured: configured.contains(&instance),
+            instance,
             last_sync,
         })
         .collect();
@@ -405,13 +451,14 @@ mod guards {
 
     /// Every SQL statement this module issues, so a new one joins the guards
     /// automatically rather than being remembered into them.
-    fn statements() -> [(&'static str, &'static str); 5] {
+    fn statements() -> [(&'static str, &'static str); 6] {
         [
             ("SEALED_TICK_SQL", SEALED_TICK_SQL.as_str()),
             ("READ_INTERVAL_SQL", READ_INTERVAL_SQL.as_str()),
             ("LAST_SYNC_SQL", LAST_SYNC_SQL.as_str()),
             ("CONFIGURED_SET_SQL", CONFIGURED_SET_SQL.as_str()),
             ("SYNC_HISTORY_SQL", SYNC_HISTORY_SQL.as_str()),
+            ("INSTANCE_HISTORY_SQL", INSTANCE_HISTORY_SQL.as_str()),
         ]
     }
 
@@ -447,13 +494,53 @@ mod guards {
     #[test]
     fn the_column_list_comes_from_the_migration() {
         let columns = ledger_columns();
-        for expected in ["event_id", "ts", "tick_id", "job_id", "connector", "event"] {
+        for expected in [
+            "event_id",
+            "ts",
+            "tick_id",
+            "job_id",
+            "connector",
+            "tenant_id",
+            "source_id",
+            "event",
+        ] {
             assert!(
                 columns.iter().any(|c| c == expected),
                 "missing {expected}: {columns:?}"
             );
         }
-        assert_eq!(columns.len(), 11, "{columns:?}");
+        assert_eq!(columns.len(), 13, "{columns:?}");
+    }
+
+    /// The summary answers one row per instance, so every one of the three
+    /// columns that identify one has to be in the grouping. Two instances
+    /// grouped by fewer resolve to a single newest sync between them.
+    #[test]
+    fn the_summary_groups_by_the_whole_identity() {
+        let sql = normalised(&LAST_SYNC_SQL);
+        assert!(
+            sql.contains("group by connector, tenant_id, source_id"),
+            "{sql}"
+        );
+        let configured = normalised(&CONFIGURED_SET_SQL);
+        assert!(
+            configured.contains("distinct connector, tenant_id, source_id"),
+            "{configured}"
+        );
+    }
+
+    /// One half cannot narrow a window: a source id is unique within a tenant,
+    /// so a statement filtering on one of them would serve another tenant's
+    /// instance under the same source id.
+    #[test]
+    fn a_scoped_window_filters_on_both_halves_of_the_identity() {
+        let sql = normalised(&INSTANCE_HISTORY_SQL);
+        assert!(sql.contains("tenant_id = ?"), "{sql}");
+        assert!(sql.contains("source_id = ?"), "{sql}");
+        assert!(
+            !normalised(&SYNC_HISTORY_SQL).contains("tenant_id = ?"),
+            "the unscoped window must span every instance under the name"
+        );
     }
 
     /// An alias that repeats a column name shadows that column for every other
