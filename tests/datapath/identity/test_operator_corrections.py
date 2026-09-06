@@ -5,6 +5,10 @@ person for each. The admin operator then confirms, detaches, excludes, merges an
 re-points those bindings; the module proves what each verb appended to the journal,
 what the read surfaces report about it, and that the next seed run keeps the
 operator's answer.
+
+The review queue itself is not this lane's: on an instance seeded with identity alone
+nothing is queued, so an assertion here could only pass vacuously. Its contract lives in
+`tests/stand/api/identity/test_resolution.py`, against a stand whose roster fills it.
 """
 
 from __future__ import annotations
@@ -25,6 +29,10 @@ from insight_stand.api import ApiClient, ApiResponse, JsonValue, identity_path
 from insight_stand.personas import PersonaSession
 from insight_stand.scratch_identity import SCRATCH_SOURCE_ID, SCRATCH_SOURCE_TYPE, scratch_name
 
+#: The toolkit stamps every refusal with this scheme; tests assert the prefix, not the id.
+ERROR_TYPE_PREFIX = "gts://"
+PROBLEM_CONTENT_TYPE = "application/problem+json"
+
 pytestmark = pytest.mark.fixture
 
 ROSTER_SOURCE_TYPE = "bamboohr"
@@ -34,7 +42,6 @@ BIND = identity_path("/v1/resolution/bind")
 MERGE = identity_path("/v1/resolution/merge")
 DETACH = identity_path("/v1/resolution/detach")
 EXCLUDE = identity_path("/v1/resolution/exclude")
-ATTENTION = identity_path("/v1/resolution/attention")
 BY_EXTERNAL_ID = "/internal/persons/by-external-id"
 
 MODULE_TAG = uuid.uuid4().hex[:10]
@@ -122,12 +129,22 @@ def _applied(response: ApiResponse, what: str) -> Body:
 
 
 def _problem(response: ApiResponse, status: int) -> None:
+    """A refusal is an RFC-9457 document, media type included.
+
+    A body that parses as a problem document but arrives as `application/json` is not
+    one: a client selecting on the media type would read it as a success payload.
+    """
     assert response.status_code == status, f"{response.status_code} {response.text[:300]}"
+    assert response.content_type.startswith(PROBLEM_CONTENT_TYPE), (
+        f"refusal arrived as {response.content_type!r}, not {PROBLEM_CONTENT_TYPE!r}"
+    )
 
     body = _object(response, f"problem {status}")
     title = body.get("title")
     assert body.get("status") == status, body
+    assert str(body.get("type", "")).startswith(ERROR_TYPE_PREFIX), body
     assert isinstance(title, str) and title.strip(), body
+    assert "detail" in body, body
 
 
 def _entries(value: JsonValue, what: str) -> list[Body]:
@@ -290,16 +307,6 @@ def test_an_excluded_account_no_longer_resolves_at_login(
     _problem(gone, 404)
 
 
-def test_the_queue_honours_the_limit_without_narrowing_the_rates(operator: ApiClient) -> None:
-    """`limit` truncates the items an operator is handed; the rates describe every observed
-    account either way."""
-    full = _applied(operator.get(ATTENTION), "attention")
-    capped = _applied(operator.get(ATTENTION, params={"limit": 1}), "attention?limit=1")
-
-    assert len(_entries(capped["items"], "items")) <= 1, capped["items"]
-    assert capped["rates"] == full["rates"], "the rates are not a page of the queue"
-
-
 def test_merge_moves_every_account_of_the_absorbed_person(
     operator: ApiClient, instance_cfg: InstanceConfig, tenant: str, people: People, run_tag: str
 ) -> None:
@@ -334,12 +341,11 @@ def test_merge_moves_every_account_of_the_absorbed_person(
         assert after[1:] == before[account["id"]], f"{account['id']}: the merge rewrote its history"
 
 
-def test_bind_refuses_a_person_the_tenant_never_had(operator: ApiClient, run_tag: str) -> None:
+def test_bind_refuses_a_person_the_tenant_never_had(operator: ApiClient, people: People) -> None:
     """A correction may not invent its target: binding to an unknown person is refused, not
-    recorded."""
-    response = _bind(
-        operator, _scratch(f"stranger-{run_tag}"), str(uuid.uuid4()), "datapath: unknown person"
-    )
+    recorded. The account is one the tenant has observed, so the person is the only
+    unknown in the call."""
+    response = _bind(operator, people.a.account, str(uuid.uuid4()), "datapath: unknown person")
 
     _problem(response, 404)
 

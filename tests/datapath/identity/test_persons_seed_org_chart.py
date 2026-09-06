@@ -24,6 +24,10 @@ from insight_stand.api import ApiClient, JsonValue, identity_path
 from insight_stand.personas import PersonaSession
 from insight_stand.scratch_identity import scratch_name
 
+#: Exit statuses that mean the seed ran and the run itself failed. A lock (2) or an
+#: input guard (3) refused before it started, and says so in its own words.
+_SEED_RAN_AND_FAILED = frozenset({1})
+
 pytestmark = pytest.mark.fixture
 
 EMPLOYEES = "bronze_bamboohr.employees"
@@ -245,6 +249,10 @@ def test_a_circular_manager_chain_terminates_and_stays_bounded(
     try:
         subjects.publish()
     except SubjectError as exc:
+        # Only the generic failure is the outcome this test is about; a lock or an
+        # input guard is its own problem and keeps its own message.
+        if exc.returncode not in _SEED_RAN_AND_FAILED:
+            raise
         pytest.fail(f"persons-seed must terminate on a cyclic manager chain: {exc}")
     ids = _persons_of(subjects, rows)
     person_a, person_b = ids[a_email], ids[b_email]

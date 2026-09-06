@@ -31,8 +31,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: Every spec's people are grafted beneath this persona, who then asks for their metrics.
 CALLER_FIXTURE = "dev_lead"
 
-DEFAULT_TENANT = "00000000-df51-5b42-9538-d2b56b7ee953"
-
 
 def _env_file() -> Path:
     return Path(os.environ.get("INSIGHT_STAND_ENV_FILE", ".env.compose.test-stand"))
@@ -148,11 +146,12 @@ def enrich_runner(instance_cfg: InstanceConfig) -> EnrichRunner:
 
 
 @pytest.fixture(scope="session")
-def subjects(instance_cfg: InstanceConfig) -> Subjects:
+def subjects(instance_cfg: InstanceConfig, tenant: str) -> Subjects:
+    """persons-seed mints under the tenant the assertions read, or it mints out of sight."""
     return Subjects(
         instance_cfg,
         repo_root=REPO_ROOT,
         project=_instance_name(),
         env_file=_env_file(),
-        tenant_id=os.environ.get("TENANT_DEFAULT_ID", DEFAULT_TENANT),
+        tenant_id=tenant,
     )

@@ -31,7 +31,16 @@ _REFUSED_BY_AN_INPUT_GUARD = 3
 
 
 class SubjectError(RuntimeError):
-    """The product declined to mint this spec's people, or never resolved them."""
+    """The product declined to mint this spec's people, or never resolved them.
+
+    `returncode` is the seed run's own exit status where there was one, so a caller can
+    tell a lock or an input guard from the run it was waiting on. `None` when the failure
+    was not a seed run at all.
+    """
+
+    def __init__(self, message: str, *, returncode: int | None = None) -> None:
+        super().__init__(message)
+        self.returncode = returncode
 
 
 class Subjects:
@@ -93,7 +102,8 @@ class Subjects:
         }.get(result.returncode, "the run failed")
         raise SubjectError(
             f"persons-seed exited {result.returncode}: {reason}\n"
-            f"stdout tail:\n{result.stdout[-1500:]}\nstderr tail:\n{result.stderr[-1500:]}"
+            f"stdout tail:\n{result.stdout[-1500:]}\nstderr tail:\n{result.stderr[-1500:]}",
+            returncode=result.returncode,
         )
 
     def person_ids_of_records(self, records: Sequence[dict[str, Any]]) -> dict[str, str]:
