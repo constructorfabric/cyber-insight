@@ -23,7 +23,11 @@ data:
 
     logging:
       default:
-        console_level: info
+        # The install-wide knobs: global.observability.logs.{level,format} —
+        # the same values the platform CM publishes as INSIGHT_LOG_LEVEL /
+        # INSIGHT_LOG_FORMAT.
+        console_level: {{ ((((.Values.global).observability).logs).level) | default "info" }}
+        console_format: {{ ((((.Values.global).observability).logs).format) | default "json" }}
 
     opentelemetry:
       resource:
@@ -140,6 +144,8 @@ data:
       analytics:
         config:
           visibility_policy: {{ .Values.visibilityPolicy | default "org_chart" | quote }}
+          sql_api:
+            enabled: {{ .Values.global.sqlApi.enabled }}
           mcp:
             enabled: {{ .Values.global.mcp.enabled }}
             bind_addr: "0.0.0.0:{{ .Values.mcp.port }}"
