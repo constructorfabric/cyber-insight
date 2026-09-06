@@ -1899,7 +1899,7 @@ TEST_STAND_SERVICE_PROBES=(
 test_stand_wait_services() {
   local elapsed=0 probe name var port pending=() kc_port
 
-  echo "=== Readiness gate: waiting for ${#TEST_STAND_SERVICE_PROBES[@]} services to answer /health ==="
+  echo "=== Readiness gate: waiting for $(( ${#TEST_STAND_SERVICE_PROBES[@]} + 1 )) services ==="
   while [[ "$elapsed" -lt "$TEST_STAND_READY_TIMEOUT" ]]; do
     pending=()
     for probe in "${TEST_STAND_SERVICE_PROBES[@]}"; do
