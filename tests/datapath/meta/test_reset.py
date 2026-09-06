@@ -7,10 +7,14 @@ import re
 from pathlib import Path
 
 import pytest
+from insight_datapath import clickhouse as ch
+from insight_datapath.instance import InstanceConfig
 from insight_datapath.reset import (
     SEED_OWNED,
     SERVICE_OWNED,
     SeededWarehouseError,
+    clear,
+    populated_relations,
     refuse_a_seeded_warehouse,
 )
 
@@ -63,3 +67,30 @@ def test_the_seeder_still_refuses_to_clear_a_relation_it_never_declared() -> Non
     assert re.search(r"if \(schema, table\) not in RESET_TARGETS", source), (
         f"{SEEDER_INSERT}: the seeder no longer gates its truncate on RESET_TARGETS"
     )
+
+
+def test_a_relation_holding_rows_is_found_and_emptied(instance_cfg: InstanceConfig) -> None:
+    """The floor's two halves over a relation of the test's own, so the guard neither
+    depends on what a spec has seeded nor disturbs it.
+
+    `populated_relations` reads `system.parts`, which lists the MergeTree family and no
+    other, and that family is the one ClickHouse truncates.
+    """
+    database, table = "bronze_reset_probe", "rows"
+    ch.execute(instance_cfg, f"CREATE DATABASE IF NOT EXISTS `{database}`")
+    try:
+        ch.execute(
+            instance_cfg,
+            f"CREATE TABLE IF NOT EXISTS `{database}`.`{table}` (id UInt8) "
+            "ENGINE = MergeTree ORDER BY id",
+        )
+        ch.execute(instance_cfg, f"INSERT INTO `{database}`.`{table}` VALUES (1)")
+
+        assert (database, table) in populated_relations(instance_cfg)
+        assert clear(instance_cfg, [(database, table)]) == 1
+
+        assert (database, table) not in populated_relations(instance_cfg)
+        remaining = ch.query(instance_cfg, f"SELECT count() FROM `{database}`.`{table}`")
+        assert remaining[0][0] == 0
+    finally:
+        ch.execute(instance_cfg, f"DROP DATABASE IF EXISTS `{database}`")

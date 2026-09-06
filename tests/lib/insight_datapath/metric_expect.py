@@ -127,6 +127,9 @@ class Row:
     fields: dict[str, Any]
     where: str
     asserted: set[str]
+    #: Books this row's view as covered. Called by every assertion, never by selection,
+    #: so reading a view without checking anything in it earns the gate nothing.
+    record: Callable[[], None] = lambda: None
 
     def __getitem__(self, key: str) -> Any:
         return self.fields[key]
@@ -139,6 +142,7 @@ class Row:
             if not values_equal(got, value):
                 raise ExpectError(f"{self.where}: {name}: expected {value!r}, got {got!r}")
             self.asserted.add(name)
+        self.record()
         return self
 
     def contains(self, **selectors: Any) -> Row:
@@ -149,6 +153,7 @@ class Row:
             ):
                 raise ExpectError(f"{self.where}: {name} contains no match for {selector!r}")
             self.asserted.add(name)
+        self.record()
         return self
 
     def check(self, name: str, predicate: Callable[[Any], bool], describe: str = "") -> Row:
@@ -161,6 +166,7 @@ class Row:
                 f"{self.where}: {name}: {describe or 'predicate'} failed, got {got!r}"
             )
         self.asserted.add(name)
+        self.record()
         return self
 
     def nonempty(self, *names: str) -> Row:
@@ -168,6 +174,7 @@ class Row:
             if not self.fields.get(name):
                 raise ExpectError(f"{self.where}: {name} is empty")
             self.asserted.add(name)
+        self.record()
         return self
 
 
@@ -180,6 +187,7 @@ class MetricResponse:
         self._test_name = test_name
         self._ledger = ledger
         self._touched: dict[tuple[str, str, int], Row] = {}
+        self._asserted: dict[tuple[str, str, int], set[str]] = {}
 
     @property
     def metrics(self) -> list[dict[str, Any]]:
@@ -213,11 +221,17 @@ class MetricResponse:
                 f"{self._test_name}: {key}/{kind}: find {selector} matched {len(found)} rows (expected exactly 1)"
             )
         identity = (key, kind, found[0])
-        if identity not in self._touched:
-            where = f"{self._test_name}: {key}/{kind} {selector}"
-            self._touched[identity] = Row(fields=items[found[0]], where=where, asserted=set())
-        self._ledger.record_assertion(key, kind, self._test_name)
-        return self._touched[identity]
+        # A second selector reaching the same row gets its own Row over the same
+        # `asserted` set, so a failure is reported under the selector that line wrote
+        # while completeness still accumulates across both.
+        row = Row(
+            fields=items[found[0]],
+            where=f"{self._test_name}: {key}/{kind} {selector}",
+            asserted=self._asserted.setdefault(identity, set()),
+            record=self._recorder(key, kind),
+        )
+        self._touched[identity] = row
+        return row
 
     def series(self, key: str) -> list[dict[str, Any]]:
         """The timeseries entries of `key`, counted as an assertion over their points."""
@@ -232,16 +246,26 @@ class MetricResponse:
         return self._whole_view(key, "histogram")
 
     def rows(self, key: str, kind: str) -> list[Row]:
-        """Every row of `key`'s `kind` view, counted as an assertion over the view.
+        """Every row of `key`'s `kind` view, for a rule over the whole list.
 
-        For a rule over the whole list of a period, peer or rollup view; unlike `row`,
-        these rows are not held to the completeness check.
+        Unlike `row`, these are not held to the completeness check, so the view is
+        booked as covered only by an assertion made through one of them.
         """
-        items = self._whole_view(key, kind)
         return [
-            Row(fields=item, where=f"{self._test_name}: {key}/{kind} [{index}]", asserted=set())
-            for index, item in enumerate(items)
+            Row(
+                fields=item,
+                where=f"{self._test_name}: {key}/{kind} [{index}]",
+                asserted=set(),
+                record=self._recorder(key, kind),
+            )
+            for index, item in enumerate(self.items(key, kind))
         ]
+
+    def _recorder(self, key: str, kind: str) -> Callable[[], None]:
+        def book() -> None:
+            self._ledger.record_assertion(key, kind, self._test_name)
+
+        return book
 
     def _whole_view(self, key: str, kind: str) -> list[dict[str, Any]]:
         self._ledger.record_assertion(key, kind, self._test_name)
