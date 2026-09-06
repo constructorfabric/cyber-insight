@@ -132,6 +132,7 @@ def dbt_runner(instance_cfg: InstanceConfig, warehouse_floor: int) -> Iterator[D
     runner.setup()
     runner.build_closure()
     yield runner
+    runner.cleanup()
 
 
 @pytest.fixture(scope="session")

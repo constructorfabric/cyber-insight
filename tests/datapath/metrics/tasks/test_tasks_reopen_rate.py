@@ -50,8 +50,11 @@ def test_tasks_reopen_rate(spec: SpecRun) -> None:
         target_value=80, p25=None, median=None, p75=None, min=None, max=None, n=4
     )
     points = one(r.series("tasks.reopen_rate"), entity_id=ERIN)["points"]
-    assert some(points, value=100.0)
-    assert [point for point in points if point["value"] is None]
+    assert some(points, value=100.0), f"a reopened close rates 100: {points!r}"
+    assert some(points, value=0.0), f"the close never undone rates 0: {points!r}"
+    assert [point for point in points if point["value"] is None], (
+        f"a day with no close carries no rate: {points!r}"
+    )
 
 
 def test_tasks_reopen_rate_empty_window(spec: SpecRun) -> None:

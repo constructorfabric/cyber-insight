@@ -32,10 +32,10 @@ description: >
     erin         250¢          1000¢    25.0 %
 
   Five ceilings, not four: the peer view suppresses its quartiles below five
-  contributing entities. frank holds a seat with no ceiling and is absent from the HR
-  feed, so he is present in ai.extra_usage_cost, absent from
-  ai.extra_usage_utilisation — honest-NULL, not a zero — without joining the cohort
-  the peer pools are drawn from. Cases: custom scope · dedup of a repeated snapshot ·
+  contributing entities. frank holds a seat with no ceiling and an employment record
+  in Quality, so he is present in ai.extra_usage_cost, absent from
+  ai.extra_usage_utilisation — honest-NULL, not a zero — while his department keeps
+  him out of the Engineering cohort the peer pools are drawn from. Cases: custom scope · dedup of a repeated snapshot ·
   the no-ceiling seat · empty window.
 
 bronze:

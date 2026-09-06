@@ -21,7 +21,7 @@ description: >
   do not at the vendor: nothing in either payload says prod_EXAMPLE_STD and
   team_standard are one tier, and the invoice states no tier_label at all.
 
-  Department: 6 Engineering members, plus a seventh seat holder outside the HR feed.
+  Department: 7 Engineering members, one of them a seat the invoice never billed.
   December prices two tiers, so the tier a seat carries decides its fee:
 
     person   seat tier      ceiling   seat cost
@@ -37,7 +37,8 @@ description: >
   assertion pins the aggregation rather than passing on either. heidi sits in the
   department and holds a ceiling, so she reaches the extra-usage metrics and must
   still be absent here — the honest-empty a tier match produces, not a zero. frank
-  is outside the HR feed, so his missing value cannot shrink the peer pool either.
+  carries an employment record too, and his seat names no tier, so he is absent for
+  the same reason and neither of them shrinks the peer pool.
 
   Two lines exist only to be excluded, and both would break the numbers if they were
   not: a Standard-labelled proration line at a different amount, and a Standard-labelled

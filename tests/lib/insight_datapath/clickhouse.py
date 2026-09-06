@@ -14,6 +14,11 @@ from insight_datapath.instance import InstanceConfig
 LOG = logging.getLogger("datapath.clickhouse")
 
 
+def literal(value: str) -> str:
+    """`value` as a quoted SQL string. Fixture text reaches these queries verbatim."""
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def client(cfg: InstanceConfig, *, database: str | None = None) -> Client:
     return clickhouse_connect.get_client(
         host=cfg.ch_host,
@@ -34,14 +39,6 @@ def execute(cfg: InstanceConfig, sql: str, *, database: str | None = None) -> No
 def query(cfg: InstanceConfig, sql: str, *, database: str | None = None) -> list[Sequence[Any]]:
     with client(cfg, database=database) as connection:
         return list(connection.query(sql).result_rows)
-
-
-def insert(
-    cfg: InstanceConfig, table: str, rows: Sequence[Sequence[Any]], columns: Sequence[str]
-) -> None:
-    database, _, name = table.partition(".")
-    with client(cfg, database=database) as connection:
-        connection.insert(name, list(rows), column_names=list(columns))
 
 
 def ensure_database(cfg: InstanceConfig, name: str) -> None:

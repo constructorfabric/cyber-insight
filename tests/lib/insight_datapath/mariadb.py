@@ -34,15 +34,3 @@ def query(
     with connection(cfg, database=database) as conn, conn.cursor() as cursor:
         cursor.execute(sql, tuple(parameters))
         return list(cursor.fetchall())
-
-
-def execute(
-    cfg: InstanceConfig,
-    sql: str,
-    parameters: Sequence[Any] = (),
-    *,
-    database: str | None = None,
-) -> int:
-    """Run a statement and return how many rows it changed."""
-    with connection(cfg, database=database) as conn, conn.cursor() as cursor:
-        return cursor.execute(sql, tuple(parameters))

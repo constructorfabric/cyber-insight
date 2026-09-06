@@ -1,3 +1,11 @@
+"""Which builtin metrics the data-path suite asserted, and which it owes.
+
+The gate runs as a bare `python3 <path>` over two JSON files a run leaves behind: the
+metric catalogue the suite read from analytics, and the ledger of what it asserted. It
+fails when a catalogued metric is missing a view its computation requires, or when the
+suite asserted a key the catalogue does not name.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -137,7 +145,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ledger", type=Path, nargs="+", default=[LEDGER_FILE], help="one per suite run"
     )
-    parser.add_argument("--md", action="store_true")
     args = parser.parse_args(argv)
     missing = [path for path in args.ledger if not path.is_file()]
     if missing:

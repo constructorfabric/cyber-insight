@@ -17,7 +17,6 @@ What a fixture proves lives in the `test_<name>.py` module beside it; shared
 
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -27,8 +26,6 @@ from typing import Any
 import yaml
 
 from . import ref_resolver, schema_validator
-
-LOG = logging.getLogger("e2e.fixture")
 
 
 class FixtureError(ValueError):
@@ -69,9 +66,8 @@ class TestYaml:
     # its own person and no fixture can reach that path.
     identity_aliases: dict[str, list[str]] = field(default_factory=dict)
     # Optional `identity_accounts: [{source_type, source_id, account_id, person}]`.
-    # Each entry is a source-account binding (`value_type='id'`) the rig writes
-    # into identity_persons beside the synthetic email bindings — the shape the
-    # account-first resolution map reads.
+    # Each entry is applied as an operator decision through /v1/resolution, which is
+    # the shape the account-first resolution map reads.
     identity_accounts: list[IdentityAccount] = field(default_factory=list)
 
     @property
@@ -209,19 +205,7 @@ def load(
                 raise FixtureError(f"{path}: bronze.{table}[{idx}]: {e}") from e
             if not isinstance(merged, dict):
                 raise FixtureError(f"{path}: bronze.{table}[{idx}] did not resolve to a record")
-            stated_payload = "raw_data" in merged
-            merged = _with_derived_payload(merged, schema)
-            if (
-                not stated_payload
-                and "raw_data" in schema.get("properties", {})
-                and not merged.get("raw_data")
-            ):
-                raise FixtureError(
-                    f"{path}: bronze.{table}[{idx}] derived an empty raw_data — the models of a "
-                    "source that hands over its whole report row read the payload, not the "
-                    "columns, so this row yields no field history at all. State `raw_data: null` "
-                    "if a payload-less row is what the case is about."
-                )
+            merged = _payload_or_refuse(merged, schema, f"{path}: bronze.{table}[{idx}]")
             try:
                 resolved.append(schema_validator.pad_and_validate(merged, schema, table=table))
             except schema_validator.SchemaError as e:
@@ -266,13 +250,29 @@ def prepare_rows(
         schema = schema_validator.load_schema(schemas_dir, table)
         prepared = [
             schema_validator.pad_and_validate(
-                _with_derived_payload(row, schema), schema, table=table
+                _payload_or_refuse(row, schema, f"{table}[{index}]"), schema, table=table
             )
-            for row in rows
+            for index, row in enumerate(rows)
         ]
     except schema_validator.SchemaError as e:
         raise FixtureError(str(e)) from e
     return prepared, schema
+
+
+def _payload_or_refuse(
+    record: dict[str, Any], schema: dict[str, Any], where: str
+) -> dict[str, Any]:
+    """Derive `raw_data` where the schema has it, refusing a row that derives to empty."""
+    stated = "raw_data" in record
+    derived = _with_derived_payload(record, schema)
+    if not stated and "raw_data" in schema.get("properties", {}) and not derived.get("raw_data"):
+        raise FixtureError(
+            f"{where} derived an empty raw_data — the models of a source that hands over its "
+            "whole report row read the payload, not the columns, so this row yields no field "
+            "history at all. State `raw_data: null` if a payload-less row is what the case is "
+            "about."
+        )
+    return derived
 
 
 #: Columns that are the warehouse's framing rather than the source's payload.

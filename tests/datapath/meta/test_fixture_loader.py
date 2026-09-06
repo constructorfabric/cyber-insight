@@ -3,10 +3,6 @@
 The rule is only observable three layers down — an empty payload yields an empty
 field history, which yields no identity_inputs, which no metric asserts on. So it
 is stated here instead, close enough to read.
-
-NOT RUN IN CI: `meta/` is the rig's own framework suite and the workflow
-deliberately leaves it out. The barrier these cases describe DOES run in CI, on
-every fixture the metrics lane loads.
 """
 
 from __future__ import annotations

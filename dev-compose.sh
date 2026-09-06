@@ -1504,9 +1504,7 @@ test_stand_derive_port_offset() {
   printf '%d' "$(( 100 + (sum % 90) * 100 ))"
 }
 
-# Resolve every per-instance path and the port offset. The default instance
-# keeps the historical paths and a zero offset, so a command that omits
-# --instance behaves exactly as it did.
+# Resolve every per-instance path and the port offset.
 test_stand_select_instance() {
   local requested="${1:-}" offset="${2:-}" project
   project="$(compose_project_name "$requested")" || return $?
@@ -1518,7 +1516,14 @@ test_stand_select_instance() {
   COMPOSE_INSTANCE="$TEST_STAND_INSTANCE"
   TEST_STAND_GATEWAY_CONTAINER="${project}-gateway"
 
-  [[ -z "$TEST_STAND_INSTANCE" ]] && { TEST_STAND_PORT_OFFSET=0; return 0; }
+  if [[ -z "$TEST_STAND_INSTANCE" ]]; then
+    if [[ -n "$offset" ]]; then
+      echo "ERROR: --port-offset applies to --instance=NAME only." >&2
+      return 2
+    fi
+    TEST_STAND_PORT_OFFSET=0
+    return 0
+  fi
 
   TEST_STAND_ENV_FILE=".env.compose.test-stand-${TEST_STAND_INSTANCE}"
   TEST_STAND_REALM_FILE="deploy/compose/keycloak/realm-insight.generated-${TEST_STAND_INSTANCE}.json"
@@ -1534,9 +1539,8 @@ test_stand_select_instance() {
   TEST_STAND_PORT_OFFSET="$offset"
 }
 
-# Move every published host port by the instance's offset so two stands can be
-# up at once. Container-side ports (*_INTERNAL_PORT) never move: they name a
-# port inside a namespace of their own, which no other instance shares.
+# Container-side ports (*_INTERNAL_PORT) never move: they name a port inside a
+# namespace of their own, which no other instance shares.
 test_stand_shift_ports() {
   local entry var base current
   (( TEST_STAND_PORT_OFFSET == 0 )) && return 0
@@ -1764,7 +1768,6 @@ test_stand_frontend_matches_chart() {
 # knobs the test path forces. SEEDED_LOCAL_* are blanked so every `up` seeds.
 # `mode` is ghcr (image required) or built (image empty — the front-built
 # profile serves the pnpm build from src/frontend/dist).
-# The frontend half of `up`'s env step, on its own so `env` can run exactly it.
 test_stand_prepare_env() {
   local build_frontend="$1" image
   if [[ "$build_frontend" == true ]]; then
@@ -1892,7 +1895,7 @@ TEST_STAND_SERVICE_PROBES=(
 # below certifies rows a data-path run deletes as its first act, so waiting on
 # them would mean waiting for something about to be destroyed.
 test_stand_wait_services() {
-  local elapsed=0 probe name var port pending=()
+  local elapsed=0 probe name var port pending=() kc_port
 
   echo "=== Readiness gate: waiting for ${#TEST_STAND_SERVICE_PROBES[@]} services to answer /health ==="
   while [[ "$elapsed" -lt "$TEST_STAND_READY_TIMEOUT" ]]; do
@@ -1904,9 +1907,15 @@ test_stand_wait_services() {
       curl -sf -o /dev/null --max-time 5 "http://localhost:${port:-0}/health" \
         || pending+=("${name} (:${port:-unset})")
     done
+    # Keycloak serves no /health on the app port, and the suite's first act is a
+    # real login: the realm document proves the import finished, not just the JVM.
+    kc_port="$(env_file_value "$TEST_STAND_ENV_FILE" KEYCLOAK_PORT)"
+    curl -sf -o /dev/null --max-time 5 \
+      "http://localhost:${kc_port:-0}/kc/realms/insight/.well-known/openid-configuration" \
+      || pending+=("keycloak realm (:${kc_port:-unset})")
 
     if [[ ${#pending[@]} -eq 0 ]]; then
-      echo "Readiness gate: all ${#TEST_STAND_SERVICE_PROBES[@]} services answered after ${elapsed}s."
+      echo "Readiness gate: every service answered after ${elapsed}s."
       return 0
     fi
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from insight_datapath.fixture_loader import discover_tests
+
 METRICS_ROOT = Path(__file__).resolve().parents[1] / "metrics"
 
 _DECLARATION = re.compile(r"^SPEC = [\"'](?P<name>[^\"']+)[\"']", re.MULTILINE)
@@ -30,7 +32,7 @@ def test_every_spec_is_claimed_by_a_module() -> None:
     claimed = _claims()
     unclaimed = [
         spec.relative_to(METRICS_ROOT)
-        for spec in sorted(METRICS_ROOT.rglob("*.test.yaml"))
+        for spec in discover_tests(METRICS_ROOT)
         if spec not in claimed
     ]
     assert not unclaimed, f"specs no module names in SPEC, so nothing runs them: {unclaimed}"

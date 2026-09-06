@@ -142,8 +142,8 @@ class EnrichRunner:
                 continue
             has_column = ch.query(
                 self.cfg,
-                f"SELECT name FROM system.columns WHERE database = '{schema}' "
-                f"AND table = '{table}' AND name = 'source_id'",
+                f"SELECT name FROM system.columns WHERE database = {ch.literal(schema)} "
+                f"AND table = {ch.literal(table)} AND name = 'source_id'",
             )
             if not has_column:
                 continue

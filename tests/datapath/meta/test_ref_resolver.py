@@ -1,5 +1,6 @@
-"""Unit tests for ref_resolver — the 12 invariants of
-`cpt-bronze-to-api-e2e-dod-yaml-ref-resolution`. Pure: no ClickHouse / dbt.
+"""What `$ref` composition guarantees: resolution, sibling overrides and refusals.
+
+Pure: no ClickHouse, no dbt.
 """
 
 from __future__ import annotations

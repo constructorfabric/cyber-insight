@@ -111,7 +111,7 @@ class Subjects:
         }
         if not by_account:
             return {}
-        wanted = ", ".join("'" + key.replace("'", "''") + "'" for key in by_account)
+        wanted = ", ".join(ch.literal(key) for key in by_account)
         rows = ch.query(
             self.cfg,
             "SELECT account_id, toString(person_id) FROM identity.account_assignment "
@@ -132,7 +132,7 @@ class Subjects:
         """
         if not emails:
             return {}
-        wanted = ", ".join("'" + email.strip().lower().replace("'", "''") + "'" for email in emails)
+        wanted = ", ".join(ch.literal(email.strip().lower()) for email in emails)
         rows = ch.query(
             self.cfg,
             f"SELECT email, toString(person_id) FROM identity.person_map WHERE email IN ({wanted})",

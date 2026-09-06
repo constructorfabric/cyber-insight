@@ -103,7 +103,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: pip
-    directories: ["/src/ingestion/tests/connectors"]
+    directories: ["/src/ingestion/tests/connectors", "/tests"]
     schedule:
       interval: daily
       time: "23:00"

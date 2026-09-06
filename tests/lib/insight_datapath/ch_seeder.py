@@ -97,13 +97,6 @@ class CHSeeder:
     # internals
     # ------------------------------------------------------------------
 
-    def _fetch_engine(self, schema: str, table: str) -> str | None:
-        rows = ch.query(
-            self.cfg,
-            f"SELECT engine FROM system.tables WHERE database = '{schema}' AND name = '{table}'",
-        )
-        return rows[0][0] if rows else None
-
     def _fetch_column_types(self, schema: str, table: str) -> dict[str, str]:
         rows = ch.query(
             self.cfg,

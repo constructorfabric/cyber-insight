@@ -54,7 +54,7 @@ def all_persona_emails(
 
     def walk(value: Any) -> None:
         if isinstance(value, str):
-            found.update(_EMAIL_TOKEN.findall(value))
+            found.update(token.lower() for token in _EMAIL_TOKEN.findall(value))
         elif isinstance(value, dict):
             for item in value.values():
                 walk(item)

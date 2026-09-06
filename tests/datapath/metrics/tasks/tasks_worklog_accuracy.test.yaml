@@ -1,6 +1,22 @@
 spec_version: 1
 description: >
-  Task Delivery - worklog_logging_accuracy - JIRA, IC Bullet Task Delivery (...0011), department-of-5 distribution + 6 stats in a single custom window. #magic___^_^___line bronze -> silver -> gold: jira_issue (Closed) + jira_issue_history (In Progress interval) + jira_worklogs (the logged seconds) + jira_user; bamboohr employees give the Engineering org_unit_id (the cohort). The changelog gives the in-progress seconds (denominator); the worklog rows give the logged seconds (numerator). worklog_logging_accuracy = least(100, 100 * Sum(worklog_seconds) / Sum(in_progress_seconds)). This is the only Task Delivery metric whose numerator comes from the worklog stream, so the test seeds that table too. range_max here = plain cohort max (not a P95 metric). #magic___^_^___line Department: 5 Engineering members alice..erin of rank r in 1..5. Each issue is In Progress for exactly 1 day (86400 s) on 2026-03-25 (created In Progress 2026-03-25T00:00, Closed 2026-03-26T00:00); the worklog logs r*17280 seconds = {17280,34560,51840,69120,86400} = {20,40,60,80,100}% of 86400 -> accuracy = {20,40,60,80,100}. The IC case requests erin (5): value=100, median=60, range_min=20, range_max=100, p25=40, p75=80. Empty window 2026-06 -> no items. #magic___^_^___line
+  Task Delivery - worklog_logging_accuracy - JIRA, IC Bullet Task Delivery (...0011),
+  department-of-5 distribution + 6 stats in a single custom window.
+
+  bronze -> silver -> gold: jira_issue (Closed) + jira_issue_history (In Progress interval) +
+  jira_worklogs (the logged seconds) + jira_user; bamboohr employees give the Engineering
+  org_unit_id (the cohort). The changelog gives the in-progress seconds (denominator); the
+  worklog rows give the logged seconds (numerator). worklog_logging_accuracy = least(100, 100
+  * Sum(worklog_seconds) / Sum(in_progress_seconds)). This is the only Task Delivery metric
+  whose numerator comes from the worklog stream, so the test seeds that table too. range_max
+  here = plain cohort max (not a P95 metric).
+
+  Department: 5 Engineering members alice..erin of rank r in 1..5. Each issue is In Progress
+  for exactly 1 day (86400 s) on 2026-03-25 (created In Progress 2026-03-25T00:00, Closed
+  2026-03-26T00:00); the worklog logs r*17280 seconds = {17280,34560,51840,69120,86400} =
+  {20,40,60,80,100}% of 86400 -> accuracy = {20,40,60,80,100}. The IC case requests erin (5):
+  value=100, median=60, range_min=20, range_max=100, p25=40, p75=80. Empty window 2026-06 ->
+  no items.
 bronze:
   bronze_bamboohr.employees:
     - $ref: ../templates/people.yaml#/templates/alice

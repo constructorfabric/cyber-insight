@@ -1,6 +1,13 @@
 spec_version: 1
 description: >
-  Regression: unlicensed M365 users must NOT leak into collaboration metrics (#736). #magic___^_^___line The M365 teams_activity report includes unlicensed users (guests, ex-employees, service accounts) flagged isLicensed=false. The silver feeder m365__collab_meeting_activity filters them out with coalesce(isLicensed, false) = true, so an unlicensed OR unknown-license user never reaches gold; only an explicit isLicensed=true row is kept. #magic___^_^___line Setup — three Engineering people, each with a Teams meeting row dated 2026-12-25:
+  Regression: unlicensed M365 users must NOT leak into collaboration metrics (#736).
+
+  The M365 teams_activity report includes unlicensed users (guests, ex-employees, service
+  accounts) flagged isLicensed=false. The silver feeder m365__collab_meeting_activity filters
+  them out with coalesce(isLicensed, false) = true, so an unlicensed OR unknown-license user
+  never reaches gold; only an explicit isLicensed=true row is kept.
+
+  Setup — three Engineering people, each with a Teams meeting row dated 2026-12-25:
     • alice — isLicensed=true,  meetingsAttendedCount=3  → licensed CONTROL, value 3
     • frank — isLicensed=false, meetingsAttendedCount=99 → unlicensed, EXCLUDED (null)
     • grace — isLicensed=null,  meetingsAttendedCount=77 → unknown, EXCLUDED (null)

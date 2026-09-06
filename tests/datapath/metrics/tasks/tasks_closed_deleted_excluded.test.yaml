@@ -1,6 +1,22 @@
 spec_version: 1
 description: >
-  Task Delivery - tasks.closed with the deletion/visibility mechanism (#2419): issues deleted at the source leave the metric; issues whose whole project merely became invisible (lost access) stay counted. #magic___^_^___line bronze -> silver -> gold: jira_issue + jira_issue_history close events as in tasks_closed, PLUS the absence censuses — jira_issue_census (ids observed alive) and jira_project_visibility (the project roster). An issue present in bronze but absent from the census classifies as: deleted (its project is still in the roster) or access_lost (project gone from the roster). The classification lands in silver as synthetic availability events in the same field history as every other change; gold excludes ONLY deleted/trashed. #magic___^_^___line Department: 5 Engineering members alice..erin of rank r in 1..5, each closing r issues in project TST on 2026-12-25; the census observes all 15. On top: erin closed DELX-1 (TST) which is MISSING from the census while TST is visible -> deleted -> excluded (erin stays 5, not 6); carol closed LSTC-1 in project LOST which is absent from the roster entirely -> access_lost -> still counted (carol 3+1=4). Per-person sums {1,2,4,4,5} -> median 4, p25 2, p75 4. Cases: erin IC (deleted excluded), carol IC (access_lost counted), peer stats. #magic___^_^___line
+  Task Delivery - tasks.closed with the deletion/visibility mechanism (#2419): issues deleted
+  at the source leave the metric; issues whose whole project merely became invisible (lost
+  access) stay counted.
+
+  bronze -> silver -> gold: jira_issue + jira_issue_history close events as in tasks_closed,
+  PLUS the absence censuses — jira_issue_census (ids observed alive) and
+  jira_project_visibility (the project roster). An issue present in bronze but absent from the
+  census classifies as: deleted (its project is still in the roster) or access_lost (project
+  gone from the roster). The classification lands in silver as synthetic availability events
+  in the same field history as every other change; gold excludes ONLY deleted/trashed.
+
+  Department: 5 Engineering members alice..erin of rank r in 1..5, each closing r issues in
+  project TST on 2026-12-25; the census observes all 15. On top: erin closed DELX-1 (TST)
+  which is MISSING from the census while TST is visible -> deleted -> excluded (erin stays 5,
+  not 6); carol closed LSTC-1 in project LOST which is absent from the roster entirely ->
+  access_lost -> still counted (carol 3+1=4). Per-person sums {1,2,4,4,5} -> median 4, p25 2,
+  p75 4. Cases: erin IC (deleted excluded), carol IC (access_lost counted), peer stats.
 bronze:
   bronze_bamboohr.employees:
     - $ref: ../templates/people.yaml#/templates/alice

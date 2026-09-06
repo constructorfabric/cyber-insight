@@ -95,9 +95,9 @@ def test_ai_daily_extra_usage_never_reports_a_negative_day(spec: SpecRun) -> Non
     assert float(one(daily, bucket_start="2026-12-05")["value"]) == approx(4.0)
     assert float(one(daily, bucket_start="2026-12-06")["value"]) == approx(0.0)
     for entry in series:
-        spent = [float(point["value"]) for point in entry["points"] if point["value"] is not None]
-        assert all(day >= 0.0 for day in spent), (
-            f"should never report a negative day: {entry['entity_id']} {spent!r}"
+        spent = [point["value"] for point in entry["points"]]
+        assert spent and all(value is not None and float(value) >= 0.0 for value in spent), (
+            f"every day is a real, non-negative amount: {entry['entity_id']} {spent!r}"
         )
 
 

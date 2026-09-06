@@ -338,7 +338,7 @@ class DbtRunner:
         """Flags shared by every invocation: which project, profile, target.
 
         `--project-dir` is required because the in-process runner inherits the
-        pytest process's cwd (the e2e dir), not the dbt project dir a subprocess
+        pytest process's cwd, not the dbt project dir a subprocess
         would `cd` into.
         """
         return [

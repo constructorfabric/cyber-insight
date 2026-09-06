@@ -39,7 +39,7 @@ def hashed_source_id(cfg: InstanceConfig, raw: str) -> str:
     """The connector instance id the warehouse mints from a bronze `source_id`."""
     rows = ch.query(
         cfg,
-        f"SELECT toString(toUUID(UUIDNumToString(sipHash128('{raw}')))) ",
+        f"SELECT toString(toUUID(UUIDNumToString(sipHash128({ch.literal(raw)})))) ",
     )
     return str(rows[0][0])
 
@@ -131,7 +131,7 @@ class Bindings:
             FROM identity.identity_inputs
             WHERE value_type = 'email'
               AND operation_type = 'UPSERT'
-              AND lower(trimBoth(value)) = '{email.strip().lower()}'
+              AND lower(trimBoth(value)) = {ch.literal(email.strip().lower())}
               AND coalesce(source_account_id, '') != ''
             """,
         )

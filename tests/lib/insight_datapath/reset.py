@@ -12,9 +12,10 @@ the roster the caller authenticates as. Which relations those are is named below
 whether any of them hold the stand's rows is a fact the instance reports: a run is
 refused at the door unless the instance seeded identity alone.
 
-Identity is never cleared whatever the instance. persons-sync swaps one of its
-relations wholesale and the other carries the roster's own observations — emptying it
-unresolves the persona the suite authenticates as.
+Identity is never truncated whatever the instance: persons-sync swaps
+`identity_persons` wholesale, and `identity_inputs` is rebuilt from scratch by each
+spec's own full refresh. Truncating either would unresolve the persona the suite
+authenticates as before the pipeline could put it back.
 """
 
 from __future__ import annotations

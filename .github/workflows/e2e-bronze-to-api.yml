@@ -81,7 +81,8 @@ jobs:
   #   tests/lib/        the suite's own machinery and the stand client it
   #                     authenticates through
   #   tests/pyproject.toml, tests/uv.lock   the suite's dependency set
-  #   dev-compose.sh, docker-compose.yml, deploy/compose/   what raises a stand
+  #   dev-compose.sh, docker-compose.yml, .env.compose.example, deploy/compose/
+  #                     what raises a stand
   #
   # src/frontend/ and docs/ are absent on purpose: nothing here loads them.
   changes:
@@ -126,7 +127,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$base_point" "$HEAD")"
           echo "$changed" | sed 's/^/  /'
-          if echo "$changed" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
+          if echo "$changed" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|\.env\.compose\.example|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -239,7 +240,9 @@ jobs:
         run: |
           set -euo pipefail
           ledger=.artifacts/metric_assertions.json
-          [ -f "$ledger" ] && mv "$ledger" ".artifacts/metric_assertions-${SHARD}.json"
+          if [ -f "$ledger" ]; then
+            mv "$ledger" ".artifacts/metric_assertions-${SHARD}.json"
+          fi
 
       # Uploaded even when the suite failed, so the gate reports beside a red
       # run. metric_definitions.json is the full builtin catalogue, identical

@@ -1,25 +1,18 @@
 """Record composition via `$ref` + sibling overrides.
 
-Implements `cpt-bronze-to-api-e2e-algo-yaml-resolve-refs`. Pure (the only I/O is
-reading referenced YAML files, which are cached). A record is a mapping that may
+Pure: the only I/O is reading referenced YAML files, which are cached. A record is a mapping that may
 carry a `$ref: "<file>#/<json-pointer>"`; sibling keys override the resolved base
 (closest layer wins). A `$ref` resolves relative to the file it is written in, and
 the base resolves in *its own* file's context — so a `#/...` ref inside
 `templates/people.yaml` stays local to that file even when referenced from a test.
-
-See FEATURE `feature-yaml-rig` DoD `cpt-bronze-to-api-e2e-dod-yaml-ref-resolution`
-for the 12 invariants exercised by `meta/test_ref_resolver.py`.
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-LOG = logging.getLogger("e2e.ref")
 
 
 class RefError(ValueError):
