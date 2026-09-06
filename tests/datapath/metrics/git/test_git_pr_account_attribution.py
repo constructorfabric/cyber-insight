@@ -4,8 +4,8 @@ Bronze: pull requests plus the GraphQL diff-stats row carrying the author's nume
 account id and, rarely, a profile email. Silver: one row per pull request with
 author_email and author_account_id. Gold resolves the author through the account
 binding first; the email map decides only when no account id exists, so a squash-merge
-with no collected commits and a ghost author both attribute, a bot bound to the
-excluded person attributes to nobody, and a conflicting profile email loses.
+with no collected commits and a ghost author both attribute, a pull request whose
+account resolves to nobody attributes to nobody, and a conflicting profile email loses.
 """
 
 from __future__ import annotations
@@ -20,18 +20,22 @@ SPEC = "git_pr_account_attribution"
 ALICE = "alice@example.com"
 BOB = "bob@example.com"
 CAROL = "carol@example.com"
+DAVE = "dave@example.com"
 
 
 def test_account_first_attribution_decides_pull_request_measures(spec: SpecRun) -> None:
     """Alice takes the squash-merge and the precedence pull request through account 9001,
-    carol the ghost one through her commit's email, and bob nothing: his address is
-    claimed by the account an operator gave to alice, so it names no one person."""
+    and carol the ghost one through her commit's address. Dave gets nothing: his address
+    is on the bot's commit, whose account resolves to no person, and an account that
+    resolves to nobody ends resolution instead of falling through to the address. Bob
+    gets nothing either: his address is claimed by the account an operator gave to
+    alice, so it names no one person."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
             "method": "POST",
             "body": {
-                "entity": {"type": "person", "ids": [ALICE, BOB, CAROL]},
+                "entity": {"type": "person", "ids": [ALICE, BOB, CAROL, DAVE]},
                 "period": {"from": "2026-10-01", "to": "2026-10-02"},
                 "metrics": [{"metric_key": "git.prs_merged", "views": [{"view": "period"}]}],
             },
@@ -41,6 +45,7 @@ def test_account_first_attribution_decides_pull_request_measures(spec: SpecRun) 
 
     r.row("git.prs_merged", "period", entity_id=ALICE).equals(value=2)
     r.row("git.prs_merged", "period", entity_id=CAROL).equals(value=1)
+    r.row("git.prs_merged", "period", entity_id=DAVE).equals(value=None)
     r.row("git.prs_merged", "period", entity_id=BOB).equals(value=None)
 
 

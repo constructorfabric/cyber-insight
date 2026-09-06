@@ -15,9 +15,12 @@ description: >
   a pull request whose account binding and profile email name DIFFERENT
   persons follows the account; a bot's pull request (account bound to the
   excluded person) attributes to nobody even though its linked commit carries
-  a human's resolvable email.
-  Expected: alice merged 2 (squash + precedence), bob merged 1 (ghost only —
-  neither the bot's commit email nor the precedence profile email leaks to him).
+  a resolvable human address.
+  Expected: alice merged 2 (squash + precedence), carol merged 1 (ghost, through
+  her commit's address), dave none (his address is on the bot's commit, and the
+  bot's account resolves to no person, which ends resolution there), bob none
+  (his address is claimed by the account an operator gave to alice, so it names
+  no one person).
 
 identity_accounts:
   - {source_type: github, source_id: git-test, account_id: "9001", person: alice@example.com}
@@ -28,6 +31,7 @@ bronze:
     - $ref: ../templates/people.yaml#/templates/alice
     - $ref: ../templates/people.yaml#/templates/bob
     - $ref: ../templates/people.yaml#/templates/carol
+    - $ref: ../templates/people.yaml#/templates/dave
 
   bronze_github.pull_requests:
     # Squash-merged, source branch deleted: none of its commits were ever
@@ -39,11 +43,12 @@ bronze:
     # email is CAROL's: bob's is claimed by the account the operator gave to
     # alice, so it names no one person and the map rightly declines it.
     - {$ref: ../templates/git_activity.yaml#/templates/pull_request, unique_key: pr-ghost, id: 12, number: 12, author_login: ghost, closed_at: "2026-10-01T10:00:00Z", merged_at: "2026-10-01T10:00:00Z", merge_commit_sha: merge-12}
-    # Bot: account excluded by an operator. Its linked commit carries BOB's
-    # email — the exclusion must terminate resolution, not fall through to the
-    # email map and hand the pull request to bob. The bot's own address is on
-    # its diff-stats row because an account nothing reported is one the product
-    # will not accept a decision about.
+    # Bot: account excluded by an operator, and its linked commit carries DAVE's
+    # address, which no account claims. An account that resolves to no person
+    # must terminate resolution rather than fall through to the email map: drop
+    # the account id from the diff-stats row below and dave reads 1 instead of
+    # none. Excluded and merely unbound terminate alike here; which decision was
+    # recorded is the identity lane's subject, not this metric's.
     - {$ref: ../templates/git_activity.yaml#/templates/pull_request, unique_key: pr-bot, id: 13, number: 13, author_login: ci-bot, closed_at: "2026-10-01T11:00:00Z", merged_at: "2026-10-01T11:00:00Z", merge_commit_sha: merge-13}
     # Precedence: the profile email names BOB while the account binding names
     # ALICE — the account must win or a recycled/shared address misattributes.
@@ -51,14 +56,17 @@ bronze:
 
   bronze_github.pull_request_diff_stats:
     - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-squash, pull_number: 11, additions: 10, author_login: alice-gh, author_id: 9001}
-    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-bot, pull_number: 13, additions: 5, author_login: ci-bot, author_id: 9002, author_email: ci-bot@example.com}
+    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-bot, pull_number: 13, additions: 5, author_login: ci-bot, author_id: 9002}
     - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-precedence, pull_number: 14, additions: 20, author_login: alice-gh, author_id: 9001, author_email: bob@example.com}
+
+  bronze_github.commit_authors:
+    - {$ref: ../templates/git_activity.yaml#/templates/commit_author, unique_key: acct-9002, author_id: 9002, author_login: ci-bot, author_email: ci-bot@example.com}
 
   bronze_github.pull_request_commits:
     - {$ref: ../templates/git_activity.yaml#/templates/base, unique_key: prc-ghost, repo_full_name: constructor/insight, pull_number: 12, sha: hash-ghost, author_email: carol@example.com, is_merge: false}
-    - {$ref: ../templates/git_activity.yaml#/templates/base, unique_key: prc-bot, repo_full_name: constructor/insight, pull_number: 13, sha: hash-bot, author_email: bob@example.com, is_merge: false}
+    - {$ref: ../templates/git_activity.yaml#/templates/base, unique_key: prc-bot, repo_full_name: constructor/insight, pull_number: 13, sha: hash-bot, author_email: dave@example.com, is_merge: false}
 
   bronze_github.commits:
     - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: commit-ghost, sha: hash-ghost, author_name: carol, author_email: carol@example.com, committer_name: carol, committer_email: carol@example.com, additions: 3}
-    - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: commit-bot, sha: hash-bot, author_name: bob, author_email: bob@example.com, committer_name: bob, committer_email: bob@example.com, additions: 1}
+    - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: commit-bot, sha: hash-bot, author_name: dave, author_email: dave@example.com, committer_name: dave, committer_email: dave@example.com, additions: 1}
 
