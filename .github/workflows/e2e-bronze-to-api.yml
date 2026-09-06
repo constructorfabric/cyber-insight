@@ -134,8 +134,9 @@ jobs:
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed"
           fi
           # A backend change means the pinned images no longer describe this
-          # tree, so the stand compiles the backend instead of pulling it.
-          if echo "$changed" | grep -qE '^src/backend/'; then
+          # tree, so the stand compiles the backend instead of pulling it. A
+          # service's own test tree is not in its image, so it does not count.
+          if echo "$changed" | grep -vE '^src/backend/services/[^/]+/tests/' | grep -qE '^src/backend/'; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
