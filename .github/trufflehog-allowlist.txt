@@ -26,12 +26,6 @@ c71d7d6ef85cd006  Gitlab             src/ingestion/connectors/git/gitlab/dbt/git
 7081af253c603dbf  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__pull_requests_reviewers.sql  # code identifier / constant name
 8396587d742ca623  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__repositories.sql  # code identifier / constant name
 28dd5d564e2c82c3  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__repository_branches.sql  # code identifier / constant name
-248cd327790a9dbc  Gitlab             src/ingestion/connectors/git/gitlab/dev/config.example.json  # code identifier / constant name
-968ddfbbb41c029f  Gitlab             src/ingestion/connectors/git/gitlab/source_gitlab/streams/issues.py  # code identifier / constant name
-135883ae40a7dd42  Gitlab             src/ingestion/connectors/git/gitlab/source_gitlab/streams/merge_request_child.py  # code identifier / constant name
-5804c17e4c07e9bb  Gitlab             src/ingestion/connectors/git/gitlab/source_gitlab/streams/merge_requests.py  # code identifier / constant name
-cd968567652ff20b  Gitlab             src/ingestion/connectors/git/gitlab/source_gitlab/streams/project_incremental.py  # code identifier / constant name
-d1c1dd2c5248b565  Gitlab             src/ingestion/connectors/git/gitlab/tests/test_source.py  # code identifier / constant name
 079c134aaca8eb24  Gitlab             src/ingestion/scripts/connectors-ddl/gitlab-nocode.sql  # connector name in a DDL snapshot, not a token
 a1d64ea5858af851  Gitlab             src/ingestion/tools/seed/insight_seed/generators/git_repos.py  # the vendor project seeding function's name, not a token
 b7724cdd5c80cebb  Gitlab             src/ingestion/tools/seed/tests/test_git_repos.py  # a bronze relation name in the vendor-relation assertion, not a token

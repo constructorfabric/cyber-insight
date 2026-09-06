@@ -38,7 +38,7 @@ RESET_TARGETS: tuple[tuple[str, str], ...] = (
     ("bronze_github", "deployments"),
     ("bronze_github", "repositories"),
     ("bronze_github", "workflow_runs"),
-    ("bronze_gitlab", "projects"),
+    ("bronze_gitlab", "repositories"),
     ("silver", "class_ai_assistant_usage"),
     ("silver", "class_ai_dev_usage"),
     ("silver", "class_ai_invoice"),
