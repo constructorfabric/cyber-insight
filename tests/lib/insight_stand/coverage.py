@@ -26,16 +26,11 @@ error set onto every operation. Identity stays held to (1) until the suite
 either observes those codes or the gate learns to discount the stamped ones
 (#1669), which is a change to the gate rather than to this note.
 
-This is a port of `scripts/ci/api_coverage.py`. The universal
-table agrees with it — the rig dropped 401 from its own exclusions once its host
-began verifying the gateway JWT, so 429 is all either one drops.
-
-403 is where they still part. The rig blocks it per-route as `.standard_errors`
-boilerplate: with no role gate in front of an in-process service, a refusal it
-cannot produce cannot be required of it. Here every request crosses a real
-gateway carrying a real session, so 403 is reachable and REQUIRED. A gate that
-inherited the rig's per-route exclusions would be blind to the authorization
-behaviour this suite exists for.
+403 is required here rather than universally excluded: every request crosses a
+real gateway carrying a real session, so a refusal is reachable, and a gate that
+excluded it would be blind to the authorization behaviour this suite exists for.
+Where a handler has no authorization path at all, the BLOCKED table below says so
+per route, with the source that shows it.
 """
 
 from __future__ import annotations

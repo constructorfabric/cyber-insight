@@ -6,10 +6,8 @@ pin the mechanics that could do that — the verdict, the exit code and the
 rendered report all deriving from one predicate — and the two failure modes this
 gate exists for.
 
-Ported from the rig's `identity/test_meta_gate.py`, which pinned the same
-property for `scripts/ci/api_coverage.py`. The tables differ on 403 (see `coverage.py`'s
-docstring for why it is required here rather than excluded); the reason for
-testing the gate does not.
+These pin the gate this suite runs on itself. `scripts/ci/api_coverage.py` gates the
+authenticator's own suite the same way, over its own tables.
 
 """
 

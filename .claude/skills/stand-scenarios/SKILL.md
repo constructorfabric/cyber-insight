@@ -110,7 +110,8 @@ faster than grep for anything recorded there.
 
 Two blocking gates elsewhere also own territory — the metric×view gate
 (`tests/lib/insight_datapath/metric_coverage.py`, over the data-path suite in
-`tests/datapath/`) and the per-operation API gate (`scripts/ci/api_coverage.py`).
+`tests/datapath/`) and this suite's per-operation API gate
+(`tests/lib/insight_stand/coverage.py`).
 Do not re-specify what a gate already fails on.
 
 Mark the verdict on every claim: **new** · **covered by `<test>`** ·

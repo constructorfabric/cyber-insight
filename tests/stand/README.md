@@ -198,13 +198,10 @@ it":
   against a declared expectation. One was written and is being migrated
   separately, so this directory has `api/` and `ui/` and nothing else — do not
   read the absence as "metric values are not worth testing".
-- **Nothing measures this suite's own coverage.** There is no per-operation,
-  per-status-code gate here, so a route that gains a status code no test
-  exercises goes unreported. The rig has one
-  (`scripts/ci/api_coverage.py` — an httpx-hook ledger plus a
-  gate over the committed OpenAPI document); migrating it is a known
-  follow-up. Until it lands, `api/operations.py` is the only catalogue of the
-  surface and it is kept honest by hand.
+- **This suite measures its own coverage.** `lib/insight_stand/coverage.py` records
+  every response and gates the ledger against the committed OpenAPI document, so a
+  route that gains a status code no test exercises is reported. `api/operations.py`
+  remains the catalogue of the surface and is kept honest by hand.
 - **Cross-tenant refusal.** Covered on compose, and only there: the second
   tenant's caller is a fixture the seed writes when
   `SEED_CROSS_TENANT_FIXTURE` is on, which `docker-compose.yml` sets. A cluster

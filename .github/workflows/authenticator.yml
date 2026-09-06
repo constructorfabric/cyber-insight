@@ -131,7 +131,6 @@ jobs:
       - name: Analyse authenticator endpoint coverage
         run: |
           python3 scripts/ci/api_coverage.py \
-            --suite authenticator \
             --observed coverage-inputs/observed_authenticator_endpoints.json \
             --spec docs/components/backend/authenticator/openapi.json | tee authenticator_coverage.md
           rc=${PIPESTATUS[0]}
