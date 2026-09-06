@@ -157,7 +157,7 @@ impl GitRunner {
     }
 
     #[cfg(test)]
-    fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
+    pub(crate) fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
         self.timeouts = timeouts;
         self
     }

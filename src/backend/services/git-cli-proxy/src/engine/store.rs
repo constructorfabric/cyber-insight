@@ -33,6 +33,17 @@ const DRIFT_CHECK_INTERVAL: Duration = Duration::from_mins(1);
 /// Consecutive drift checks that may find the entry busy and over threshold
 /// before the repack stops being opportunistic and takes a real write lock.
 const PURGE_ESCALATION_AFTER: u32 = 3;
+/// Consecutive post-serve purges that may fail before the entry is evicted
+/// outright. A repack that cannot finish inside the heavy budget will not
+/// finish next time either, and every window served in between makes the
+/// pack bigger — retried in place it leaves the entry over its cap and
+/// unservable for good. The skeleton re-clones in seconds; blobs come back
+/// per window.
+const PURGE_FAILURES_BEFORE_EVICTION: u32 = 2;
+/// Fraction of the per-repository cap past which a purge stops yielding to
+/// readers: the repack has to run while the pack can still finish inside the
+/// heavy budget, not once the entry is already at the cap.
+const PURGE_PRESSURE_CAP_DIVISOR: u64 = 2;
 
 /// Why a refresh failed, in a form that survives being broadcast to every
 /// waiter (`GitError` is not `Clone`).
@@ -199,6 +210,7 @@ impl Drop for Reservation<'_> {
 struct DriftState {
     checked: Instant,
     losses: u32,
+    purge_failures: u32,
 }
 
 /// What a background flight is supposed to do to the entry.
@@ -255,6 +267,17 @@ impl RepoStore {
             },
             u64::MAX,
         )
+    }
+
+    /// A store whose heavy git budget is `heavy` — the seam that makes "the
+    /// repack cannot finish" reproducible.
+    #[cfg(test)]
+    pub(crate) fn with_heavy_timeout(mut self, heavy: Duration) -> Self {
+        self.runner = self.runner.with_timeouts(super::runner::Timeouts {
+            heavy,
+            ..super::runner::Timeouts::default()
+        });
+        self
     }
 
     /// # Errors
@@ -1020,9 +1043,12 @@ impl RepoStore {
     /// every entry is skeleton-sized, never plans the cheap purge tier, and
     /// evicts whole warm repositories instead.
     ///
-    /// Best-effort throughout: a reader holding the entry, unreadable metadata
-    /// or a failed repack all leave the entry as it is. The reclaim path is
-    /// the backstop.
+    /// Best-effort for one round: a reader holding the entry, unreadable
+    /// metadata or a failed repack leave the entry as it is. A repack that
+    /// fails [`PURGE_FAILURES_BEFORE_EVICTION`] times in a row is a different
+    /// thing — that pack will never shed in place, so the entry is evicted
+    /// and the next open re-clones the skeleton. The reclaim path is the
+    /// backstop for everything else.
     pub async fn purge_if_drifted(&self, key: &CacheKey) {
         if !self.drift_check_due(&key.dir_name()).await {
             return;
@@ -1080,14 +1106,19 @@ impl RepoStore {
         // NEVER wins, so after enough losses it queues for the lock like a
         // fetch would. Readers wait out one repack; the alternative is an
         // entry that grows for as long as anyone keeps reading it.
+        // Past half the cap the probe stops yielding: every window served
+        // while it loses is more pack for a repack that has to finish inside
+        // the heavy budget, and a pack that outgrows that budget can never
+        // be shed in place.
+        let under_pressure = measured >= self.max_repo_bytes / PURGE_PRESSURE_CAP_DIVISOR;
         let _write = if let Ok(guard) = lock.try_write() {
             guard
         } else {
-            if !self.purge_debt_due(&key.dir_name()).await {
+            if !under_pressure && !self.purge_debt_due(&key.dir_name()).await {
                 return;
             }
             metrics::record_purge_escalation();
-            tracing::info!(dir = %key.dir_name(), "purge starved by readers; queueing for the entry lock");
+            tracing::info!(dir = %key.dir_name(), under_pressure, "purge starved by readers; queueing for the entry lock");
             lock.write().await
         };
         self.settle_purge_debt(&key.dir_name()).await;
@@ -1095,10 +1126,42 @@ impl RepoStore {
         let permit = self.heavy_permit().await;
         match self.repack_blobless(&entry_dir, &permit).await {
             Ok(freed) => {
+                self.settle_purge_failures(&key.dir_name()).await;
                 metrics::record_eviction(EvictionTier::Blob);
                 tracing::info!(dir = %key.dir_name(), freed_bytes = freed, "purged a served window");
             }
-            Err(e) => tracing::warn!(error = %e, dir = %key.dir_name(), "post-serve purge failed"),
+            Err(e) => {
+                let failures = self.record_purge_failure(&key.dir_name()).await;
+                if failures < PURGE_FAILURES_BEFORE_EVICTION {
+                    tracing::warn!(error = %e, dir = %key.dir_name(), failures, "post-serve purge failed");
+                    return;
+                }
+                tracing::warn!(error = %e, dir = %key.dir_name(), failures, "purge cannot shed this entry; evicting it so the next open re-clones the skeleton");
+                self.evict_locked(
+                    &key.dir_name(),
+                    entry_dir,
+                    measured,
+                    EvictionTier::PurgeExhausted,
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn record_purge_failure(&self, dir_name: &str) -> u32 {
+        let mut drift = self.drift.lock().await;
+        match drift.get_mut(dir_name) {
+            Some(state) => {
+                state.purge_failures += 1;
+                state.purge_failures
+            }
+            None => 1,
+        }
+    }
+
+    async fn settle_purge_failures(&self, dir_name: &str) {
+        if let Some(state) = self.drift.lock().await.get_mut(dir_name) {
+            state.purge_failures = 0;
         }
     }
 
@@ -1184,6 +1247,7 @@ impl RepoStore {
                 let state = drift.entry(key.dir_name()).or_insert_with(|| DriftState {
                     checked: Instant::now(),
                     losses: 0,
+                    purge_failures: 0,
                 });
                 if let Some(due) = Instant::now().checked_sub(DRIFT_CHECK_INTERVAL) {
                     state.checked = due;
@@ -1253,6 +1317,7 @@ impl RepoStore {
                     DriftState {
                         checked: now,
                         losses: 0,
+                        purge_failures: 0,
                     },
                 );
                 true
@@ -1428,13 +1493,19 @@ impl RepoStore {
         let Ok(_write) = lock.try_write() else {
             return;
         };
+        self.evict_locked(dir_name, path, frees, EvictionTier::Full)
+            .await;
+    }
+
+    /// Delete an entry whose write lock the caller already holds.
+    async fn evict_locked(&self, dir_name: &str, path: PathBuf, frees: u64, tier: EvictionTier) {
         match remove_tree_off_reactor(path).await {
             Ok(()) => {
                 // A re-clone must not inherit the evicted entry's drift
-                // throttle or escalation losses.
+                // throttle, escalation losses or purge failures.
                 self.drift.lock().await.remove(dir_name);
-                metrics::record_eviction(EvictionTier::Full);
-                tracing::info!(dir = %dir_name, freed_bytes = frees, "evicted repo");
+                metrics::record_eviction(tier);
+                tracing::info!(dir = %dir_name, freed_bytes = frees, tier = tier.as_str(), "evicted repo");
             }
             Err(e) => tracing::warn!(error = %e, dir = %dir_name, "eviction failed"),
         }
@@ -2099,7 +2170,21 @@ pub(crate) mod tests {
     /// Incompressible on purpose: zeros pack down to nothing, and the entry
     /// would never look as though it had drifted.
     async fn entry_with_fetched_blobs(tag: &str) -> (Fixture, CacheKey, u64) {
-        let f = fixture(tag);
+        fetch_blobs_into(fixture(tag)).await
+    }
+
+    /// Rewinding the drift throttle stands in for waiting out the interval.
+    async fn rewind_drift_throttle(store: &RepoStore) {
+        for state in store.drift.lock().await.values_mut() {
+            if let Some(rewound) = Instant::now().checked_sub(DRIFT_CHECK_INTERVAL) {
+                state.checked = rewound;
+            }
+        }
+    }
+
+    /// Commit a large blob at origin, clone it into `f`, and prefetch the
+    /// blob so the entry carries window weight above its skeleton.
+    async fn fetch_blobs_into(f: Fixture) -> (Fixture, CacheKey, u64) {
         sh(
             &f.root.join("origin"),
             "dd if=/dev/urandom of=big.bin bs=1024 count=4096 status=none && \
@@ -2650,15 +2735,7 @@ pub(crate) mod tests {
         // grows for as long as anyone keeps reading it. After enough losses
         // the repack must queue for the write side like a fetch would.
         //
-        // Rewinding the throttle stands in for waiting out the interval;
-        // losses must survive the rewind.
-        async fn rewind_throttle(store: &RepoStore) {
-            for state in store.drift.lock().await.values_mut() {
-                if let Some(rewound) = Instant::now().checked_sub(DRIFT_CHECK_INTERVAL) {
-                    state.checked = rewound;
-                }
-            }
-        }
+        // Losses must survive the throttle rewind.
 
         let (f, k, skeleton) = entry_with_fetched_blobs("drift-escalate").await;
         let entry_dir = f.store.entry_dir(&k);
@@ -2672,7 +2749,7 @@ pub(crate) mod tests {
         // Drive the real entry point, not the counter: each round is one page
         // served under the held guard, with only the throttle stepped forward.
         for lost in 1..PURGE_ESCALATION_AFTER {
-            rewind_throttle(&f.store).await;
+            rewind_drift_throttle(&f.store).await;
             f.store.purge_if_drifted(&k).await;
             assert_eq!(
                 dir_size(&entry_dir.join("repo.git")),
@@ -2681,7 +2758,7 @@ pub(crate) mod tests {
             );
         }
 
-        rewind_throttle(&f.store).await;
+        rewind_drift_throttle(&f.store).await;
         let escalated = tokio::spawn({
             let store = Arc::clone(&f.store);
             let k = k.clone();
@@ -2812,6 +2889,104 @@ pub(crate) mod tests {
             Ok(count) => assert_eq!(count, 0, "every blob of this window is already local"),
             Err(e) => panic!("presence filtering must not fail the prefetch: {e}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_purge_that_keeps_failing_evicts_the_entry_instead_of_looping() {
+        // A repack that cannot finish inside the heavy budget will not finish
+        // next time either, and every window served meanwhile makes the pack
+        // bigger: retried in place it leaves the entry over its cap and
+        // unservable for good. The second failure evicts, and the next open
+        // re-clones the skeleton.
+        let (f, k, _) = entry_with_fetched_blobs("purge-exhausted").await;
+        let entry_dir = f.store.entry_dir(&k);
+        assert!(
+            entry_dir.join("repo.git").is_dir(),
+            "the fixture must hold a clone"
+        );
+
+        // A second store over the same cache whose heavy budget no repack can
+        // meet — the failure this rule is about, made certain.
+        let failing = match RepoStore::open_cache(
+            &f.root.join("cache"),
+            2,
+            None,
+            Budget {
+                total_bytes: u64::MAX,
+            },
+            u64::MAX,
+        ) {
+            Ok(s) => Arc::new(s.with_heavy_timeout(Duration::from_millis(1))),
+            Err(e) => panic!("second store: {e}"),
+        };
+
+        failing.purge_if_drifted(&k).await;
+        assert!(
+            entry_dir.join("repo.git").is_dir(),
+            "one failed purge is a retry, not an eviction"
+        );
+
+        rewind_drift_throttle(&failing).await;
+        failing.purge_if_drifted(&k).await;
+        assert!(
+            !entry_dir.exists(),
+            "the second consecutive failure must evict the entry"
+        );
+
+        let guard = open_until_ready(&f, &k, refresh()).await;
+        assert_eq!(
+            guard.generation(),
+            1,
+            "the next open re-clones from scratch"
+        );
+        assert!(
+            RepoMeta::load(&entry_dir).is_some(),
+            "and publishes fresh metadata for the skeleton"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_past_half_its_cap_queues_its_purge_at_once() {
+        // Yielding to readers is right while an entry is small: three lost
+        // probes cost nothing. Past half the cap every window served during
+        // those losses is more pack for a repack that has to finish inside
+        // the heavy budget, so the purge queues for the lock on its first
+        // losing probe instead.
+        let cap = 6_000_000;
+        let (f, k, skeleton) = fetch_blobs_into(fixture_with_budget(
+            "purge-pressure-half",
+            1_000_000_000,
+            cap,
+        ))
+        .await;
+        let entry_dir = f.store.entry_dir(&k);
+        let inflated = dir_size(&entry_dir.join("repo.git"));
+        assert!(
+            inflated >= cap / PURGE_PRESSURE_CAP_DIVISOR && inflated < cap,
+            "the fixture must sit between half the cap and the cap: {inflated}"
+        );
+
+        let reader = match f.store.open(&k, &creds(), pinned(&f, &k, 1)).await {
+            Ok(g) => g,
+            Err(e) => panic!("pinned open: {e}"),
+        };
+        let purge = tokio::spawn({
+            let store = Arc::clone(&f.store);
+            let k = k.clone();
+            async move { store.purge_if_drifted(&k).await }
+        });
+        // Let the purge measure and reach its lock decision while the reader
+        // still holds the entry; an opportunistic probe would have given up.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(reader);
+        if let Err(e) = purge.await {
+            panic!("the purge task must not panic: {e}");
+        }
+
+        assert!(
+            dir_size(&entry_dir.join("repo.git")) < skeleton * 2,
+            "past half the cap the first probe must queue and reclaim, not yield"
+        );
     }
 
     #[tokio::test]
