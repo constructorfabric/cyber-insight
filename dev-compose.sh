@@ -2162,9 +2162,6 @@ cmd_test_stand() {
       ;;
 
     env)
-      # Writes the env file and stops. Everything an instance derives -- paths,
-      # ports, callback -- is visible without raising a stack, which is what
-      # the two-instance check asserts over.
       local build_frontend=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
