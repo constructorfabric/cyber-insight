@@ -249,8 +249,6 @@ def test_a_circular_manager_chain_terminates_and_stays_bounded(
     try:
         subjects.publish()
     except SubjectError as exc:
-        # Only the generic failure is the outcome this test is about; a lock or an
-        # input guard is its own problem and keeps its own message.
         if exc.returncode not in _SEED_RAN_AND_FAILED:
             raise
         pytest.fail(f"persons-seed must terminate on a cyclic manager chain: {exc}")

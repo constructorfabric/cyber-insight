@@ -1504,7 +1504,6 @@ test_stand_derive_port_offset() {
   printf '%d' "$(( 100 + (sum % 90) * 100 ))"
 }
 
-# Resolve every per-instance path and the port offset.
 test_stand_select_instance() {
   local requested="${1:-}" offset="${2:-}" project
   project="$(compose_project_name "$requested")" || return $?

@@ -221,9 +221,8 @@ class MetricResponse:
                 f"{self._test_name}: {key}/{kind}: find {selector} matched {len(found)} rows (expected exactly 1)"
             )
         identity = (key, kind, found[0])
-        # A second selector reaching the same row gets its own Row over the same
-        # `asserted` set, so a failure is reported under the selector that line wrote
-        # while completeness still accumulates across both.
+        # A fresh Row per call, over one shared `asserted` set: a failure names the
+        # selector that line wrote, and completeness still sees every assertion.
         row = Row(
             fields=items[found[0]],
             where=f"{self._test_name}: {key}/{kind} {selector}",

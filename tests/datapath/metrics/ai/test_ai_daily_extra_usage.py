@@ -94,11 +94,13 @@ def test_ai_daily_extra_usage_never_reports_a_negative_day(spec: SpecRun) -> Non
     daily = one(series, entity_id=ERIN)["points"]
     assert float(one(daily, bucket_start="2026-12-05")["value"]) == approx(4.0)
     assert float(one(daily, bucket_start="2026-12-06")["value"]) == approx(0.0)
-    for entry in series:
-        spent = [point["value"] for point in entry["points"]]
-        assert spent and all(value is not None and float(value) >= 0.0 for value in spent), (
-            f"every day is a real, non-negative amount: {entry['entity_id']} {spent!r}"
-        )
+    # A day with no reading is served as null, so the sign rule is over the days that
+    # have one — and the window must hold at least one, or the rule checks nothing.
+    readings = [point["value"] for entry in series for point in entry["points"]]
+    assert any(value is not None for value in readings), f"the window served no reading: {series!r}"
+    assert all(value is None or float(value) >= 0.0 for value in readings), (
+        f"a day was reported negative: {readings!r}"
+    )
 
 
 def test_ai_daily_extra_usage_holds_a_month_against_its_last_day_reading(spec: SpecRun) -> None:

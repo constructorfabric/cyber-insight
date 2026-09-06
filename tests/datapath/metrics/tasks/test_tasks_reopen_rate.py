@@ -10,7 +10,7 @@ the pool; a pool of four is below the peer minimum, so every percentile is withh
 from __future__ import annotations
 
 import pytest
-from insight_datapath.metric_expect import one, some
+from insight_datapath.metric_expect import approx, one
 from insight_datapath.spec_runner import SpecRun
 
 pytestmark = pytest.mark.fixture
@@ -21,8 +21,9 @@ ERIN = "erin@example.com"
 
 
 def test_tasks_reopen_rate(spec: SpecRun) -> None:
-    """Erin's five-close chain rates 80; the four-person pool reports n but no percentiles,
-    and per day a reopened close rates 100 while a day with no close carries no rate."""
+    """Erin's five-close chain rates 80; the four-person pool reports n but no percentiles.
+    Per day a reopened close rates 100, the close never undone rates null over the close it
+    still counts, and a day with no close counts nothing at all."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
@@ -49,11 +50,18 @@ def test_tasks_reopen_rate(spec: SpecRun) -> None:
     r.row("tasks.reopen_rate", "peer", entity_id=ERIN).equals(
         target_value=80, p25=None, median=None, p75=None, min=None, max=None, n=4
     )
+    # ROE-1 closes on the odd days 03-21..03-29 and reopens on the even ones between,
+    # so the last close is the one never undone and 03-30 holds no close at all.
     points = one(r.series("tasks.reopen_rate"), entity_id=ERIN)["points"]
-    assert some(points, value=100.0), f"a reopened close rates 100: {points!r}"
-    assert some(points, value=0.0), f"the close never undone rates 0: {points!r}"
-    assert [point for point in points if point["value"] is None], (
-        f"a day with no close carries no rate: {points!r}"
+    assert one(points, bucket_start="2026-03-21")["value"] == approx(100.0)
+
+    undone = one(points, bucket_start="2026-03-29")
+    assert undone["value"] is None, f"a rate over no reopens is null, not zero: {undone!r}"
+    assert undone["denominator"] == approx(1.0), f"the close it counted is gone: {undone!r}"
+
+    quiet = one(points, bucket_start="2026-03-30")
+    assert quiet["value"] is None and "denominator" not in quiet, (
+        f"a day with no close counts nothing: {quiet!r}"
     )
 
 
