@@ -86,36 +86,41 @@ function PersonNode({
   return (
     <>
       <SidebarMenuItem>
-        {hasReports ? (
-          filter ? (
-            <span
-              aria-hidden
-              className="absolute top-0 z-10 flex size-8 items-center justify-center [&>svg]:size-4"
-              style={{ left: `${0.5 + depth * 0.875}rem` }}
-            >
-              <ChevronDown />
-            </span>
-          ) : (
-            <button
-              type="button"
-              aria-expanded={open}
-              aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
-              className="absolute top-0 z-10 flex size-8 items-center justify-center rounded-md text-sidebar-foreground ring-sidebar-ring outline-hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 [&>svg]:size-4"
-              style={{ left: `${0.5 + depth * 0.875}rem` }}
-              onClick={() => onExpandedChange(node.person_id, !open)}
-            >
-              {open ? <ChevronDown /> : <ChevronRight />}
-            </button>
-          )
-        ) : null}
-        <SidebarMenuButton
-          isActive={isActive}
-          render={link}
-          style={{ paddingLeft: `${2.5 + depth * 0.875}rem` }}
+        <div
+          className="flex min-w-0 items-center gap-1"
+          style={{ paddingLeft: `${0.5 + depth * 0.875}rem` }}
         >
-          {hasReports ? <Users /> : <User />}
-          <span className="truncate">{label}</span>
-        </SidebarMenuButton>
+          {hasReports ? (
+            filter ? (
+              <span
+                aria-hidden
+                className="flex size-8 shrink-0 items-center justify-center text-muted-foreground [&>svg]:size-4"
+              >
+                <ChevronDown />
+              </span>
+            ) : (
+              <SidebarMenuButton
+                type="button"
+                aria-expanded={open}
+                aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+                className="w-8 shrink-0 justify-center p-0 text-muted-foreground"
+                onClick={() => onExpandedChange(node.person_id, !open)}
+              >
+                {open ? <ChevronDown /> : <ChevronRight />}
+              </SidebarMenuButton>
+            )
+          ) : (
+            <span aria-hidden className="size-8 shrink-0" />
+          )}
+          <SidebarMenuButton
+            isActive={isActive}
+            render={link}
+            className="min-w-0 flex-1 ps-2"
+          >
+            {hasReports ? <Users /> : <User />}
+            <span className="truncate">{label}</span>
+          </SidebarMenuButton>
+        </div>
       </SidebarMenuItem>
       {hasReports && open
         ? node.subordinates.map((sub) => (
@@ -181,26 +186,26 @@ function RosterList({
     // Padding INSIDE the scroll region the pane owns, so the first and last
     // names clear its edges instead of touching them.
     <SidebarMenu className="pb-2">
-        {listed.map(({ person, label }) => (
-          <SidebarMenuItem key={person.person_id}>
-            <SidebarMenuButton
-              isActive={
-                activePersonId
-                  ? personIdEq(activePersonId, person.person_id)
-                  : false
-              }
-              render={
-                <Link
-                  to="/ic/$person/personal"
-                  params={{ person: person.person_id }}
-                />
-              }
-            >
-              <span className="w-4 shrink-0" />
-              <User />
-              <span className="truncate">{label}</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+      {listed.map(({ person, label }) => (
+        <SidebarMenuItem key={person.person_id}>
+          <SidebarMenuButton
+            isActive={
+              activePersonId
+                ? personIdEq(activePersonId, person.person_id)
+                : false
+            }
+            render={
+              <Link
+                to="/ic/$person/personal"
+                params={{ person: person.person_id }}
+              />
+            }
+          >
+            <span className="w-4 shrink-0" />
+            <User />
+            <span className="truncate">{label}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
       ))}
     </SidebarMenu>
   );
@@ -216,7 +221,7 @@ export function OrgTree({
   const { roster } = useVisibleRoster(true);
   const viewer = useMemo(
     () => (viewerPersonId ? rosterTree(roster, viewerPersonId) : null),
-    [roster, viewerPersonId],
+    [roster, viewerPersonId]
   );
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activePersonId = useMemo(() => {
