@@ -98,6 +98,10 @@ keycloakConfig:
 analytics:
   replicaCount: 1
 
+insightV3Core:
+  replicaCount: 1
+  existingSecret: insight-v3-core-config
+
 # The authenticator's login-bootstrap resolve (GET /internal/persons/
 # by-external-id / by-email-override) lives on identity-resolution
 # (constructorfabric/insight#1960), so it must be deployed here — the

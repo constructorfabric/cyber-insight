@@ -6,18 +6,17 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-const RAW_DATA_TABLE: &str = "raw_data";
+use crate::tables::{TableError, TableName};
+
 const INSERT_SEND_TIMEOUT_SECS: u64 = 10;
 const INSERT_END_TIMEOUT_SECS: u64 = 30;
 const INSERT_TOTAL_TIMEOUT_SECS: u64 = 35;
-pub(crate) const MAX_TABLE_NAME_CHARS: usize = 128;
 
 #[derive(Debug)]
 pub(crate) struct RawDataRecord {
     table_name: TableName,
     raw_data: String,
 }
-
 impl RawDataRecord {
     pub(crate) fn parse(
         table_name: &str,
@@ -37,39 +36,16 @@ impl RawDataRecord {
         self.table_name.as_str()
     }
 
-    fn into_row(self) -> RawDataRow {
-        RawDataRow {
+    fn into_parts(self) -> (String, RawDataRow) {
+        let physical_table = self.table_name.as_str().to_owned();
+        let row = RawDataRow {
             id: Uuid::now_v7(),
             table_name: self.table_name.into_string(),
             raw_data: self.raw_data,
             received_at: Utc::now(),
-        }
-    }
-}
+        };
 
-#[derive(Debug)]
-struct TableName(String);
-
-impl TableName {
-    fn parse(value: &str) -> Result<Self, RawDataError> {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(RawDataError::EmptyTableName);
-        }
-        if value.chars().count() > MAX_TABLE_NAME_CHARS {
-            return Err(RawDataError::TableNameTooLong);
-        }
-
-        Ok(Self(value.to_owned()))
-    }
-
-    #[cfg(test)]
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn into_string(self) -> String {
-        self.0
+        (physical_table, row)
     }
 }
 
@@ -98,11 +74,11 @@ impl RawDataStore {
     }
 
     async fn insert_with_timeouts(&self, record: RawDataRecord) -> Result<(), StoreError> {
-        let row = record.into_row();
+        let (table, row) = record.into_parts();
         let mut insert = self
             .client
             .inner()
-            .insert::<RawDataRow>(RAW_DATA_TABLE)
+            .insert::<RawDataRow>(&table)
             .await?
             .with_timeouts(Some(self.timeouts.send), Some(self.timeouts.end));
         insert.write(&row).await?;
@@ -116,7 +92,6 @@ impl fmt::Debug for RawDataStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RawDataStore")
-            .field("table", &RAW_DATA_TABLE)
             .field("timeouts", &self.timeouts)
             .finish_non_exhaustive()
     }
@@ -141,10 +116,8 @@ impl InsertTimeouts {
 
 #[derive(Debug, Error)]
 pub(crate) enum RawDataError {
-    #[error("table must not be blank")]
-    EmptyTableName,
-    #[error("table must be at most {MAX_TABLE_NAME_CHARS} characters")]
-    TableNameTooLong,
+    #[error(transparent)]
+    Table(#[from] TableError),
     #[error("raw_data could not be serialized")]
     Serialization(#[from] serde_json::Error),
 }
@@ -185,11 +158,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logical_table_name_is_trimmed() {
-        let record = RawDataRecord::parse("  synthetic.events  ", &json!({"value": 1}))
+    fn physical_table_name_is_preserved() {
+        let record = RawDataRecord::parse("synthetic_events", &json!({"value": 1}))
             .unwrap_or_else(|error| panic!("record must parse: {error}"));
 
-        assert_eq!(record.table_name(), "synthetic.events");
+        assert_eq!(record.table_name(), "synthetic_events");
     }
 
     #[test]
@@ -203,18 +176,23 @@ mod tests {
             json!({"nested": [1, 2, 3]}),
         ] {
             assert!(
-                RawDataRecord::parse("synthetic.events", &value).is_ok(),
+                RawDataRecord::parse("synthetic_events", &value).is_ok(),
                 "every JSON shape must be accepted"
             );
         }
     }
 
     #[test]
-    fn blank_and_overlong_table_names_are_rejected() {
-        for table in ["", "   ", &"x".repeat(MAX_TABLE_NAME_CHARS + 1)] {
+    fn unsafe_table_names_are_rejected() {
+        for table in [
+            "",
+            "   ",
+            "synthetic.events",
+            &"x".repeat(crate::tables::MAX_TABLE_NAME_CHARS + 1),
+        ] {
             assert!(
                 RawDataRecord::parse(table, &json!(null)).is_err(),
-                "must reject logical table name: {table:?}"
+                "must reject physical table name: {table:?}"
             );
         }
     }
@@ -227,13 +205,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insert_writes_the_fixed_table_row() {
+    async fn insert_writes_the_selected_table_row() {
         let mock = Mock::new();
         let recording = mock.add(handlers::record::<RawDataRow>());
         let client =
             insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
         let store = RawDataStore::new(client);
-        let record = RawDataRecord::parse("synthetic.events", &json!({"nested": [1, true, null]}))
+        let record = RawDataRecord::parse("synthetic_events", &json!({"nested": [1, true, null]}))
             .unwrap_or_else(|error| panic!("record must parse: {error}"));
 
         store
@@ -243,7 +221,7 @@ mod tests {
         let rows: Vec<RawDataRow> = recording.collect().await;
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].table_name, "synthetic.events");
+        assert_eq!(rows[0].table_name, "synthetic_events");
         assert_eq!(rows[0].raw_data, r#"{"nested":[1,true,null]}"#);
         assert_ne!(rows[0].id, uuid::Uuid::nil());
     }
@@ -276,7 +254,7 @@ mod tests {
                 total: timeout,
             },
         );
-        let record = RawDataRecord::parse("synthetic.events", &json!(1))
+        let record = RawDataRecord::parse("synthetic_events", &json!(1))
             .unwrap_or_else(|error| panic!("record must parse: {error}"));
 
         let result = tokio::time::timeout(Duration::from_secs(1), store.insert(record)).await;

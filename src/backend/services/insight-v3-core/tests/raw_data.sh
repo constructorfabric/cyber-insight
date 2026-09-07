@@ -9,14 +9,18 @@ clickhouse_user="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_USER:-${INTEGRATION_TESTS_CLI
 clickhouse_password="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_PASSWORD:-${INTEGRATION_TESTS_CLICKHOUSE_PASSWORD:-}}"
 port="${INSIGHT_V3_CORE_TEST_PORT:-18086}"
 token="${INSIGHT_V3_CORE_TEST_TOKEN:-synthetic-test-token-0123456789abcdef}"
-table_name="synthetic.events.$$"
+table_name="synthetic_events_$$"
 log_file="$(mktemp)"
 pid=""
+table_created="false"
 
 cleanup() {
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+  fi
+  if [[ "$table_created" == "true" ]]; then
+    clickhouse_query "DROP TABLE IF EXISTS $table_name" >/dev/null 2>&1 || true
   fi
   rm -f "$log_file"
 }
@@ -52,8 +56,7 @@ done
 
 "${app_env[@]}" \
   "APP__gears__api_gateway__config__bind_addr=127.0.0.1:$port" \
-  cargo run --quiet --manifest-path "$backend_dir/Cargo.toml" \
-  --package insight-v3-core -- \
+  "$backend_dir/target/debug/insight-v3-core" \
   --config "$service_dir/config/insight.yaml" run >"$log_file" 2>&1 &
 pid=$!
 
@@ -75,6 +78,29 @@ if [[ "$ready" != "true" ]]; then
   cat "$log_file"
   exit 1
 fi
+
+status="$(curl --silent --connect-timeout 2 --max-time 10 \
+  --output /dev/null --write-out '%{http_code}' \
+  --request PUT \
+  "http://127.0.0.1:$port/v1/tables/$table_name")"
+[[ "$status" == "401" ]]
+
+for _ in 1 2; do
+  status="$(curl --silent --connect-timeout 2 --max-time 10 \
+    --output /dev/null --write-out '%{http_code}' \
+    --request PUT \
+    --header "x-insight-token: $token" \
+    "http://127.0.0.1:$port/v1/tables/$table_name")"
+  [[ "$status" == "204" ]] || exit 1
+  table_created="true"
+done
+
+schema="$(clickhouse_query "SELECT name, type
+FROM system.columns
+WHERE database = currentDatabase() AND table = '$table_name'
+ORDER BY position
+FORMAT TSV")"
+[[ "$schema" == $'id\tUUID\ntable_name\tString\nraw_data\tString\nreceived_at\tDateTime64(3, \'UTC\')' ]]
 
 raw_values=(
   '{"nested":[1,true,null]}'
@@ -98,8 +124,7 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
   "http://127.0.0.1:$port/v1/raw-data")"
 [[ "$status" == "401" ]]
 
-before="$(clickhouse_query \
-  "SELECT count() FROM raw_data WHERE table_name = '$table_name'")"
+before="$(clickhouse_query "SELECT count() FROM $table_name")"
 [[ "$before" == "0" ]]
 
 for raw_value in "${raw_values[@]}"; do
@@ -119,6 +144,6 @@ stored="$(clickhouse_query "SELECT
   countIf(raw_data = '[1,2,3]'),
   countIf(raw_data = '\"scalar\"'),
   countIf(raw_data = '42')
-FROM raw_data
+FROM $table_name
 WHERE table_name = '$table_name'")"
 [[ "$stored" == $'4\t1\t1\t1\t1' ]]

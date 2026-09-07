@@ -32,6 +32,9 @@ class ChangedCliTests(unittest.TestCase):
             "backend-insight-v3-core:",
             "merge-insight-v3-core:",
             "${{ env.IMAGE_PREFIX }}/insight-v3-core",
+            "INSIGHT_V3_CORE: ${{ needs.changes.outputs.insight_v3_core }}",
+            "src/backend/services/insight-v3-core/helm/Chart.yaml",
+            "|| needs.changes.outputs.insight_v3_core == 'true'",
         ]:
             self.assertIn(required, workflow)
         self.assertGreaterEqual(workflow.count("- merge-insight-v3-core"), 2)

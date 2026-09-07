@@ -73,6 +73,11 @@ gateway:
       upstream: 'http://{{ .Release.Name }}-analytics:8081'
       timeoutMs: 135000
       stripPrefix: true
+    - prefix: /api/core
+      upstream: 'http://{{ .Release.Name }}-v3-core:8086'
+      auth: instance_token
+      timeoutMs: 40000
+      stripPrefix: true
     - prefix: /api/identity
       upstream: 'http://{{ .Release.Name }}-identity-resolution:8082'
       stripPrefix: true

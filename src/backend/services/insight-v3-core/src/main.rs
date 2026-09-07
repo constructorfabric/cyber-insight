@@ -3,6 +3,7 @@ mod config;
 mod gear;
 mod migration;
 mod raw_data;
+mod tables;
 
 use api_gateway as _;
 use authn_resolver as _;

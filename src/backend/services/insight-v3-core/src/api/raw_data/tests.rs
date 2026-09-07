@@ -1,7 +1,9 @@
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::task::Poll;
 
 use axum::body::{Body, to_bytes};
+use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderMap, HeaderValue, Request};
 use chrono::{DateTime, Utc};
 use clickhouse::test::{Mock, handlers, status};
@@ -14,7 +16,13 @@ use tower::ServiceExt as _;
 use uuid::Uuid;
 
 use super::*;
+use crate::api::AppState;
+use crate::api::admission::{
+    INGEST_TOKEN_HEADER, IngestAdmission, MAX_CONCURRENT_WRITES, MAX_REQUEST_BODY_BYTES,
+    TokenVerifier,
+};
 use crate::raw_data::RawDataStore;
+use crate::tables::TableStore;
 
 const TEST_TOKEN: &str = "correct-token-0123456789abcdefghi";
 
@@ -32,16 +40,25 @@ fn verifier() -> TokenVerifier {
     TokenVerifier::new(&SecretString::from(TEST_TOKEN.to_owned()))
 }
 
+fn state(mock: &Mock) -> Arc<AppState> {
+    let url = mock.url();
+    Arc::new(AppState::new(
+        RawDataStore::new(insight_clickhouse::Client::new(
+            insight_clickhouse::Config::new(url, "insight"),
+        )),
+        TableStore::new(insight_clickhouse::Client::new(
+            insight_clickhouse::Config::new(url, "insight"),
+        )),
+    ))
+}
+
 fn app(mock: &Mock) -> Router {
-    let client =
-        insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
-    let state = Arc::new(AppState::new(RawDataStore::new(client)));
     let openapi = OpenApiRegistryImpl::new();
 
     register_routes(
         Router::new(),
         &openapi,
-        state,
+        state(mock),
         IngestAdmission::new(&SecretString::from(TEST_TOKEN.to_owned())),
     )
 }
@@ -123,7 +140,7 @@ async fn authorized_request_commits_the_insert_before_returning_no_content() {
     let mock = Mock::new();
     let recording = mock.add(handlers::record::<CapturedRawDataRow>());
     let body = serde_json::to_vec(&json!({
-        "table": "  synthetic.events  ",
+        "table": "synthetic_events",
         "raw_data": [1, {"nested": true}]
     }))
     .unwrap_or_else(|error| panic!("test JSON must serialize: {error}"));
@@ -137,7 +154,7 @@ async fn authorized_request_commits_the_insert_before_returning_no_content() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(rows.len(), 1);
     assert_ne!(rows[0].id, Uuid::nil());
-    assert_eq!(rows[0].table_name, "synthetic.events");
+    assert_eq!(rows[0].table_name, "synthetic_events");
     assert_eq!(rows[0].raw_data, r#"[1,{"nested":true}]"#);
     assert!(rows[0].received_at <= Utc::now());
 }
@@ -161,7 +178,7 @@ async fn invalid_table_name_is_a_client_error_without_an_insert() {
 async fn oversized_request_is_rejected_before_an_insert() {
     let mock = Mock::new();
     let body = format!(
-        r#"{{"table":"synthetic.events","raw_data":"{}"}}"#,
+        r#"{{"table":"synthetic_events","raw_data":"{}"}}"#,
         "x".repeat(MAX_REQUEST_BODY_BYTES)
     );
 
@@ -176,9 +193,7 @@ async fn oversized_request_is_rejected_before_an_insert() {
 #[tokio::test]
 async fn saturated_gate_rejects_without_polling_the_body_or_clickhouse() {
     let mock = Mock::new();
-    let client =
-        insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
-    let state = Arc::new(AppState::new(RawDataStore::new(client)));
+    let state = state(&mock);
     let admission = IngestAdmission::new(&SecretString::from(TEST_TOKEN.to_owned()));
     let _permits: Vec<_> = (0..MAX_CONCURRENT_WRITES)
         .map(|_| {
@@ -220,7 +235,7 @@ async fn missing_json_content_type_remains_unsupported_media_type() {
         .method("POST")
         .uri("/v1/raw-data")
         .header(INGEST_TOKEN_HEADER, TEST_TOKEN)
-        .body(Body::from(r#"{"table":"synthetic.events","raw_data":1}"#))
+        .body(Body::from(r#"{"table":"synthetic_events","raw_data":1}"#))
         .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
 
     let response = app(&mock)
@@ -238,7 +253,7 @@ async fn clickhouse_failure_returns_only_a_generic_error() {
 
     let response = app(&mock)
         .oneshot(post(
-            Body::from(r#"{"table":"synthetic.events","raw_data":1}"#),
+            Body::from(r#"{"table":"synthetic_events","raw_data":1}"#),
             Some(TEST_TOKEN),
         ))
         .await
@@ -258,9 +273,7 @@ async fn clickhouse_failure_returns_only_a_generic_error() {
 async fn openapi_documents_the_instance_token_and_timeout_response() {
     let mock = Mock::new();
     let openapi = OpenApiRegistryImpl::new();
-    let client =
-        insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
-    let state = Arc::new(AppState::new(RawDataStore::new(client)));
+    let state = state(&mock);
     let _ = register_routes(
         Router::new(),
         &openapi,

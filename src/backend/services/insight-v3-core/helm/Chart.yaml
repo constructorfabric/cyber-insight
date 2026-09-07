@@ -1,0 +1,7 @@
+apiVersion: v2
+name: insight-v3-core
+description: Insight v3 Core — token-authenticated raw-data ingestion
+version: 0.1.0
+# Managed by the release pipeline when this service image is rebuilt.
+appVersion: "2026.09.07.05.19-8dd84fd"
+type: application

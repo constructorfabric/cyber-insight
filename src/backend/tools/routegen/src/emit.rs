@@ -467,6 +467,9 @@ fn emit_api_location(
     writeln!(c, "        # route: {} -> {}", route.prefix, route.upstream)?;
     match route.auth {
         Authentication::Session => writeln!(c, "        location {} {{", route.prefix)?,
+        Authentication::InstanceToken if route.strip_prefix => {
+            writeln!(c, "        location {} {{", route.prefix)?;
+        }
         Authentication::Bearer | Authentication::InstanceToken => {
             writeln!(c, "        location = {} {{", route.prefix)?;
         }

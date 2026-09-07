@@ -33,7 +33,7 @@
 ##    These are just strings the consumers (and the pre-install init-DB
 ##    Hook Jobs) read — the umbrella never runs the dep itself.
 ##
-## 4. Core app services (apiGateway, analytics, frontend) are MANDATORY
+## 4. Core app services (apiGateway, analytics, insightV3Core, frontend) are MANDATORY
 ##    components of the umbrella — no deploy-flag. The gateway is the
 ##    only entrance to the cluster internals; the other services are
 ##    reachable only through it. This matches the Constructor Platform
@@ -615,6 +615,23 @@ analytics:
     caCertSecret: "insight-authenticator-authn-tls-cert"
     caCertPaths:
       - /etc/insight/authn-ca/ca.crt
+# ─── Insight v3 Core ─────────────────────────────────────────────────────
+# Token-authenticated ingestion into caller-selected ClickHouse tables. The
+# API may create new physical tables, but every table uses the service's fixed
+# raw-data envelope; callers do not define ClickHouse columns or types.
+insightV3Core:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/constructorfabric/insight-v3-core
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 64Mi}
+    limits: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
+  existingSecret: "insight-v3-core-config"
+  # Hook-rendered twin for fresh imperative installs. GitOps pre-creates the
+  # main config Secret, so this reference is optional there.
+  migrateEnvSecret: "insight-v3-core-migrate-env"
 # ─── Identity Resolution (Rust identity service, epic #1602) ─────────────
 # The persons-store API. Reads from MariaDB `persons`, written by the seed
 # CronJob (the service's own `seed` subcommand) fed off ClickHouse
