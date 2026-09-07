@@ -188,7 +188,8 @@ async fn store_definition(
 }
 
 /// The tables the reader has data in, each with the field names and types
-/// `TableStore::sample_fields` found in its most recent rows.
+/// `TableStore::sample_fields` found in its most recent rows. A table with
+/// nothing in it is left out.
 ///
 /// Read from the ingested tables themselves. Deriving them from the stored
 /// metrics instead meant a stand with no metrics yet told the model there
@@ -214,6 +215,12 @@ async fn known_tables(state: &AppState) -> Vec<KnownTable> {
             .sample_fields(&table_name)
             .await
             .unwrap_or_default();
+
+        // Nothing has landed here, so there are no fields to query and
+        // naming it only crowds the list the reader is shown.
+        if fields.is_empty() {
+            continue;
+        }
 
         described.push(KnownTable {
             fields: fields

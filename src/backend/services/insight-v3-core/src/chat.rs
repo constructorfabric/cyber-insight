@@ -23,7 +23,7 @@ const NAME_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
 #[derive(Debug, Clone)]
 pub(crate) struct KnownTable {
     pub(crate) name: String,
-    /// `day (string), lines (int)`, empty until something has landed.
+    /// `day (string), lines (int)`, sampled from its rows.
     pub(crate) fields: String,
 }
 
@@ -381,10 +381,8 @@ fn system_prompt(tables: &[KnownTable]) -> String {
         for table in tables {
             prompt.push_str("- ");
             prompt.push_str(&table.name);
-            if !table.fields.is_empty() {
-                prompt.push_str(": ");
-                prompt.push_str(&table.fields);
-            }
+            prompt.push_str(": ");
+            prompt.push_str(&table.fields);
             prompt.push('\n');
         }
     }
@@ -732,23 +730,15 @@ mod tests {
 
     #[test]
     fn the_prompt_names_every_table_with_its_fields() {
-        let prompt = system_prompt(&[
-            KnownTable {
-                name: "events".to_owned(),
-                fields: "day (string), lines (int)".to_owned(),
-            },
-            KnownTable {
-                name: "empty_yet".to_owned(),
-                fields: String::new(),
-            },
-        ]);
+        let prompt = system_prompt(&[KnownTable {
+            name: "events".to_owned(),
+            fields: "day (string), lines (int)".to_owned(),
+        }]);
 
         assert!(
             prompt.contains("- events: day (string), lines (int)"),
             "{prompt}"
         );
-        // A table nothing has landed in yet is still a table it may read.
-        assert!(prompt.contains("- empty_yet\n"), "{prompt}");
         assert!(!prompt.contains("No tables are known yet"), "{prompt}");
     }
 
