@@ -247,6 +247,9 @@ fn chat_error(error: ChatError) -> CanonicalError {
         ChatError::Metric(source) => ChatApiError::invalid_argument()
             .with_field_violation("reply", source.to_string(), "INVALID")
             .create(),
+        ChatError::EmptyCreate => ChatApiError::invalid_argument()
+            .with_field_violation("reply", ChatError::EmptyCreate.to_string(), "INVALID")
+            .create(),
         ChatError::TokenRejected => {
             tracing::error!("the configured anthropic token was rejected upstream");
             CanonicalError::internal("chat is not configured correctly").create()

@@ -51,12 +51,18 @@ impl Proposal {
                 metric,
                 widgets,
                 dashboard,
-            } => Self::Create {
-                reply,
-                metric: metric.map(compile_named_metric).transpose()?,
-                widgets: widgets.into_iter().map(NamedBody::into_pair).collect(),
-                dashboard: dashboard.map(NamedBody::into_pair),
-            },
+            } => {
+                if metric.is_none() && widgets.is_empty() && dashboard.is_none() {
+                    return Err(ChatError::EmptyCreate);
+                }
+
+                Self::Create {
+                    reply,
+                    metric: metric.map(compile_named_metric).transpose()?,
+                    widgets: widgets.into_iter().map(NamedBody::into_pair).collect(),
+                    dashboard: dashboard.map(NamedBody::into_pair),
+                }
+            }
         })
     }
 }
@@ -121,6 +127,8 @@ pub(crate) enum ChatError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Metric(#[from] MetricQueryError),
+    #[error("a create must carry at least one metric, widget or dashboard")]
+    EmptyCreate,
     #[error("the key was rejected upstream")]
     TokenRejected,
     #[error("the model is unavailable right now")]
@@ -283,7 +291,7 @@ fn system_prompt(tables: &[String]) -> String {
     let mut prompt = String::from(
         "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\n\
          - Call `answer` to answer a question: it runs one query and stores nothing.\n\
-         - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition.\n\n\
+         - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition. A create that carries none of the three is refused, and a dashboard needs the metric and widgets it draws.\n\n\
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"limit\":<int>|null}.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
          A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
@@ -459,7 +467,7 @@ fn proposal_tools() -> Vec<Value> {
         }),
         json!({
             "name": CREATE_TOOL,
-            "description": "Build metric, widget and dashboard definitions to store. Use only when asked to build or save something.",
+            "description": "Build metric, widget and dashboard definitions to store. Use only when asked to build or save something. Carry every definition the request needs: a dashboard request means the metric, the widgets that draw it, and the dashboard holding them.",
             "input_schema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -631,11 +639,21 @@ mod tests {
 
     #[test]
     fn prose_around_the_json_is_tolerated() {
-        let reply = "Sure!\n```json\n{\"intent\":\"create\",\"reply\":\"ok\",\"widgets\":[],\"dashboard\":null}\n```";
+        let reply = "Sure!\n```json\n{\"intent\":\"create\",\"reply\":\"ok\",\"widgets\":[],\"dashboard\":{\"name\":\"lines\",\"body\":{\"title\":\"Lines\",\"widgets\":[]}}}\n```";
 
         assert!(matches!(
             Proposal::parse(reply),
             Ok(Proposal::Create { .. })
+        ));
+    }
+
+    #[test]
+    fn a_create_that_stores_nothing_is_refused() {
+        let reply = json!({ "intent": "create", "reply": "done", "widgets": [] }).to_string();
+
+        assert!(matches!(
+            Proposal::parse(&reply),
+            Err(ChatError::EmptyCreate)
         ));
     }
 
