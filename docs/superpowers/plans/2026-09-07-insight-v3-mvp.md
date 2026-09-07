@@ -652,7 +652,7 @@ git commit -m "feat(insight-v3-core): compile metric definitions to SQL and run 
 - Consumes: `PUT /v1/tables/{table}`, `POST /v1/raw-data`, every endpoint from Tasks 2 and 3, and `tests/lib/insight_stand/service_token.py` (`open_service_session`, `default_token_url`) for the session the definition endpoints require.
 - Produces: a script that proves steps 0-4 of the MVP against the compose stack.
 
-**Credentials:** ingest calls carry the ingest token. Definition calls carry a bearer token minted by `service_token.py` — it POSTs `grant_type=client_credentials` to the authenticator's token listener. The two never share a credential.
+**Credentials:** the script talks directly to the service on host port 8087, not through the gateway. Ingest calls carry `X-Insight-Token: $INSIGHT_V3_INGEST_TOKEN`. Definition calls need no credential — the service registers them anonymous and the gateway supplies the session for browsers only. The gateway cannot authenticate this script at all: `gateway.lua` reads a `__Host-sid` cookie and ignores `Authorization` headers.
 
 - [ ] **Step 1: Write the fixture**
 
@@ -666,12 +666,12 @@ git commit -m "feat(insight-v3-core): compile metric definitions to SQL and run 
 
 - [ ] **Step 2: Write the script**
 
-Follow `tests/raw_data.sh` for the env-var names and the cleanup trap, but run against the compose stack rather than a standalone service — the definition endpoints need the authenticator, so `./dev-compose.sh up` must be up first. The body:
+Follow `tests/raw_data.sh` for the env-var names and the cleanup trap, but point every call at `http://localhost:8087` — the service as published by the compose stack, which must be up first (`./dev-compose.sh up`). The body:
 
-0. Mint a bearer token: `python3 -c "from insight_stand.service_token import open_service_session; ..."` with `PYTHONPATH=tests/lib`, and export it as `TOKEN`. Fail with a clear message if the authenticator is unreachable — that means the stack is not up.
+0. Read `INSIGHT_V3_INGEST_TOKEN` from the environment and fail with a clear message if it is unset or under 32 bytes — the service's own config validator rejects anything shorter.
 1. `PUT /v1/tables/events`
 2. `POST /v1/raw-data` per fixture line, with the ingest token
-   (every call from here down carries `Authorization: Bearer $TOKEN` instead)
+   (definition calls from here down carry no auth header at all)
 3. `PUT /v1/metrics/commits_per_day` with the grouped-count metric from Task 3's first test
 4. `POST /v1/metrics/commits_per_day/run`, assert ten rows and the two column names
 5. `PUT /v1/widgets/commits_table` — `{"type":"table","metric":"commits_per_day","columns":["day","lines"]}`
@@ -682,7 +682,7 @@ Follow `tests/raw_data.sh` for the env-var names and the cleanup trap, but run a
 - [ ] **Step 3: Run it against the stack**
 
 Run: `./dev-compose.sh up` from the repo root, then `cd src/backend/services/insight-v3-core && ./tests/mvp.sh`
-Expected: exits 0, printing each step. A 401 on a definition call means the token step failed — fix that rather than loosening the endpoint's auth.
+Expected: exits 0, printing each step. A 401 on an ingest call means the header name or the token is wrong — it is `X-Insight-Token`, not `Authorization`.
 
 - [ ] **Step 4: Commit**
 

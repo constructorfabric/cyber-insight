@@ -35,7 +35,7 @@ TBD
 
 ## Decision Outcome
 
-Ingest authenticates with a static bearer token, one per environment, instead of the platform OIDC path.
+Ingest authenticates with a static per-instance token, sent in an `X-Insight-Token` header, instead of the platform OIDC path.
 
 ### Consequences
 
