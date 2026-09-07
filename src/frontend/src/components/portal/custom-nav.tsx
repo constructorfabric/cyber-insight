@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { LayoutDashboard } from "lucide-react";
+import { ChartLine, LayoutDashboard, Sigma } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -16,11 +16,67 @@ import { dashboardNamesQuery } from "@/queries/custom";
 import { TEXT_LABEL } from "@/lib/type-scale";
 
 /**
- * The custom zone's pane: one nav row per dashboard, read from the same query
- * the page reads, so a dashboard the chat just built appears here as soon as
- * the list is invalidated — no reload.
+ * The custom zone's pane: the three catalogues, then one row per dashboard
+ * read from the same query the page reads — so a dashboard the chat just
+ * built appears here as soon as the list is invalidated, with no reload.
  */
 export function CustomNav() {
+  return (
+    <>
+      <SidebarGroup>
+        <SidebarGroupLabel>Catalogue</SidebarGroupLabel>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <CatalogueRow
+              to="/portal/custom"
+              label="Dashboards"
+              icon={<LayoutDashboard />}
+              exact
+            />
+            <CatalogueRow
+              to="/portal/custom/metrics"
+              label="Metrics"
+              icon={<Sigma />}
+            />
+            <CatalogueRow
+              to="/portal/custom/widgets"
+              label="Widgets"
+              icon={<ChartLine />}
+            />
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+      <DashboardRows />
+    </>
+  );
+}
+
+function CatalogueRow({
+  to,
+  label,
+  icon,
+  exact = false,
+}: {
+  to: "/portal/custom" | "/portal/custom/metrics" | "/portal/custom/widgets";
+  label: string;
+  icon: React.ReactNode;
+  /** Dashboards owns the zone root, so it must not match every child path. */
+  exact?: boolean;
+}) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const active = exact ? pathname === to : pathname.startsWith(to);
+
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton isActive={active} render={<Link to={to} />}>
+        {icon}
+        <span>{label}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+function DashboardRows() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { data: names, isPending, isError } = useQuery(dashboardNamesQuery());
 
@@ -42,9 +98,7 @@ export function CustomNav() {
               <SidebarMenuItem key={name}>
                 <SidebarMenuButton
                   isActive={pathname === `/portal/custom/${name}`}
-                  render={
-                    <Link to="/portal/custom/$name" params={{ name }} />
-                  }
+                  render={<Link to="/portal/custom/$name" params={{ name }} />}
                 >
                   <LayoutDashboard />
                   <span>{name}</span>

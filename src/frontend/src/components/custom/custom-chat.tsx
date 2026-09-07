@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { SendHorizontal, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -128,12 +128,17 @@ export function CustomChat({ onCreated }: CustomChatProps) {
         <div ref={threadEnd} />
       </div>
 
-      <div className="border-t p-3">
+      {/* The composer, shaped like every chat the reader already uses: the box
+          and the send action on one row, the action an icon. A labelled block
+          button below the box read as a form to submit rather than a message
+          to send, and the keyboard hint beside it said nothing after the
+          first send. */}
+      <div className="flex items-center gap-2 border-t p-3">
         <Textarea
           data-testid="chat-input"
           value={message}
-          rows={3}
-          className="resize-none bg-background"
+          rows={2}
+          className="max-h-40 min-h-11 flex-1 resize-none bg-background"
           onChange={(event) => setMessage(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -141,25 +146,22 @@ export function CustomChat({ onCreated }: CustomChatProps) {
               void handleSend();
             }
           }}
-          placeholder="Ask a question, or describe a dashboard to create"
+          placeholder="Message"
         />
-        <div className="mt-2 flex items-center gap-2">
-          <Button
-            data-testid="chat-send"
-            type="button"
-            size="sm"
-            onClick={() => void handleSend()}
-            disabled={sendChat.isPending}
-          >
-            Send
-          </Button>
-          {/* One pending affordance per request: the thread carries it, where
-              the answer is about to appear. A second spinner beside the button
-              said the same thing twice. */}
-          <span className={TEXT_LABEL}>
-            Enter sends, Shift+Enter breaks the line
-          </span>
-        </div>
+        <Button
+          data-testid="chat-send"
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Send"
+          // `size="icon"` is 50x36 here: a wide box around a plane, 8px
+          // shorter than the input beside it. Square it and the two line up.
+          className="size-10 shrink-0 text-primary disabled:opacity-40"
+          onClick={() => void handleSend()}
+          disabled={sendChat.isPending || message.trim() === ""}
+        >
+          <SendHorizontal className="size-5 fill-current stroke-1" />
+        </Button>
       </div>
     </aside>
   );

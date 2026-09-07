@@ -7,7 +7,10 @@ import {
 import {
   fetchDashboard,
   fetchDashboardNames,
+  fetchMetric,
+  fetchMetricNames,
   fetchWidget,
+  fetchWidgetNames,
   runMetric,
   sendChat,
 } from "@/api/custom-client";
@@ -25,6 +28,27 @@ export function dashboardQuery(name: string) {
   return queryOptions({
     queryKey: ["custom", "dashboard", name],
     queryFn: () => fetchDashboard(name),
+  });
+}
+
+export function metricNamesQuery() {
+  return queryOptions({
+    queryKey: ["custom", "metric-names"],
+    queryFn: () => fetchMetricNames(),
+  });
+}
+
+export function metricQuery(name: string) {
+  return queryOptions({
+    queryKey: ["custom", "metric", name],
+    queryFn: () => fetchMetric(name),
+  });
+}
+
+export function widgetNamesQuery() {
+  return queryOptions({
+    queryKey: ["custom", "widget-names"],
+    queryFn: () => fetchWidgetNames(),
   });
 }
 
@@ -49,9 +73,13 @@ export function useSendChat() {
 }
 
 export function invalidateDashboardList(queryClient: QueryClient) {
-  return queryClient.invalidateQueries({
-    queryKey: dashboardNamesQuery().queryKey,
-  });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: dashboardNamesQuery().queryKey }),
+    // The catalogue pages read these, and a chat that built a dashboard
+    // built its metric and widgets too.
+    queryClient.invalidateQueries({ queryKey: metricNamesQuery().queryKey }),
+    queryClient.invalidateQueries({ queryKey: widgetNamesQuery().queryKey }),
+  ]);
 }
 
 export function invalidateDashboardPage(

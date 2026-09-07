@@ -18,6 +18,25 @@ export interface LineWidget {
 
 export type Widget = TableWidget | LineWidget;
 
+/** A metric's stored query, as the service interprets it. */
+export interface MetricDefinition {
+  table: string;
+  fields: {
+    json: string;
+    type: string;
+    agg?: string;
+    as_name: string;
+  }[];
+  group_by?: string[];
+  filters?: {
+    json: string;
+    type: string;
+    op: string;
+    value: unknown;
+  }[];
+  limit?: number;
+}
+
 export interface MetricResult {
   columns: string[];
   rows: unknown[][];
@@ -79,6 +98,25 @@ export async function fetchDashboard(name: string): Promise<Dashboard> {
     `${BASE}/dashboards/${encodeURIComponent(name)}`
   );
   return readJson<Dashboard>(res);
+}
+
+export async function fetchMetricNames(): Promise<string[]> {
+  const res = await fetchWithAuth(`${BASE}/metrics`);
+  const body = await readJson<{ names: string[] }>(res);
+  return body.names;
+}
+
+export async function fetchMetric(name: string): Promise<MetricDefinition> {
+  const res = await fetchWithAuth(
+    `${BASE}/metrics/${encodeURIComponent(name)}`
+  );
+  return readJson<MetricDefinition>(res);
+}
+
+export async function fetchWidgetNames(): Promise<string[]> {
+  const res = await fetchWithAuth(`${BASE}/widgets`);
+  const body = await readJson<{ names: string[] }>(res);
+  return body.names;
 }
 
 export async function fetchWidget(name: string): Promise<Widget> {
