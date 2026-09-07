@@ -95,7 +95,9 @@ Six rules, all in `metric_expect.py`:
    method.
 3. **A selector is a subset match.** It checks only the keys it names, and
    against a *list* it succeeds when any element matches — which is how a
-   dimension selector picks one tuple out of a row's dimension list.
+   dimension selector picks one tuple out of a row's dimension list. A number
+   inside a selector compares with the tolerance of rule 2, so selecting a row
+   by a served ratio is safe.
 4. **Touch a row, owe its view's required fields.** A period row owes `value`;
    a peer row owes all seven of its statistics; a timeseries row owes `points`;
    a breakdown row owes `value`; a rollup row owes `value` and its contributing

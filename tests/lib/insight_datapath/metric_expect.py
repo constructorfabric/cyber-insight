@@ -134,7 +134,7 @@ class Row:
     def __getitem__(self, key: str) -> Any:
         return self.fields[key]
 
-    def equals(self, **expected: Any) -> Row:
+    def equals(self, **expected: Any) -> None:
         for name, value in expected.items():
             if name not in self.fields:
                 raise ExpectError(f"{self.where}: {name}: field is missing")
@@ -143,9 +143,8 @@ class Row:
                 raise ExpectError(f"{self.where}: {name}: expected {value!r}, got {got!r}")
             self.asserted.add(name)
         self.record()
-        return self
 
-    def contains(self, **selectors: Any) -> Row:
+    def contains(self, **selectors: Any) -> None:
         for name, selector in selectors.items():
             values = self.fields.get(name)
             if not isinstance(values, list) or not any(
@@ -154,9 +153,8 @@ class Row:
                 raise ExpectError(f"{self.where}: {name} contains no match for {selector!r}")
             self.asserted.add(name)
         self.record()
-        return self
 
-    def check(self, name: str, predicate: Callable[[Any], bool], describe: str = "") -> Row:
+    def check(self, name: str, predicate: Callable[[Any], bool], describe: str = "") -> None:
         """Assert `predicate` over one field; counts as examining it, like `equals`."""
         if name not in self.fields:
             raise ExpectError(f"{self.where}: {name}: field is missing")
@@ -167,15 +165,13 @@ class Row:
             )
         self.asserted.add(name)
         self.record()
-        return self
 
-    def nonempty(self, *names: str) -> Row:
+    def nonempty(self, *names: str) -> None:
         for name in names:
             if not self.fields.get(name):
                 raise ExpectError(f"{self.where}: {name} is empty")
             self.asserted.add(name)
         self.record()
-        return self
 
 
 class MetricResponse:
