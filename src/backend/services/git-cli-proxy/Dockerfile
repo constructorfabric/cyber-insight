@@ -20,6 +20,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY libs/insight-clickhouse/Cargo.toml ./libs/insight-clickhouse/Cargo.toml
 COPY libs/insight-http-metrics/Cargo.toml ./libs/insight-http-metrics/Cargo.toml
+COPY libs/insight-log-context/Cargo.toml ./libs/insight-log-context/Cargo.toml
 COPY libs/authenticator-sdk/Cargo.toml ./libs/authenticator-sdk/Cargo.toml
 COPY libs/insight-migration/Cargo.toml ./libs/insight-migration/Cargo.toml
 COPY services/analytics/Cargo.toml ./services/analytics/Cargo.toml
@@ -31,6 +32,7 @@ COPY tools/routegen/Cargo.toml ./tools/routegen/Cargo.toml
 
 RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/src/lib.rs && \
     mkdir -p libs/insight-http-metrics/src && echo "" > libs/insight-http-metrics/src/lib.rs && \
+    mkdir -p libs/insight-log-context/src && echo "" > libs/insight-log-context/src/lib.rs && \
     mkdir -p libs/authenticator-sdk/src && echo "" > libs/authenticator-sdk/src/lib.rs && \
     mkdir -p libs/insight-migration/src && echo "" > libs/insight-migration/src/lib.rs && \
     mkdir -p services/analytics/src && echo "fn main() {}" > services/analytics/src/main.rs && \
@@ -43,11 +45,12 @@ RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/sr
 RUN cargo build --release --bin git-cli-proxy 2>/dev/null || true
 
 # --- Source layer ---
-RUN rm -rf libs/insight-http-metrics/src services/git-cli-proxy/src \
+RUN rm -rf libs/insight-http-metrics/src libs/insight-log-context/src services/git-cli-proxy/src \
     target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
     target/release/git-cli-proxy target/release/deps/git_cli_proxy*
 
 COPY libs/insight-http-metrics/src/ ./libs/insight-http-metrics/src/
+COPY libs/insight-log-context/src/ ./libs/insight-log-context/src/
 COPY services/git-cli-proxy/src/ ./services/git-cli-proxy/src/
 COPY services/git-cli-proxy/config/ ./services/git-cli-proxy/config/
 
