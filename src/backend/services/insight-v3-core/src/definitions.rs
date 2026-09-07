@@ -1,5 +1,3 @@
-#![allow(dead_code)] // storage layer lands ahead of API wiring; exercised by unit tests only
-
 use std::fmt;
 use std::time::Duration;
 
@@ -156,7 +154,7 @@ impl fmt::Debug for DefinitionStore {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 pub(crate) enum DefinitionError {
     #[error("definition names use letters, digits, underscore and dash, up to 128 characters")]
     Name,

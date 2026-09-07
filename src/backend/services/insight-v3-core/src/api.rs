@@ -6,11 +6,13 @@ use axum::Router;
 use toolkit::api::OpenApiRegistry;
 
 pub(crate) mod admission;
+pub(crate) mod definitions;
 pub(crate) mod raw_data;
 pub(crate) mod tables;
 
 use admission::IngestAdmission;
 
+use crate::definitions::DefinitionStore;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
 
@@ -18,11 +20,20 @@ use crate::tables::TableStore;
 pub(crate) struct AppState {
     raw_data: RawDataStore,
     tables: TableStore,
+    definitions: DefinitionStore,
 }
 
 impl AppState {
-    pub(crate) fn new(raw_data: RawDataStore, tables: TableStore) -> Self {
-        Self { raw_data, tables }
+    pub(crate) fn new(
+        raw_data: RawDataStore,
+        tables: TableStore,
+        definitions: DefinitionStore,
+    ) -> Self {
+        Self {
+            raw_data,
+            tables,
+            definitions,
+        }
     }
 
     pub(crate) fn raw_data(&self) -> &RawDataStore {
@@ -31,6 +42,10 @@ impl AppState {
 
     pub(crate) fn tables(&self) -> &TableStore {
         &self.tables
+    }
+
+    pub(crate) fn definitions(&self) -> &DefinitionStore {
+        &self.definitions
     }
 }
 
@@ -41,6 +56,7 @@ pub(crate) fn register_routes(
     admission: IngestAdmission,
 ) -> Router {
     let router = tables::register_routes(router, openapi, state.clone(), admission.clone());
+    let router = raw_data::register_routes(router, openapi, state.clone(), admission);
 
-    raw_data::register_routes(router, openapi, state, admission)
+    definitions::register_routes(router, openapi, state)
 }

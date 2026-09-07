@@ -21,6 +21,7 @@ use crate::api::admission::{
     INGEST_TOKEN_HEADER, IngestAdmission, MAX_CONCURRENT_WRITES, MAX_REQUEST_BODY_BYTES,
     TokenVerifier,
 };
+use crate::definitions::DefinitionStore;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
 
@@ -47,6 +48,9 @@ fn state(mock: &Mock) -> Arc<AppState> {
             insight_clickhouse::Config::new(url, "insight"),
         )),
         TableStore::new(insight_clickhouse::Client::new(
+            insight_clickhouse::Config::new(url, "insight"),
+        )),
+        DefinitionStore::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
     ))

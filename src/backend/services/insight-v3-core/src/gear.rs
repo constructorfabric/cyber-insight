@@ -42,6 +42,7 @@ impl Gear for InsightV3CoreGear {
             app: Arc::new(crate::api::AppState::new(
                 crate::raw_data::RawDataStore::new(config.clickhouse_client()),
                 crate::tables::TableStore::new(config.clickhouse_client()),
+                crate::definitions::DefinitionStore::new(config.clickhouse_client()),
             )),
             admission,
         };
