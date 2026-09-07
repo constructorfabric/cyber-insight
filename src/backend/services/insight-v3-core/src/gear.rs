@@ -28,8 +28,8 @@ impl std::fmt::Debug for InsightV3CoreGear {
 
 #[derive(Debug)]
 struct RuntimeState {
-    app: Arc<crate::api::AppState>,
-    admission: crate::api::IngestAdmission,
+    app: Arc<crate::api::raw_data::AppState>,
+    admission: crate::api::raw_data::IngestAdmission,
 }
 
 #[async_trait]
@@ -37,11 +37,10 @@ impl Gear for InsightV3CoreGear {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
         let config: crate::config::GearConfig = ctx.config()?;
         let config = config.validate()?;
-        let token_verifier = crate::api::TokenVerifier::new(config.ingest_token());
-        let admission = crate::api::IngestAdmission::new(token_verifier);
+        let admission = crate::api::raw_data::IngestAdmission::new(config.ingest_token());
         let store = crate::raw_data::RawDataStore::new(config.clickhouse_client());
         let runtime = RuntimeState {
-            app: Arc::new(crate::api::AppState::new(store)),
+            app: Arc::new(crate::api::raw_data::AppState::new(store)),
             admission,
         };
         self.runtime
@@ -64,7 +63,7 @@ impl RestApiCapability for InsightV3CoreGear {
             .get()
             .ok_or_else(|| anyhow::anyhow!("insight-v3-core gear not initialized"))?;
 
-        Ok(crate::api::register_routes(
+        Ok(crate::api::raw_data::register_routes(
             router,
             openapi,
             runtime.app.clone(),

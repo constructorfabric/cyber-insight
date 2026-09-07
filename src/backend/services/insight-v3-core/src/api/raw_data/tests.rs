@@ -41,7 +41,7 @@ fn app(mock: &Mock) -> Router {
         Router::new(),
         &openapi,
         state,
-        IngestAdmission::new(verifier()),
+        IngestAdmission::new(&SecretString::from("correct-token".to_owned())),
     )
 }
 
@@ -194,7 +194,7 @@ async fn saturated_gate_rejects_without_polling_the_body_or_clickhouse() {
     let client =
         insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
     let state = Arc::new(AppState::new(RawDataStore::new(client)));
-    let admission = IngestAdmission::new(verifier());
+    let admission = IngestAdmission::new(&SecretString::from("correct-token".to_owned()));
     let _permits: Vec<_> = (0..MAX_CONCURRENT_WRITES)
         .map(|_| {
             admission
