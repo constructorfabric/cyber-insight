@@ -21,6 +21,7 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "@/i18n";
@@ -108,6 +109,74 @@ describe("the /portal/custom routes, through the real router", () => {
     expect(await screen.findByText("Engineering")).toBeInTheDocument();
     expect(
       document.querySelector('[data-slot="sidebar-wrapper"]')
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the thread when creating a dashboard navigates to it", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "engineering",
+    ]);
+    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
+      title: "Delivery",
+      widgets: [],
+    });
+    vi.mocked(customClient.sendChat).mockResolvedValue({
+      reply: "Built it",
+      created: { widgets: [], dashboard: "delivery" },
+    });
+
+    renderAt("/portal/custom");
+    await screen.findByRole("heading", { name: "Custom" });
+
+    await userEvent.type(
+      screen.getByTestId("chat-input"),
+      "a dashboard about delivery"
+    );
+    await userEvent.click(screen.getByTestId("chat-send"));
+
+    // The new dashboard opens...
+    expect(await screen.findByText("Delivery")).toBeInTheDocument();
+    // ...and the conversation is still there. The chat used to be mounted per
+    // page, so this navigation unmounted it and the reader lost what they had
+    // just asked.
+    expect(
+      screen.getByText("a dashboard about delivery")
+    ).toBeInTheDocument();
+    expect(screen.getByText("Built it")).toBeInTheDocument();
+  });
+
+  it("shows a widget the chat adds to the open dashboard, without a reload", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "engineering",
+    ]);
+    vi.mocked(customClient.fetchDashboard)
+      .mockResolvedValueOnce({ title: "Engineering", widgets: [] })
+      .mockResolvedValue({ title: "Engineering", widgets: ["revenue_table"] });
+    vi.mocked(customClient.fetchWidget).mockResolvedValue({
+      type: "table",
+      metric: "revenue_per_day",
+      columns: ["day", "revenue"],
+    });
+    vi.mocked(customClient.runMetric).mockResolvedValue({
+      columns: ["day", "revenue"],
+      rows: [["2026-09-01", 100]],
+    });
+    vi.mocked(customClient.sendChat).mockResolvedValue({
+      reply: "Added a revenue widget",
+      created: { widgets: ["revenue_table"] },
+    });
+
+    renderAt("/portal/custom/engineering");
+    await screen.findByText("Engineering");
+
+    await userEvent.type(
+      screen.getByTestId("chat-input"),
+      "add revenue tracking"
+    );
+    await userEvent.click(screen.getByTestId("chat-send"));
+
+    expect(
+      await screen.findByRole("cell", { name: "100" })
     ).toBeInTheDocument();
   });
 });

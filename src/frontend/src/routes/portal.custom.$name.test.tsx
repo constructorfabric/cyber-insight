@@ -18,7 +18,6 @@ vi.mock("@/api/custom-client", async (importOriginal) => {
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -106,80 +105,5 @@ describe("/portal/custom/$name", () => {
     expect(
       await screen.findByRole("button", { name: /retry/i })
     ).toBeInTheDocument();
-  });
-
-  it("shows a widget the chat just added, without a reload", async () => {
-    vi.mocked(customClient.fetchDashboard)
-      .mockResolvedValueOnce({
-        title: "Engineering",
-        widgets: ["commits_table"],
-      })
-      .mockResolvedValueOnce({
-        title: "Engineering",
-        widgets: ["commits_table", "revenue_table"],
-      });
-    vi.mocked(customClient.fetchWidget).mockImplementation(async (name) => {
-      if (name === "revenue_table") {
-        return {
-          type: "table",
-          metric: "revenue_per_day",
-          columns: ["day", "revenue"],
-        };
-      }
-      return {
-        type: "table",
-        metric: "commits_per_day",
-        columns: ["day", "lines"],
-      };
-    });
-    vi.mocked(customClient.runMetric).mockImplementation(async (name) => {
-      if (name === "revenue_per_day") {
-        return { columns: ["day", "revenue"], rows: [["2026-09-01", 100]] };
-      }
-      return { columns: ["day", "lines"], rows: [["2026-09-01", 59]] };
-    });
-    vi.mocked(customClient.sendChat).mockResolvedValue({
-      reply: "Added a revenue widget",
-      created: { widgets: ["revenue_table"] },
-    });
-    portalRouter.go("/portal/custom/engineering");
-
-    render(<Component />, { wrapper });
-    expect(await screen.findByText("Engineering")).toBeInTheDocument();
-
-    await userEvent.type(screen.getByRole("textbox"), "add revenue tracking");
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-
-    expect(
-      await screen.findByRole("cell", { name: "100" })
-    ).toBeInTheDocument();
-  });
-
-  it("navigates to a dashboard the chat just created from this page", async () => {
-    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
-      title: "Engineering",
-      widgets: [],
-    });
-    vi.mocked(customClient.sendChat).mockResolvedValue({
-      reply: "Made it",
-      created: { widgets: [], dashboard: "delivery" },
-    });
-    portalRouter.go("/portal/custom/engineering");
-
-    render(<Component />, { wrapper });
-    expect(await screen.findByText("Engineering")).toBeInTheDocument();
-
-    await userEvent.type(
-      screen.getByRole("textbox"),
-      "dashboard about delivery"
-    );
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-
-    expect(portalRouter.navigations).toContainEqual(
-      expect.objectContaining({
-        to: "/portal/custom/$name",
-        params: { name: "delivery" },
-      })
-    );
   });
 });

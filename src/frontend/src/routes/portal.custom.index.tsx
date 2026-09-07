@@ -1,14 +1,11 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, LayoutDashboard } from "lucide-react";
 
-import type { ChatCreated } from "@/api/custom-client";
-import { CustomChat } from "@/components/custom/custom-chat";
-import { CustomPageShell } from "@/components/custom/custom-page-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
-import { dashboardNamesQuery, invalidateDashboardList } from "@/queries/custom";
+import { dashboardNamesQuery } from "@/queries/custom";
 import { TEXT_BODY, TEXT_NAME, TEXT_TITLE } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -17,8 +14,6 @@ export const Route = createFileRoute("/portal/custom/")({
 });
 
 function CustomDashboardIndex() {
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const {
     data: names,
     isLoading,
@@ -26,18 +21,8 @@ function CustomDashboardIndex() {
     refetch,
   } = useQuery(dashboardNamesQuery());
 
-  function handleCreated(created: ChatCreated) {
-    void invalidateDashboardList(queryClient);
-    if (created.dashboard) {
-      void navigate({
-        to: "/portal/custom/$name",
-        params: { name: created.dashboard },
-      });
-    }
-  }
-
   return (
-    <CustomPageShell chat={<CustomChat onCreated={handleCreated} />}>
+    <>
       <header className="mb-4">
         <h1 className={TEXT_TITLE}>Custom</h1>
         <p className={cn(TEXT_BODY, "text-muted-foreground")}>
@@ -50,7 +35,7 @@ function CustomDashboardIndex() {
         isError={isError}
         onRetry={() => void refetch()}
       />
-    </CustomPageShell>
+    </>
   );
 }
 
@@ -90,7 +75,7 @@ function CustomDashboardList({
   }
 
   return (
-    <ul className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+    <ul className="grid gap-3 @xl:grid-cols-2 @5xl:grid-cols-3">
       {names.map((name) => (
         <li key={name}>
           <Card
@@ -108,9 +93,7 @@ function CustomDashboardList({
                 className="size-4 shrink-0 text-muted-foreground"
                 aria-hidden
               />
-              <span className={cn(TEXT_NAME, "min-w-0 truncate")}>
-                {name}
-              </span>
+              <span className={cn(TEXT_NAME, "min-w-0 truncate")}>{name}</span>
               <ChevronRight
                 className="ms-auto size-4 shrink-0 text-muted-foreground"
                 aria-hidden

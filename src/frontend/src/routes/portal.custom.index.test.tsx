@@ -9,7 +9,6 @@ vi.mock("@/api/custom-client");
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -80,36 +79,5 @@ describe("/portal/custom", () => {
     expect(
       await screen.findByRole("button", { name: /retry/i })
     ).toBeInTheDocument();
-  });
-
-  it("shows a dashboard the chat just created and navigates to it", async () => {
-    vi.mocked(customClient.fetchDashboardNames)
-      .mockResolvedValueOnce(["engineering"])
-      .mockResolvedValueOnce(["engineering", "delivery"]);
-    vi.mocked(customClient.sendChat).mockResolvedValue({
-      reply: "Made it",
-      created: { widgets: [], dashboard: "delivery" },
-    });
-
-    render(<Component />, { wrapper });
-    expect(
-      await screen.findByRole("link", { name: "engineering" })
-    ).toBeInTheDocument();
-
-    await userEvent.type(
-      screen.getByRole("textbox"),
-      "dashboard about delivery"
-    );
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-
-    expect(
-      await screen.findByRole("link", { name: "delivery" })
-    ).toBeInTheDocument();
-    expect(portalRouter.navigations).toContainEqual(
-      expect.objectContaining({
-        to: "/portal/custom/$name",
-        params: { name: "delivery" },
-      })
-    );
   });
 });
