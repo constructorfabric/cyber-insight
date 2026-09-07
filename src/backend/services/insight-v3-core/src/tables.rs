@@ -75,6 +75,47 @@ impl TableStore {
 
         Ok(())
     }
+
+    /// Field names and inferred types, read from the most recent rows.
+    pub(crate) async fn sample_fields(
+        &self,
+        table: &TableName,
+    ) -> Result<Vec<(String, &'static str)>, TableStoreError> {
+        let sql = format!(
+            "SELECT raw_data FROM `{}` ORDER BY received_at DESC LIMIT 20",
+            table.as_str()
+        );
+
+        let payloads = self
+            .client
+            .inner()
+            .query(&sql)
+            .fetch_all::<String>()
+            .await?;
+        let mut fields: Vec<(String, &'static str)> = Vec::new();
+
+        for payload in payloads {
+            let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&payload) else {
+                continue;
+            };
+
+            for (key, value) in map {
+                if fields.iter().any(|(name, _)| name == &key) {
+                    continue;
+                }
+
+                let kind = match value {
+                    serde_json::Value::Number(number) if number.is_i64() => "int",
+                    serde_json::Value::Number(_) => "float",
+                    _ => "string",
+                };
+
+                fields.push((key, kind));
+            }
+        }
+
+        Ok(fields)
+    }
 }
 
 impl fmt::Debug for TableStore {
@@ -145,5 +186,32 @@ mod tests {
         assert!(query.contains("raw_data String"));
         assert!(query.contains("received_at DateTime64(3, 'UTC')"));
         assert!(query.contains("ORDER BY (table_name, received_at, id)"));
+    }
+
+    #[tokio::test]
+    async fn overlapping_rows_yield_one_entry_per_field_typed_from_its_value() {
+        let mock = Mock::new();
+        mock.add(handlers::provide(vec![
+            r#"{"day":"2026-09-01","lines":59}"#.to_owned(),
+            r#"{"day":"2026-09-02","author":"nda"}"#.to_owned(),
+        ]));
+        let client =
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
+        let store = TableStore::new(client);
+        let table = TableName::parse("events_2026").unwrap_or_else(|error| panic!("name: {error}"));
+
+        let fields = store
+            .sample_fields(&table)
+            .await
+            .unwrap_or_else(|error| panic!("fields should be sampled: {error}"));
+
+        assert_eq!(
+            fields,
+            vec![
+                ("day".to_owned(), "string"),
+                ("lines".to_owned(), "int"),
+                ("author".to_owned(), "string"),
+            ]
+        );
     }
 }

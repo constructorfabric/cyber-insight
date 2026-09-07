@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use super::*;
 use crate::api::AppState;
+use crate::chat::ChatClient;
 use crate::definitions::{DefinitionRow, DefinitionStore};
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
@@ -44,6 +45,7 @@ impl TestHarness {
             MetricRunner::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
+            ChatClient::canned(),
         ));
         let router = register_routes(Router::new(), &openapi, state);
 

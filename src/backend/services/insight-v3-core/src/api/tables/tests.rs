@@ -10,6 +10,7 @@ use tower::ServiceExt as _;
 use super::*;
 use crate::api::AppState;
 use crate::api::admission::{INGEST_TOKEN_HEADER, IngestAdmission};
+use crate::chat::ChatClient;
 use crate::definitions::DefinitionStore;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
@@ -32,6 +33,7 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
         MetricRunner::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
+        ChatClient::canned(),
     ));
 
     register_routes(

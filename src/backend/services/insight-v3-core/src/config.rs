@@ -5,6 +5,18 @@ use thiserror::Error;
 const DEFAULT_CLICKHOUSE_DATABASE: &str = "insight";
 pub(crate) const MIN_INGEST_TOKEN_BYTES: usize = 32;
 pub(crate) const MAX_INGEST_TOKEN_BYTES: usize = 1024;
+const DEFAULT_CHAT_MODEL: &str = "claude-haiku-4-5-20251001";
+
+/// Whether the chat endpoint calls the model or returns a fixed reply.
+///
+/// `canned` makes no network call at all — it exists so a recording (or a
+/// test) can exercise the chat endpoint without a live model or an API key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ChatMode {
+    Live,
+    Canned,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -14,6 +26,9 @@ pub(crate) struct GearConfig {
     pub(crate) clickhouse_user: Option<String>,
     pub(crate) clickhouse_password: Option<SecretString>,
     pub(crate) ingest_token: SecretString,
+    pub(crate) anthropic_token: SecretString,
+    pub(crate) chat_mode: ChatMode,
+    pub(crate) chat_model: String,
 }
 
 impl Default for GearConfig {
@@ -24,6 +39,9 @@ impl Default for GearConfig {
             clickhouse_user: None,
             clickhouse_password: None,
             ingest_token: SecretString::from(String::new()),
+            anthropic_token: SecretString::from(String::new()),
+            chat_mode: ChatMode::Live,
+            chat_model: DEFAULT_CHAT_MODEL.to_owned(),
         }
     }
 }
@@ -35,6 +53,9 @@ pub(crate) struct ValidatedConfig {
     clickhouse_user: Option<String>,
     clickhouse_password: Option<SecretString>,
     ingest_token: IngestToken,
+    anthropic_token: SecretString,
+    chat_mode: ChatMode,
+    chat_model: String,
 }
 
 impl ValidatedConfig {
@@ -67,13 +88,29 @@ impl ValidatedConfig {
     pub(crate) fn ingest_token(&self) -> &SecretString {
         self.ingest_token.as_secret()
     }
+
+    pub(crate) fn anthropic_token(&self) -> &SecretString {
+        &self.anthropic_token
+    }
+
+    pub(crate) fn chat_mode(&self) -> ChatMode {
+        self.chat_mode
+    }
+
+    pub(crate) fn chat_model(&self) -> String {
+        self.chat_model.clone()
+    }
 }
 
 impl GearConfig {
     pub(crate) fn validate(self) -> Result<ValidatedConfig, ConfigError> {
         require_non_empty("clickhouse_url", &self.clickhouse_url)?;
         require_non_empty("clickhouse_database", &self.clickhouse_database)?;
+        require_non_empty("chat_model", &self.chat_model)?;
         let ingest_token = IngestToken::parse(self.ingest_token)?;
+        if self.chat_mode == ChatMode::Live {
+            require_non_empty("anthropic_token", self.anthropic_token.expose_secret())?;
+        }
         validate_credentials(
             self.clickhouse_user.as_deref(),
             self.clickhouse_password.as_ref(),
@@ -85,6 +122,9 @@ impl GearConfig {
             clickhouse_user: self.clickhouse_user,
             clickhouse_password: self.clickhouse_password,
             ingest_token,
+            anthropic_token: self.anthropic_token,
+            chat_mode: self.chat_mode,
+            chat_model: self.chat_model,
         })
     }
 }
@@ -177,6 +217,9 @@ mod tests {
             clickhouse_user: None,
             clickhouse_password: None,
             ingest_token: SecretString::from("test-ingest-token-0123456789abcdef"),
+            anthropic_token: SecretString::from("test-anthropic-token"),
+            chat_mode: ChatMode::Live,
+            chat_model: "claude-haiku-4-5-20251001".to_owned(),
         }
     }
 
@@ -196,6 +239,29 @@ mod tests {
     }
 
     #[test]
+    fn chat_model_must_not_be_empty() {
+        let mut config = valid_config();
+        config.chat_model.clear();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn anthropic_token_is_required_only_in_live_mode() {
+        let mut live = valid_config();
+        live.anthropic_token = SecretString::from(String::new());
+        assert!(live.validate().is_err(), "live mode needs a token");
+
+        let mut canned = valid_config();
+        canned.anthropic_token = SecretString::from(String::new());
+        canned.chat_mode = ChatMode::Canned;
+        assert!(
+            canned.validate().is_ok(),
+            "canned mode makes no model call and needs no token"
+        );
+    }
+
+    #[test]
     fn secrets_are_redacted_from_debug_output() {
         let mut config = valid_config();
         config.clickhouse_user = Some("writer".to_owned());
@@ -205,6 +271,7 @@ mod tests {
 
         assert!(!rendered.contains("test-ingest-token-0123456789abcdef"));
         assert!(!rendered.contains("database-secret"));
+        assert!(!rendered.contains("test-anthropic-token"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use axum::Router;
 use toolkit::api::OpenApiRegistry;
 
 pub(crate) mod admission;
+pub(crate) mod chat;
 pub(crate) mod definitions;
 pub(crate) mod metric_run;
 pub(crate) mod raw_data;
@@ -13,6 +14,7 @@ pub(crate) mod tables;
 
 use admission::IngestAdmission;
 
+use crate::chat::ChatClient;
 use crate::definitions::DefinitionStore;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
@@ -24,6 +26,7 @@ pub(crate) struct AppState {
     tables: TableStore,
     definitions: DefinitionStore,
     metrics: MetricRunner,
+    chat: ChatClient,
 }
 
 impl AppState {
@@ -32,12 +35,14 @@ impl AppState {
         tables: TableStore,
         definitions: DefinitionStore,
         metrics: MetricRunner,
+        chat: ChatClient,
     ) -> Self {
         Self {
             raw_data,
             tables,
             definitions,
             metrics,
+            chat,
         }
     }
 
@@ -56,6 +61,10 @@ impl AppState {
     pub(crate) fn metrics(&self) -> &MetricRunner {
         &self.metrics
     }
+
+    pub(crate) fn chat(&self) -> &ChatClient {
+        &self.chat
+    }
 }
 
 pub(crate) fn register_routes(
@@ -67,6 +76,7 @@ pub(crate) fn register_routes(
     let router = tables::register_routes(router, openapi, state.clone(), admission.clone());
     let router = raw_data::register_routes(router, openapi, state.clone(), admission);
     let router = definitions::register_routes(router, openapi, state.clone());
+    let router = metric_run::register_routes(router, openapi, state.clone());
 
-    metric_run::register_routes(router, openapi, state)
+    chat::register_routes(router, openapi, state)
 }

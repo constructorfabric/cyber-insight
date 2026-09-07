@@ -38,12 +38,19 @@ impl Gear for InsightV3CoreGear {
         let config: crate::config::GearConfig = ctx.config()?;
         let config = config.validate()?;
         let admission = crate::api::admission::IngestAdmission::new(config.ingest_token());
+        let chat = match config.chat_mode() {
+            crate::config::ChatMode::Live => {
+                crate::chat::ChatClient::new(config.anthropic_token(), config.chat_model())
+            }
+            crate::config::ChatMode::Canned => crate::chat::ChatClient::canned(),
+        };
         let runtime = RuntimeState {
             app: Arc::new(crate::api::AppState::new(
                 crate::raw_data::RawDataStore::new(config.clickhouse_client()),
                 crate::tables::TableStore::new(config.clickhouse_client()),
                 crate::definitions::DefinitionStore::new(config.clickhouse_client()),
                 crate::metric_query::MetricRunner::new(config.clickhouse_client()),
+                chat,
             )),
             admission,
         };
