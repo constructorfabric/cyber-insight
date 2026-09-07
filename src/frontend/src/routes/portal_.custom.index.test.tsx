@@ -56,4 +56,28 @@ describe("/portal/custom", () => {
 
     expect(await screen.findByText(/no dashboards yet/i)).toBeInTheDocument();
   });
+
+  it("shows a loading state before the list resolves", () => {
+    vi.mocked(customClient.fetchDashboardNames).mockReturnValue(
+      new Promise(() => {}),
+    );
+
+    render(<Component />, { wrapper });
+
+    expect(
+      screen.getByRole("status", { name: /loading/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a retryable error state when the list fails to load", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockRejectedValue(
+      new Error("network down"),
+    );
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByRole("button", { name: /retry/i }),
+    ).toBeInTheDocument();
+  });
 });

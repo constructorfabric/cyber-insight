@@ -1,7 +1,10 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
+import { CustomApiError } from "@/api/custom-client";
 import { CustomWidget } from "@/components/custom/custom-widget";
+import { CenteredSpinner } from "@/components/widgets/centered-spinner";
+import { ComingSoon } from "@/components/widgets/coming-soon";
 import {
   dashboardQuery,
   metricResultQuery,
@@ -20,9 +23,35 @@ function dashboardNameFromPath(pathname: string): string {
 function CustomDashboardPage() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const name = dashboardNameFromPath(pathname);
-  const { data: dashboard, isPending } = useQuery(dashboardQuery(name));
+  const {
+    data: dashboard,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery(dashboardQuery(name));
 
-  if (isPending || !dashboard) return null;
+  if (isLoading) return <CenteredSpinner className="min-h-40" />;
+  if (isError) {
+    if (error instanceof CustomApiError && error.status === 404) {
+      return (
+        <ComingSoon
+          variant="card"
+          state="empty"
+          label={`No dashboard named "${name}".`}
+        />
+      );
+    }
+    return (
+      <ComingSoon
+        variant="card"
+        state="error"
+        label="Couldn't load this dashboard."
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+  if (!dashboard) return null;
 
   return (
     <div>

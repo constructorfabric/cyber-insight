@@ -5,7 +5,15 @@ vi.mock("@tanstack/react-router", async () => {
     createFileRoute: () => (options: Record<string, unknown>) => options,
   };
 });
-vi.mock("@/api/custom-client");
+vi.mock("@/api/custom-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/custom-client")>();
+  return {
+    ...actual,
+    fetchDashboard: vi.fn(),
+    fetchWidget: vi.fn(),
+    runMetric: vi.fn(),
+  };
+});
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
@@ -57,6 +65,48 @@ describe("/portal/custom/$name", () => {
     ).toBeInTheDocument();
     expect(
       await screen.findByRole("cell", { name: "59" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a loading state before the dashboard resolves", () => {
+    vi.mocked(customClient.fetchDashboard).mockReturnValue(
+      new Promise(() => {}),
+    );
+    portalRouter.go("/portal/custom/engineering");
+
+    render(<Component />, { wrapper });
+
+    expect(
+      screen.getByRole("status", { name: /loading/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("says an unknown dashboard name was not found, with no retry offered", async () => {
+    vi.mocked(customClient.fetchDashboard).mockRejectedValue(
+      new customClient.CustomApiError(404, { title: "not found" }),
+    );
+    portalRouter.go("/portal/custom/does-not-exist");
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByText(/no dashboard named/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /retry/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a retryable error state when the dashboard fails to load for another reason", async () => {
+    vi.mocked(customClient.fetchDashboard).mockRejectedValue(
+      new Error("network down"),
+    );
+    portalRouter.go("/portal/custom/engineering");
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByRole("button", { name: /retry/i }),
     ).toBeInTheDocument();
   });
 });
