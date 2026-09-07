@@ -7,6 +7,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
+use utoipa::ToSchema;
 
 use crate::metric_query::{MetricQuery, MetricQueryError};
 
@@ -18,6 +19,47 @@ const ANSWER_TOOL: &str = "answer";
 const CREATE_TOOL: &str = "create";
 /// Definition names: what `DefinitionName::parse` accepts.
 const NAME_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
+
+/// One turn of the conversation so far. The reader's panel keeps the thread
+/// and sends it back, because the service stores no session.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub(crate) struct Turn {
+    /// `user` or `assistant`; anything else is dropped before the call.
+    pub(crate) role: String,
+    pub(crate) content: String,
+}
+
+impl Turn {
+    #[cfg(test)]
+    fn user(content: &str) -> Self {
+        Self {
+            role: "user".to_owned(),
+            content: content.to_owned(),
+        }
+    }
+
+    #[cfg(test)]
+    fn assistant(content: &str) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content: content.to_owned(),
+        }
+    }
+}
+
+/// What is already stored, so the model can name it, reuse it and replace it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Catalogue {
+    pub(crate) metrics: Vec<String>,
+    pub(crate) widgets: Vec<String>,
+    pub(crate) dashboards: Vec<String>,
+}
+
+impl Catalogue {
+    fn is_empty(&self) -> bool {
+        self.metrics.is_empty() && self.widgets.is_empty() && self.dashboards.is_empty()
+    }
+}
 
 /// A table data has been ingested into, and what is in it.
 #[derive(Debug, Clone)]
@@ -129,6 +171,26 @@ fn compile_named_metric(named: NamedBody) -> Result<(String, Value), ChatError> 
     let metric: MetricQuery = serde_json::from_value(named.body.clone())?;
     metric.compile()?;
     Ok(named.into_pair())
+}
+
+/// The conversation as the API takes it: the turns so far, then the new
+/// message. A turn with any other role is dropped rather than trusted.
+fn thread<'a>(turns: &'a [Turn], message: &'a str) -> Vec<Message<'a>> {
+    let mut messages: Vec<Message<'a>> = turns
+        .iter()
+        .filter(|turn| turn.role == "user" || turn.role == "assistant")
+        .map(|turn| Message {
+            role: turn.role.as_str(),
+            content: turn.content.as_str(),
+        })
+        .collect();
+
+    messages.push(Message {
+        role: "user",
+        content: message,
+    });
+
+    messages
 }
 
 /// The reply as prose.
@@ -274,15 +336,18 @@ impl ChatClient {
     pub(crate) async fn propose(
         &self,
         message: &str,
+        turns: &[Turn],
         tables: &[KnownTable],
+        catalogue: &Catalogue,
     ) -> Result<Proposal, ChatError> {
         match &self.backend {
             ChatBackend::Canned => Ok(canned_proposal(message)),
             #[cfg(test)]
             ChatBackend::Scripted(build) => Ok(build()),
             ChatBackend::Live { http, token, model } => {
-                let system = system_prompt(tables);
-                let first = call_model(http, token, model, &system, message).await?;
+                let system = system_prompt(tables, catalogue);
+                let first =
+                    call_model(http, token, model, &system, &thread(turns, message)).await?;
 
                 match Proposal::checked(&first, tables) {
                     Ok(proposal) => Ok(proposal),
@@ -296,7 +361,8 @@ impl ChatClient {
                         let retry = format!(
                             "{message}\n\nYour previous proposal was rejected: {detail}\nIt was:\n{first}\nReturn a corrected proposal."
                         );
-                        let second = call_model(http, token, model, &system, &retry).await?;
+                        let second =
+                            call_model(http, token, model, &system, &thread(turns, &retry)).await?;
                         Proposal::checked(&second, tables)
                     }
                 }
@@ -311,16 +377,13 @@ async fn call_model(
     token: &SecretString,
     model: &str,
     system: &str,
-    message: &str,
+    messages: &[Message<'_>],
 ) -> Result<String, ChatError> {
     let body = MessagesRequest {
         model,
         max_tokens: CHAT_MAX_TOKENS,
         system,
-        messages: vec![Message {
-            role: "user",
-            content: message,
-        }],
+        messages: messages.to_vec(),
         tools: proposal_tools(),
         tool_choice: json!({ "type": "any" }),
     };
@@ -363,7 +426,7 @@ fn transport_error(error: &reqwest::Error) -> ChatError {
     ChatError::Failed
 }
 
-fn system_prompt(tables: &[KnownTable]) -> String {
+fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue) -> String {
     let mut prompt = String::from(
         "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\
          Write replies as plain prose. No markdown: asterisks and hashes are shown as typed.\n\n\
@@ -388,7 +451,32 @@ fn system_prompt(tables: &[KnownTable]) -> String {
         }
     }
 
+    if catalogue.is_empty() {
+        prompt.push_str("\nNothing is built yet.\n");
+    } else {
+        push_catalogue(&mut prompt, "Metrics", &catalogue.metrics);
+        push_catalogue(&mut prompt, "Widgets", &catalogue.widgets);
+        push_catalogue(&mut prompt, "Dashboards", &catalogue.dashboards);
+        prompt.push_str(
+            "\nReusing a name replaces what is stored under it, which is how a \
+             dashboard is changed: build it again with the widgets it should \
+             hold now.\n",
+        );
+    }
+
     prompt
+}
+
+fn push_catalogue(prompt: &mut String, label: &str, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+
+    prompt.push('\n');
+    prompt.push_str(label);
+    prompt.push_str(" already built: ");
+    prompt.push_str(&names.join(", "));
+    prompt.push('\n');
 }
 
 fn canned_proposal(message: &str) -> Proposal {
@@ -572,7 +660,7 @@ fn proposal_tools() -> Vec<Value> {
     ]
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct Message<'a> {
     role: &'a str,
     content: &'a str,
@@ -751,11 +839,73 @@ mod tests {
     }
 
     #[test]
+    fn the_whole_thread_reaches_the_model_with_the_new_turn_last() {
+        // Each request used to carry the newest message alone, so the model
+        // answered "and by author?" with no idea what came before it.
+        let turns = [
+            Turn::user("how many lines per day?"),
+            Turn::assistant("Here they are."),
+        ];
+
+        let messages = thread(&turns, "and by author?");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "how many lines per day?");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[2].role, "user");
+        assert_eq!(messages[2].content, "and by author?");
+    }
+
+    #[test]
+    fn a_first_message_is_a_thread_of_one() {
+        let messages = thread(&[], "hello");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "hello");
+    }
+
+    #[test]
+    fn the_prompt_names_what_is_already_built() {
+        let prompt = system_prompt(
+            &[KnownTable {
+                name: "events".to_owned(),
+                fields: "day (string)".to_owned(),
+            }],
+            &Catalogue {
+                metrics: vec!["lines_per_day".to_owned()],
+                widgets: vec!["lines_chart".to_owned()],
+                dashboards: vec!["engineering".to_owned()],
+            },
+        );
+
+        assert!(prompt.contains("lines_per_day"), "{prompt}");
+        assert!(prompt.contains("lines_chart"), "{prompt}");
+        assert!(prompt.contains("engineering"), "{prompt}");
+    }
+
+    #[test]
+    fn an_empty_catalogue_says_nothing_is_built_yet() {
+        let prompt = system_prompt(
+            &[KnownTable {
+                name: "events".to_owned(),
+                fields: "day (string)".to_owned(),
+            }],
+            &Catalogue::default(),
+        );
+
+        assert!(prompt.contains("Nothing is built yet"), "{prompt}");
+    }
+
+    #[test]
     fn the_prompt_names_every_table_with_its_fields() {
-        let prompt = system_prompt(&[KnownTable {
-            name: "events".to_owned(),
-            fields: "day (string), lines (int)".to_owned(),
-        }]);
+        let prompt = system_prompt(
+            &[KnownTable {
+                name: "events".to_owned(),
+                fields: "day (string), lines (int)".to_owned(),
+            }],
+            &Catalogue::default(),
+        );
 
         assert!(
             prompt.contains("- events: day (string), lines (int)"),
@@ -938,7 +1088,7 @@ mod tests {
         let client = ChatClient::canned();
 
         let proposal = client
-            .propose("commits_table", &[])
+            .propose("commits_table", &[], &[], &Catalogue::default())
             .await
             .unwrap_or_else(|error| panic!("canned mode never fails: {error}"));
 

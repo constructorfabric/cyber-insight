@@ -59,21 +59,47 @@ describe("<CustomChat>", () => {
     expect(onCreated).toHaveBeenCalledWith({ widgets: ["commits_graph"] });
   });
 
-  it("says a name was skipped because it already exists", async () => {
+  it("says which names it replaced", async () => {
     vi.mocked(customClient.sendChat).mockResolvedValue({
-      reply: "Made most of it",
-      created: { widgets: [] },
-      skipped: [{ kind: "widget", name: "commits_table", reason: "exists" }],
+      reply: "Changed it",
+      updated: { widgets: ["commits_table"], dashboard: "engineering" },
     });
     const onCreated = vi.fn();
 
     render(<CustomChat onCreated={onCreated} />, { wrapper });
-    await userEvent.type(screen.getByRole("textbox"), "make commits_table");
+    await userEvent.type(screen.getByRole("textbox"), "drop the author column");
     await userEvent.click(screen.getByRole("button", { name: /send/i }));
 
     expect(
-      await screen.findByText("commits_table already exists, left as it was")
+      await screen.findByText(
+        "Replaced widget commits_table · dashboard engineering"
+      )
     ).toBeInTheDocument();
+  });
+
+  it("sends the thread so far, so a follow-up has its context", async () => {
+    vi.mocked(customClient.sendChat)
+      .mockResolvedValueOnce({ reply: "Here they are." })
+      .mockResolvedValueOnce({ reply: "And by author." });
+    const onCreated = vi.fn();
+
+    render(<CustomChat onCreated={onCreated} />, { wrapper });
+    const textbox = screen.getByRole("textbox");
+
+    await userEvent.type(textbox, "lines per day?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText("Here they are.");
+
+    await userEvent.type(textbox, "and by author?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+    await screen.findByText("And by author.");
+
+    // The first call carries nothing; the second carries the turn before it.
+    expect(customClient.sendChat).toHaveBeenNthCalledWith(1, "lines per day?", []);
+    expect(customClient.sendChat).toHaveBeenNthCalledWith(2, "and by author?", [
+      { role: "user", content: "lines per day?" },
+      { role: "assistant", content: "Here they are." },
+    ]);
   });
 
   it("keeps the typed question in the box when the send fails", async () => {

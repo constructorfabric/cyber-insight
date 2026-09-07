@@ -4,6 +4,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 
+import type { ChatTurn } from "@/api/custom-client";
 import {
   fetchDashboard,
   fetchDashboardNames,
@@ -68,7 +69,8 @@ export function metricResultQuery(name: string) {
 
 export function useSendChat() {
   return useMutation({
-    mutationFn: (message: string) => sendChat(message),
+    mutationFn: ({ message, history }: { message: string; history: ChatTurn[] }) =>
+      sendChat(message, history),
   });
 }
 

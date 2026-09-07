@@ -14,7 +14,7 @@ use toolkit_canonical_errors::{CanonicalError, resource_error};
 use utoipa::ToSchema;
 
 use super::AppState;
-use crate::chat::{ChatError, KnownTable, Proposal};
+use crate::chat::{Catalogue, ChatError, KnownTable, Proposal, Turn};
 use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
 use crate::metric_query::{MetricQueryError, RunResult};
 use crate::tables::TableName;
@@ -25,6 +25,11 @@ struct ChatApiError;
 #[derive(Debug, Deserialize, ToSchema)]
 struct ChatRequest {
     message: String,
+    /// The turns before this one. The service keeps no session, so the panel
+    /// sends the thread back; without it the model answered a follow-up with
+    /// no idea what came before it.
+    #[serde(default)]
+    history: Vec<Turn>,
 }
 impl toolkit::api::api_dto::RequestApiDto for ChatRequest {}
 
@@ -39,7 +44,8 @@ struct ChatAnswerResponse {
 struct ChatCreatedResponse {
     reply: String,
     created: CreatedNames,
-    skipped: Vec<Skipped>,
+    /// What already existed under these names and now holds something else.
+    updated: CreatedNames,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -47,13 +53,6 @@ struct CreatedNames {
     metric: Option<String>,
     widgets: Vec<String>,
     dashboard: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Skipped {
-    kind: String,
-    name: String,
-    reason: String,
 }
 
 pub(crate) fn register_routes(
@@ -83,9 +82,10 @@ async fn handle_chat(
     Json(request): Json<ChatRequest>,
 ) -> Result<Response, CanonicalError> {
     let tables = known_tables(&state).await;
+    let catalogue = catalogue(&state).await;
     let proposal = state
         .chat()
-        .propose(&request.message, &tables)
+        .propose(&request.message, &request.history, &tables, &catalogue)
         .await
         .map_err(chat_error)?;
 
@@ -110,37 +110,33 @@ async fn handle_chat(
             dashboard,
         } => {
             let mut created = CreatedNames::default();
-            let mut skipped = Vec::new();
+            let mut updated = CreatedNames::default();
 
             if let Some((name, body)) = metric {
-                match store_definition(&state, DefinitionKind::Metric, "metric", name, body).await?
-                {
+                match store_definition(&state, DefinitionKind::Metric, name, body).await? {
                     StoreOutcome::Created(name) => created.metric = Some(name),
-                    StoreOutcome::Skipped(entry) => skipped.push(entry),
+                    StoreOutcome::Updated(name) => updated.metric = Some(name),
                 }
             }
 
             for (name, body) in widgets {
-                match store_definition(&state, DefinitionKind::Widget, "widget", name, body).await?
-                {
+                match store_definition(&state, DefinitionKind::Widget, name, body).await? {
                     StoreOutcome::Created(name) => created.widgets.push(name),
-                    StoreOutcome::Skipped(entry) => skipped.push(entry),
+                    StoreOutcome::Updated(name) => updated.widgets.push(name),
                 }
             }
 
             if let Some((name, body)) = dashboard {
-                match store_definition(&state, DefinitionKind::Dashboard, "dashboard", name, body)
-                    .await?
-                {
+                match store_definition(&state, DefinitionKind::Dashboard, name, body).await? {
                     StoreOutcome::Created(name) => created.dashboard = Some(name),
-                    StoreOutcome::Skipped(entry) => skipped.push(entry),
+                    StoreOutcome::Updated(name) => updated.dashboard = Some(name),
                 }
             }
 
             Ok(Json(ChatCreatedResponse {
                 reply,
                 created,
-                skipped,
+                updated,
             })
             .into_response())
         }
@@ -149,16 +145,18 @@ async fn handle_chat(
 
 enum StoreOutcome {
     Created(String),
-    Skipped(Skipped),
+    Updated(String),
 }
 
-/// Stores `body` under `name` unless a definition of this `kind` already
-/// uses that name — an existing definition is left untouched and reported
-/// as skipped rather than overwritten.
+/// Stores `body` under `name`, replacing whatever that name held.
+///
+/// Reusing a name is how a dashboard is changed: the reader asks for it to
+/// hold something else and the model builds it again. Skipping instead left
+/// the reader unable to change anything by asking, which is the only way in
+/// they have.
 async fn store_definition(
     state: &AppState,
     kind: DefinitionKind,
-    kind_label: &'static str,
     name: String,
     body: Value,
 ) -> Result<StoreOutcome, CanonicalError> {
@@ -170,21 +168,38 @@ async fn store_definition(
         .await
         .map_err(definition_store_error)?;
 
-    if existing.is_some() {
-        return Ok(StoreOutcome::Skipped(Skipped {
-            kind: kind_label.to_owned(),
-            name,
-            reason: "exists".to_owned(),
-        }));
-    }
-
     state
         .definitions()
         .put(kind, &parsed_name, &body)
         .await
         .map_err(definition_store_error)?;
 
-    Ok(StoreOutcome::Created(name))
+    Ok(if existing.is_some() {
+        StoreOutcome::Updated(name)
+    } else {
+        StoreOutcome::Created(name)
+    })
+}
+
+/// What is already stored, so the model can name it, reuse it, and replace it
+/// when the reader asks for a change. A listing failure degrades the hint; it
+/// does not fail the chat.
+async fn catalogue(state: &AppState) -> Catalogue {
+    Catalogue {
+        metrics: names(state, DefinitionKind::Metric).await,
+        widgets: names(state, DefinitionKind::Widget).await,
+        dashboards: names(state, DefinitionKind::Dashboard).await,
+    }
+}
+
+async fn names(state: &AppState, kind: DefinitionKind) -> Vec<String> {
+    match state.definitions().list(kind).await {
+        Ok(names) => names,
+        Err(error) => {
+            tracing::warn!(error = ?error, ?kind, "could not list definitions for the chat");
+            Vec::new()
+        }
+    }
 }
 
 /// The tables the reader has data in, each with the field names and types

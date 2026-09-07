@@ -54,17 +54,18 @@ export interface ChatCreated {
   dashboard?: string;
 }
 
-export interface ChatSkipped {
-  kind: string;
-  name: string;
-  reason: string;
+/** One turn already in the thread, sent back so the model can read it. */
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
 }
 
 export interface ChatReply {
   reply: string;
   result?: MetricResult;
   created?: ChatCreated;
-  skipped?: ChatSkipped[];
+  /** Names that already existed and now hold something else. */
+  updated?: ChatCreated;
 }
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -135,11 +136,15 @@ export async function runMetric(name: string): Promise<MetricResult> {
   return readJson<MetricResult>(res);
 }
 
-export async function sendChat(message: string): Promise<ChatReply> {
+export async function sendChat(
+  message: string,
+  history: ChatTurn[] = []
+): Promise<ChatReply> {
   const res = await fetchWithAuth(`${BASE}/chat`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ message }),
+    // The service keeps no session, so the thread travels with every turn.
+    body: JSON.stringify({ message, history }),
   });
   return readJson<ChatReply>(res);
 }

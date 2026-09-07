@@ -93,28 +93,21 @@ impl TestHarness {
         TestResponse::from_response(response).await
     }
 
-    async fn get_json(&self, path: &str) -> TestResponse {
-        self.queue_stored_or_empty(path);
-
-        let request = Request::builder()
-            .method("GET")
-            .uri(path)
-            .body(Body::empty())
-            .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
-
-        let response = self
-            .router
-            .clone()
-            .oneshot(request)
-            .await
-            .unwrap_or_else(|error| panic!("router must respond: {error}"));
-
-        TestResponse::from_response(response).await
-    }
-
     /// Queues the ClickHouse response for a `DefinitionStore::get` lookup
     /// at `path` — the row stashed by an earlier [`Self::put_json`], or an
     /// empty result if nothing is stored there.
+    /// What a chat request reads before it stores anything: the ingest table
+    /// list, then the metric, widget and dashboard names for the prompt. A
+    /// helper rather than four calls per test, so a change to what the prompt
+    /// is told does not rewrite every test that posts a chat message.
+    fn queue_chat_context(&self) {
+        self.mock.add(handlers::provide(Vec::<String>::new()));
+        for _ in 0..3 {
+            self.mock
+                .add(handlers::provide(Vec::<DefinitionRow>::new()));
+        }
+    }
+
     fn queue_stored_or_empty(&self, path: &str) {
         let stored = self.lock_table().get(path).cloned();
         match stored {
@@ -204,7 +197,7 @@ struct ChatCreatedBody {
     #[serde(default)]
     created: TestCreated,
     #[serde(default)]
-    skipped: Vec<Skipped>,
+    updated: TestCreated,
 }
 
 fn single_existing_widget_proposal() -> Proposal {
@@ -220,51 +213,38 @@ fn single_existing_widget_proposal() -> Proposal {
 }
 
 #[tokio::test]
-async fn a_name_already_in_use_is_skipped_not_overwritten() {
+async fn a_name_already_in_use_is_replaced_and_reported_as_updated() {
     let harness = TestHarness::new(ChatClient::scripted(single_existing_widget_proposal)).await;
 
     harness
         .put_json(
             "/v1/widgets/commits_table",
-            json!({ "type": "table", "metric": "m", "columns": [] }),
+            json!({ "type": "table", "metric": "was_here_first", "columns": [] }),
         )
         .await;
 
-    // known_tables()'s metric list, then the widget's existence check.
-    harness
-        .mock
-        .add(handlers::provide(Vec::<DefinitionRow>::new()));
+    harness.queue_chat_context();
     harness.queue_stored_or_empty("/v1/widgets/commits_table");
+    harness.mock.add(handlers::record::<DefinitionRow>());
 
     let response = harness.post_chat("commits_table").await;
     assert_eq!(response.status(), StatusCode::OK);
     let created: ChatCreatedBody = serde_json::from_slice(&response.body)
         .unwrap_or_else(|error| panic!("response body must be JSON: {error}"));
 
-    assert_eq!(
-        created.skipped,
-        vec![Skipped {
-            kind: "widget".to_owned(),
-            name: "commits_table".to_owned(),
-            reason: "exists".to_owned(),
-        }]
-    );
+    // Reusing a name is how the reader changes something by asking, so the
+    // write goes through and the reply says which names it replaced.
+    assert_eq!(created.updated.widgets, vec!["commits_table".to_owned()]);
     assert!(created.created.widgets.is_empty());
-
-    let stored = harness.get_json("/v1/widgets/commits_table").await;
-    assert_eq!(stored.json().await["metric"], "m");
 }
 
 #[tokio::test]
 async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
     let harness = TestHarness::new(ChatClient::canned()).await;
 
-    // known_tables()'s metric list, then a not-found lookup followed by an
-    // insert for the metric, each of the two widgets, and the dashboard, in
-    // that order.
-    harness
-        .mock
-        .add(handlers::provide(Vec::<DefinitionRow>::new()));
+    // Then a not-found lookup followed by an insert for the metric, each of
+    // the two widgets, and the dashboard, in that order.
+    harness.queue_chat_context();
     for _ in 0..4 {
         harness
             .mock
@@ -282,5 +262,8 @@ async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
         json!(["delivery", "delivery_line"])
     );
     assert_eq!(body["created"]["dashboard"], "delivery_dashboard");
-    assert_eq!(body["skipped"], json!([]));
+    assert_eq!(
+        body["updated"],
+        json!({ "metric": null, "widgets": [], "dashboard": null })
+    );
 }

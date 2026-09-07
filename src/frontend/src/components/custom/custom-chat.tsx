@@ -32,7 +32,18 @@ interface Exchange {
  * query, so a reply without rows is still an answer.
  */
 function toolUsed(reply: ChatReply): string {
-  return reply.created || reply.skipped?.length ? "create" : "answer";
+  return reply.created || reply.updated ? "create" : "answer";
+}
+
+/** A creation set read out as prose: `metric x · widget y`. */
+function names(set: ChatCreated | undefined): string[] {
+  return [
+    set?.metric ? `metric ${set.metric}` : null,
+    set?.widgets.length
+      ? `${set.widgets.length === 1 ? "widget" : "widgets"} ${set.widgets.join(", ")}`
+      : null,
+    set?.dashboard ? `dashboard ${set.dashboard}` : null,
+  ].filter((entry): entry is string => entry !== null);
 }
 
 export function CustomChat({ onCreated }: CustomChatProps) {
@@ -53,11 +64,19 @@ export function CustomChat({ onCreated }: CustomChatProps) {
     if (!question) return;
 
     const id = Date.now() + Math.random();
+    const history = exchanges.flatMap((exchange) =>
+      exchange.reply
+        ? [
+            { role: "user" as const, content: exchange.question },
+            { role: "assistant" as const, content: exchange.reply.reply },
+          ]
+        : []
+    );
     setMessage("");
     setExchanges((prev) => [...prev, { id, question }]);
 
     try {
-      const reply = await sendChat.mutateAsync(question);
+      const reply = await sendChat.mutateAsync({ message: question, history });
       setExchanges((prev) =>
         prev.map((exchange) =>
           exchange.id === id ? { ...exchange, reply } : exchange
@@ -171,14 +190,8 @@ export function CustomChat({ onCreated }: CustomChatProps) {
 
 function ChatAnswer({ reply }: { reply: ChatReply }) {
   const tool = toolUsed(reply);
-  const created = reply.created;
-  const built = [
-    created?.metric ? `metric ${created.metric}` : null,
-    created?.widgets.length
-      ? `${created.widgets.length === 1 ? "widget" : "widgets"} ${created.widgets.join(", ")}`
-      : null,
-    created?.dashboard ? `dashboard ${created.dashboard}` : null,
-  ].filter((entry): entry is string => entry !== null);
+  const built = names(reply.created);
+  const replaced = names(reply.updated);
 
   return (
     <div className="me-auto flex w-full flex-col gap-2 rounded-2xl rounded-es-sm bg-background px-3 py-2 shadow-xs">
@@ -201,14 +214,9 @@ function ChatAnswer({ reply }: { reply: ChatReply }) {
         <p className={TEXT_LABEL}>Built {built.join(" · ")}</p>
       ) : null}
 
-      {reply.skipped?.map((skip) => (
-        <p
-          key={`${skip.kind}:${skip.name}`}
-          className={TEXT_LABEL}
-        >
-          {skip.name} already exists, left as it was
-        </p>
-      ))}
+      {replaced.length ? (
+        <p className={TEXT_LABEL}>Replaced {replaced.join(" · ")}</p>
+      ) : null}
     </div>
   );
 }
