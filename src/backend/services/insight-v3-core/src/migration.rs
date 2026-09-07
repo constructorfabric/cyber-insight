@@ -36,7 +36,7 @@ pub(crate) async fn migrate(client: &insight_clickhouse::Client) -> Result<(), M
 }
 
 #[derive(Debug, Error)]
-#[error("failed to migrate the raw_data table")]
+#[error("failed to migrate the raw_data, metrics, widgets and dashboards tables")]
 pub(crate) struct MigrationError(#[from] clickhouse::error::Error);
 
 #[cfg(test)]

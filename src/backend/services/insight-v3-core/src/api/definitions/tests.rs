@@ -125,6 +125,25 @@ impl TestHarness {
 
         TestResponse::from_response(response).await
     }
+
+    async fn list_json(&self, path: &str, names: Vec<String>) -> TestResponse {
+        self.mock.add(handlers::provide(names));
+
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(Body::empty())
+            .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
+
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|error| panic!("router must respond: {error}"));
+
+        TestResponse::from_response(response).await
+    }
 }
 
 struct TestResponse {
@@ -183,4 +202,42 @@ async fn a_name_outside_the_charset_is_rejected() {
         .put_json("/v1/metrics/drop%20table", json!({}))
         .await;
     assert_eq!(put.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_returns_the_stored_names() {
+    let harness = TestHarness::new().await;
+
+    let got = harness
+        .list_json(
+            "/v1/metrics",
+            vec!["commits_per_day".to_owned(), "lines_per_day".to_owned()],
+        )
+        .await;
+
+    assert_eq!(got.status(), StatusCode::OK);
+    assert_eq!(
+        got.json().await,
+        json!({ "names": ["commits_per_day", "lines_per_day"] })
+    );
+}
+
+#[tokio::test]
+async fn put_then_get_a_widget_definition_round_trips() {
+    let harness = TestHarness::new().await;
+
+    let put = harness
+        .put_json(
+            "/v1/widgets/commits_table",
+            json!({ "type": "table", "metric": "commits_per_day" }),
+        )
+        .await;
+    assert_eq!(put.status(), StatusCode::NO_CONTENT);
+
+    let got = harness.get_json("/v1/widgets/commits_table").await;
+    assert_eq!(got.status(), StatusCode::OK);
+    assert_eq!(
+        got.json().await,
+        json!({ "type": "table", "metric": "commits_per_day" })
+    );
 }

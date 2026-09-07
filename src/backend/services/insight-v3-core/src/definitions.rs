@@ -2,6 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use clickhouse::sql::Identifier;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -108,15 +109,11 @@ impl DefinitionStore {
         kind: DefinitionKind,
         name: &DefinitionName,
     ) -> Result<Option<serde_json::Value>, DefinitionStoreError> {
-        let sql = format!(
-            "SELECT id, name, body, updated_at FROM {} FINAL WHERE name = ? LIMIT 1",
-            kind.table()
-        );
-
         let rows = self
             .client
             .inner()
-            .query(&sql)
+            .query("SELECT id, name, body, updated_at FROM ? FINAL WHERE name = ? LIMIT 1")
+            .bind(Identifier(kind.table()))
             .bind(name.as_str())
             .fetch_all::<DefinitionRow>()
             .await?;
@@ -131,15 +128,11 @@ impl DefinitionStore {
         &self,
         kind: DefinitionKind,
     ) -> Result<Vec<String>, DefinitionStoreError> {
-        let sql = format!(
-            "SELECT DISTINCT name FROM {} FINAL ORDER BY name",
-            kind.table()
-        );
-
         Ok(self
             .client
             .inner()
-            .query(&sql)
+            .query("SELECT DISTINCT name FROM ? FINAL ORDER BY name")
+            .bind(Identifier(kind.table()))
             .fetch_all::<String>()
             .await?)
     }
@@ -164,10 +157,19 @@ pub(crate) enum DefinitionError {
 pub(crate) enum DefinitionStoreError {
     #[error("the definition store timed out")]
     Timeout,
-    #[error(transparent)]
-    ClickHouse(#[from] clickhouse::error::Error),
+    #[error("definition store operation failed")]
+    ClickHouse(#[source] clickhouse::error::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+impl From<clickhouse::error::Error> for DefinitionStoreError {
+    fn from(error: clickhouse::error::Error) -> Self {
+        match error {
+            clickhouse::error::Error::TimedOut => Self::Timeout,
+            error => Self::ClickHouse(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -214,5 +216,100 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "commits_per_day");
         assert_eq!(rows[0].body, r#"{"table":"events"}"#);
+    }
+
+    #[tokio::test]
+    async fn get_returns_the_stored_body_for_a_matching_row() {
+        let mock = Mock::new();
+        mock.add(handlers::provide(vec![DefinitionRow {
+            id: Uuid::now_v7(),
+            name: "commits_per_day".to_owned(),
+            body: r#"{"table":"events"}"#.to_owned(),
+            updated_at: Utc::now(),
+        }]));
+        let store = DefinitionStore::new(client(&mock));
+        let name = DefinitionName::parse("commits_per_day")
+            .unwrap_or_else(|error| panic!("name must parse: {error}"));
+
+        let body = store
+            .get(DefinitionKind::Metric, &name)
+            .await
+            .unwrap_or_else(|error| panic!("get must succeed: {error}"));
+
+        assert_eq!(body, Some(json!({ "table": "events" })));
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_when_no_row_matches() {
+        let mock = Mock::new();
+        mock.add(handlers::provide(Vec::<DefinitionRow>::new()));
+        let store = DefinitionStore::new(client(&mock));
+        let name = DefinitionName::parse("nope")
+            .unwrap_or_else(|error| panic!("name must parse: {error}"));
+
+        let body = store
+            .get(DefinitionKind::Metric, &name)
+            .await
+            .unwrap_or_else(|error| panic!("get must succeed: {error}"));
+
+        assert_eq!(body, None);
+    }
+
+    #[tokio::test]
+    async fn get_reads_final_with_the_bound_name_and_kind_table() {
+        let mock = Mock::new();
+        let recording = mock.add(handlers::record_ddl());
+        let store = DefinitionStore::new(client(&mock));
+        let name = DefinitionName::parse("commits_per_day")
+            .unwrap_or_else(|error| panic!("name must parse: {error}"));
+
+        store
+            .get(DefinitionKind::Widget, &name)
+            .await
+            .unwrap_or_else(|error| panic!("get must succeed: {error}"));
+        let sql = recording.query().await;
+
+        assert!(sql.contains("FROM `widgets` FINAL"), "sql was: {sql}");
+        assert!(sql.contains("WHERE name = "), "sql was: {sql}");
+        assert!(sql.contains("commits_per_day"), "sql was: {sql}");
+    }
+
+    #[tokio::test]
+    async fn list_returns_the_names_from_the_response() {
+        let mock = Mock::new();
+        mock.add(handlers::provide(vec!["a".to_owned(), "b".to_owned()]));
+        let store = DefinitionStore::new(client(&mock));
+
+        let names = store
+            .list(DefinitionKind::Dashboard)
+            .await
+            .unwrap_or_else(|error| panic!("list must succeed: {error}"));
+
+        assert_eq!(names, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn list_selects_distinct_names_ordered_from_the_kind_table() {
+        let mock = Mock::new();
+        let recording = mock.add(handlers::record_ddl());
+        let store = DefinitionStore::new(client(&mock));
+
+        store
+            .list(DefinitionKind::Dashboard)
+            .await
+            .unwrap_or_else(|error| panic!("list must succeed: {error}"));
+        let sql = recording.query().await;
+
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT name FROM `dashboards` FINAL ORDER BY name"
+        );
+    }
+
+    #[test]
+    fn clickhouse_timeout_is_normalized_to_definition_store_timeout() {
+        let error = DefinitionStoreError::from(clickhouse::error::Error::TimedOut);
+
+        assert!(matches!(error, DefinitionStoreError::Timeout));
     }
 }

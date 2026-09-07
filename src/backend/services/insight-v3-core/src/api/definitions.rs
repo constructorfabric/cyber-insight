@@ -15,6 +15,9 @@ use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, Defini
 #[resource_error("gts.cf.insight.insight_v3_core.definitions.v1~")]
 struct DefinitionApiError;
 
+// `.anonymous()`: these routes trust the gateway to authenticate the
+// `__Host-sid` session cookie before forwarding. Must stay off the network
+// (see docker-compose.yml's loopback port binding).
 pub(crate) fn register_routes(
     router: Router,
     openapi: &dyn OpenApiRegistry,

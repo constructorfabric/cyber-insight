@@ -123,7 +123,7 @@ async fn a_stored_metric_runs_and_returns_columns_in_field_order() -> R {
         post(|| async {
             Json(json!({
                 "meta": [{"name": "day", "type": "String"}, {"name": "lines", "type": "UInt64"}],
-                "data": [{"day": "2026-09-01", "lines": 3}]
+                "data": [{"day": "2026-09-01", "lines": "3"}]
             }))
         }),
     );

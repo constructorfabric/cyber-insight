@@ -465,7 +465,7 @@ services:
       - "/app/config/insight.yaml"
       - "run"
     ports:
-      - "${INSIGHT_V3_CORE_PORT:-8087}:8086"
+      - "127.0.0.1:${INSIGHT_V3_CORE_PORT:-8087}:8086"
 
   # ── Authenticator (OIDC login + sessions + cookie-to-JWT exchange) ─────
   #

@@ -1,6 +1,6 @@
 //! Compiles a metric's JSON definition into `ClickHouse` SQL and runs it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -163,6 +163,7 @@ impl PartialEq<String> for FilterBind {
 pub(crate) struct CompiledQuery {
     pub(crate) sql: String,
     pub(crate) binds: Vec<FilterBind>,
+    column_types: HashMap<String, FieldType>,
 }
 
 #[derive(Debug, Error)]
@@ -186,6 +187,7 @@ impl MetricQuery {
 
         let mut select_parts = Vec::with_capacity(self.fields.len());
         let mut as_names = HashSet::with_capacity(self.fields.len());
+        let mut column_types = HashMap::with_capacity(self.fields.len());
         for field in &self.fields {
             if !is_identifier(&field.json) {
                 return Err(MetricQueryError::Identifier(field.json.clone()));
@@ -194,6 +196,7 @@ impl MetricQuery {
                 return Err(MetricQueryError::Identifier(field.as_name.clone()));
             }
             as_names.insert(field.as_name.as_str());
+            column_types.insert(field.as_name.clone(), field.r#type);
 
             let extraction = field.r#type.extract(&field.json);
             let expression = match field.agg {
@@ -239,7 +242,11 @@ impl MetricQuery {
         let limit = self.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
         let _ = write!(sql, " LIMIT {limit}");
 
-        Ok(CompiledQuery { sql, binds })
+        Ok(CompiledQuery {
+            sql,
+            binds,
+            column_types,
+        })
     }
 }
 
@@ -247,6 +254,34 @@ fn is_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.chars().count() <= MAX_IDENTIFIER_CHARS
         && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `ClickHouse`'s `JSON` format serialises wide integers as JSON strings;
+/// parse declared `int`/`float` columns back into numbers.
+fn coerce_value(value: serde_json::Value, field_type: FieldType) -> serde_json::Value {
+    let serde_json::Value::String(text) = value else {
+        return value;
+    };
+
+    match field_type {
+        FieldType::String => {}
+        FieldType::Int => {
+            if let Ok(number) = text.parse::<i64>() {
+                return serde_json::Value::Number(number.into());
+            }
+        }
+        FieldType::Float => {
+            if let Some(number) = text
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+            {
+                return serde_json::Value::Number(number);
+            }
+        }
+    }
+
+    serde_json::Value::String(text)
 }
 
 /// The result of running a [`CompiledQuery`] against `ClickHouse`.
@@ -311,7 +346,13 @@ impl MetricRunner {
             .map(|mut row| {
                 columns
                     .iter()
-                    .map(|name| row.remove(name).unwrap_or(serde_json::Value::Null))
+                    .map(|name| {
+                        let value = row.remove(name).unwrap_or(serde_json::Value::Null);
+                        match compiled.column_types.get(name) {
+                            Some(field_type) => coerce_value(value, *field_type),
+                            None => value,
+                        }
+                    })
                     .collect()
             })
             .collect();
@@ -466,6 +507,16 @@ mod tests {
             metric.compile(),
             Err(MetricQueryError::FilterValue(_))
         ));
+    }
+
+    #[test]
+    fn coerces_string_typed_clickhouse_numbers_to_json_numbers() {
+        assert_eq!(coerce_value(json!("132"), FieldType::Int), json!(132));
+        assert_eq!(coerce_value(json!("12.5"), FieldType::Float), json!(12.5));
+        assert_eq!(
+            coerce_value(json!("2026-09-01"), FieldType::String),
+            json!("2026-09-01")
+        );
     }
 
     #[test]
