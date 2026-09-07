@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -713,6 +713,7 @@ impl RepoStore {
             last_accessed_at_epoch_s: now,
             size_bytes: cloned_bytes,
             skeleton_bytes: cloned_bytes,
+            skeleton_packs: pack_names(git_dir).into_iter().collect(),
             generation: 1,
             incarnation: self.mint_incarnation(),
             cred_fingerprints: vec![creds.fingerprint()],
@@ -762,6 +763,7 @@ impl RepoStore {
 
         let before = self.ref_digest(git_dir).await;
         let previous = RepoMeta::load(entry_dir);
+        let packs_before = pack_names(git_dir);
 
         // Park the metadata before the refs can move. A crash between the
         // `--atomic` fetch and the meta publish would otherwise leave the OLD
@@ -852,6 +854,13 @@ impl RepoStore {
             cred_fingerprints: RepoMeta::proofs_with(previous.as_ref(), creds.fingerprint()),
             // A plain fetch never changes the entry's clone shape.
             full_clone: previous.as_ref().is_some_and(|m| m.full_clone),
+            skeleton_packs: skeleton_packs_after_fetch(
+                previous
+                    .as_ref()
+                    .map_or(&[], |m| m.skeleton_packs.as_slice()),
+                &packs_before,
+                &pack_names(git_dir),
+            ),
         };
         publish_meta(&meta, entry_dir)?;
         discard_parked_meta(entry_dir);
@@ -981,6 +990,7 @@ impl RepoStore {
                 .map_or_else(|| self.mint_incarnation(), |m| m.incarnation.clone()),
             cred_fingerprints: RepoMeta::proofs_with(previous.as_ref(), creds.fingerprint()),
             full_clone: true,
+            skeleton_packs: pack_names(&git_dir).into_iter().collect(),
         };
         publish_meta(&meta, &entry_dir)?;
         discard_parked_meta(&entry_dir);
@@ -1123,12 +1133,27 @@ impl RepoStore {
         };
         self.settle_purge_debt(&key.dir_name()).await;
 
+        let shed = match self.shed_window_packs(&entry_dir).await {
+            WindowShed::Settled { freed: 0 } => {
+                self.settle_purge_failures(&key.dir_name()).await;
+                tracing::debug!(dir = %key.dir_name(), "no window to shed; skeleton size re-baselined");
+                return;
+            }
+            WindowShed::Settled { freed } => {
+                self.settle_purge_failures(&key.dir_name()).await;
+                metrics::record_eviction(EvictionTier::Blob);
+                tracing::info!(dir = %key.dir_name(), freed_bytes = freed, "purged a served window");
+                return;
+            }
+            WindowShed::RepackDue { freed } => freed,
+        };
+
         let permit = self.heavy_permit().await;
         match self.repack_blobless(&entry_dir, &permit).await {
             Ok(freed) => {
                 self.settle_purge_failures(&key.dir_name()).await;
                 metrics::record_eviction(EvictionTier::Blob);
-                tracing::info!(dir = %key.dir_name(), freed_bytes = freed, "purged a served window");
+                tracing::info!(dir = %key.dir_name(), freed_bytes = shed + freed, "purged a served window and consolidated the skeleton");
             }
             Err(e) => {
                 let failures = self.record_purge_failure(&key.dir_name()).await;
@@ -1298,6 +1323,9 @@ impl RepoStore {
         {
             return Ok(());
         }
+        if let WindowShed::Settled { .. } = self.shed_window_packs(entry_dir).await {
+            return Ok(());
+        }
         self.repack_blobless(entry_dir, permit).await.map(|_| ())
     }
 
@@ -1392,6 +1420,7 @@ impl RepoStore {
         if let Some(mut meta) = RepoMeta::load(entry_dir) {
             meta.size_bytes = purged;
             meta.skeleton_bytes = purged;
+            meta.skeleton_packs = pack_names(&git_dir).into_iter().collect();
             if let Err(e) = meta.store(entry_dir) {
                 tracing::warn!(error = %e, "could not record the purged size; the planner will overstate this entry");
             }
@@ -1709,6 +1738,11 @@ impl RepoStore {
 
         // Never wait: the only caller holds the admission lock, and a permit
         // held by a clone would stall every admission behind that clone.
+        match self.shed_window_packs(&entry_dir).await {
+            WindowShed::Settled { freed: 0 } => return Ok(BlobPurge::Skipped),
+            WindowShed::Settled { .. } => return Ok(BlobPurge::Purged),
+            WindowShed::RepackDue { .. } => {}
+        }
         let Ok(permit) = self.heavy.try_acquire() else {
             return Ok(BlobPurge::PermitBusy);
         };
@@ -1808,13 +1842,118 @@ fn discard_parked_meta(entry_dir: &Path) {
 
 /// How many packs the entry's object store currently holds. Cheap: one
 /// directory listing, no tree walk.
+/// What deleting an entry's window packs left behind.
+#[derive(Debug)]
+enum WindowShed {
+    /// The skeleton alone remains, in few enough packs.
+    Settled { freed: u64 },
+    /// The windows are gone (or could not be told apart), and the skeleton
+    /// itself still needs a repack.
+    RepackDue { freed: u64 },
+}
+
+impl RepoStore {
+    /// Shed every served window by deleting its packs. A promisor fetch
+    /// always indexes what it receives into a pack of its own, so the blobs
+    /// of a window never share a file with the skeleton, and dropping them is
+    /// a few unlinks whatever the size of the history — unlike a repack.
+    /// INVARIANT: the caller holds the entry's write lock.
+    async fn shed_window_packs(&self, entry_dir: &Path) -> WindowShed {
+        let Some(mut meta) = RepoMeta::load(entry_dir) else {
+            return WindowShed::RepackDue { freed: 0 };
+        };
+        if meta.skeleton_packs.is_empty() {
+            return WindowShed::RepackDue { freed: 0 };
+        }
+
+        let git_dir = entry_dir.join("repo.git");
+        let before = dir_size_off_reactor(git_dir.clone()).await;
+        let doomed = window_pack_files(&git_dir, &meta.skeleton_packs);
+        let remaining = {
+            let git_dir = git_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                for path in doomed {
+                    let _ = std::fs::remove_file(path);
+                }
+                dir_size(&git_dir)
+            })
+            .await
+            .unwrap_or(before)
+        };
+
+        // INVARIANT: with every window pack gone, the remaining bytes are the skeleton.
+        meta.size_bytes = remaining;
+        meta.skeleton_bytes = remaining;
+        if let Err(e) = meta.store(entry_dir) {
+            tracing::warn!(error = %e, "could not record the shed size; the planner will overstate this entry");
+        }
+
+        let freed = before.saturating_sub(remaining);
+        if needs_consolidation(remaining, remaining, pack_count(&git_dir)) {
+            WindowShed::RepackDue { freed }
+        } else {
+            WindowShed::Settled { freed }
+        }
+    }
+}
+
+/// The skeleton packs after a fetch: those recorded before plus whatever the
+/// fetch wrote. An entry with no recorded skeleton keeps none — its packs
+/// cannot be told apart after the fact, and a shed must never guess.
+fn skeleton_packs_after_fetch(
+    recorded: &[String],
+    before: &BTreeSet<String>,
+    after: &BTreeSet<String>,
+) -> Vec<String> {
+    if recorded.is_empty() {
+        return Vec::new();
+    }
+    recorded
+        .iter()
+        .cloned()
+        .chain(after.difference(before).cloned())
+        .collect()
+}
+
+/// Every file of every pack that is not part of the skeleton: the served
+/// windows with their `.idx`, `.rev` and `.promisor` siblings.
+fn window_pack_files(git_dir: &Path, skeleton_packs: &[String]) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(git_dir.join("objects").join("pack")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                return false;
+            };
+            let stem = name.split('.').next().unwrap_or(name);
+            stem.starts_with("pack-") && !skeleton_packs.iter().any(|kept| kept == stem)
+        })
+        .collect()
+}
+
+/// Stems (`pack-<hash>`) of every pack in the object store.
+fn pack_names(git_dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(git_dir.join("objects").join("pack")).map_or_else(
+        |_| BTreeSet::new(),
+        |entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "pack"))
+                .filter_map(|path| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                })
+                .collect()
+        },
+    )
+}
+
 fn pack_count(git_dir: &Path) -> usize {
-    std::fs::read_dir(git_dir.join("objects").join("pack")).map_or(0, |entries| {
-        entries
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
-            .count()
-    })
+    pack_names(git_dir).len()
 }
 
 fn publish_meta(meta: &RepoMeta, entry_dir: &Path) -> Result<(), GitError> {
@@ -2184,6 +2323,34 @@ pub(crate) mod tests {
 
     /// Commit a large blob at origin, clone it into `f`, and prefetch the
     /// blob so the entry carries window weight above its skeleton.
+    /// A second store over the fixture's cache whose heavy budget no repack
+    /// can meet — the failure the exhaustion rules are about, made certain.
+    fn store_whose_repack_cannot_finish(f: &Fixture) -> Arc<RepoStore> {
+        match RepoStore::open_cache(
+            &f.root.join("cache"),
+            2,
+            None,
+            Budget {
+                total_bytes: u64::MAX,
+            },
+            u64::MAX,
+        ) {
+            Ok(s) => Arc::new(s.with_heavy_timeout(Duration::from_millis(1))),
+            Err(e) => panic!("second store: {e}"),
+        }
+    }
+
+    /// Make an entry look like one written before its packs were tracked.
+    fn forget_skeleton_packs(entry_dir: &Path) {
+        let Some(mut meta) = RepoMeta::load(entry_dir) else {
+            panic!("meta must exist")
+        };
+        meta.skeleton_packs.clear();
+        if let Err(e) = meta.store(entry_dir) {
+            panic!("meta store: {e}");
+        }
+    }
+
     async fn fetch_blobs_into(f: Fixture) -> (Fixture, CacheKey, u64) {
         sh(
             &f.root.join("origin"),
@@ -2785,7 +2952,7 @@ pub(crate) mod tests {
         };
         assert!(
             meta.size_bytes < skeleton * 2,
-            "the repack must have run: {} vs skeleton {skeleton}",
+            "the purge must have run: {} vs skeleton {skeleton}",
             meta.size_bytes
         );
         assert!(
@@ -2893,32 +3060,21 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_purge_that_keeps_failing_evicts_the_entry_instead_of_looping() {
-        // A repack that cannot finish inside the heavy budget will not finish
-        // next time either, and every window served meanwhile makes the pack
-        // bigger: retried in place it leaves the entry over its cap and
-        // unservable for good. The second failure evicts, and the next open
-        // re-clones the skeleton.
+        // An entry whose packs were never recorded can only be purged by a
+        // repack. One that cannot finish inside the heavy budget will not
+        // finish next time either, and every window served meanwhile makes
+        // the pack bigger: retried in place it leaves the entry over its cap
+        // and unservable for good. The second failure evicts, and the next
+        // open re-clones the skeleton.
         let (f, k, _) = entry_with_fetched_blobs("purge-exhausted").await;
         let entry_dir = f.store.entry_dir(&k);
         assert!(
             entry_dir.join("repo.git").is_dir(),
             "the fixture must hold a clone"
         );
+        forget_skeleton_packs(&entry_dir);
 
-        // A second store over the same cache whose heavy budget no repack can
-        // meet — the failure this rule is about, made certain.
-        let failing = match RepoStore::open_cache(
-            &f.root.join("cache"),
-            2,
-            None,
-            Budget {
-                total_bytes: u64::MAX,
-            },
-            u64::MAX,
-        ) {
-            Ok(s) => Arc::new(s.with_heavy_timeout(Duration::from_millis(1))),
-            Err(e) => panic!("second store: {e}"),
-        };
+        let failing = store_whose_repack_cannot_finish(&f);
 
         failing.purge_if_drifted(&k).await;
         assert!(
@@ -2942,6 +3098,219 @@ pub(crate) mod tests {
         assert!(
             RepoMeta::load(&entry_dir).is_some(),
             "and publishes fresh metadata for the skeleton"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_purge_sheds_the_window_by_deleting_its_packs_and_never_repacks_the_skeleton() {
+        // The blobs of a served window arrive in packs of their own, so
+        // shedding them is unlinking files. A skeleton too large to repack
+        // inside the heavy budget must still purge — and stay.
+        let (f, k, skeleton) = entry_with_fetched_blobs("shed-by-deletion").await;
+        let entry_dir = f.store.entry_dir(&k);
+        let git_dir = entry_dir.join("repo.git");
+        let Some(before) = RepoMeta::load(&entry_dir) else {
+            panic!("meta must exist")
+        };
+        assert!(
+            !before.skeleton_packs.is_empty(),
+            "a clone must record its skeleton packs"
+        );
+        assert!(
+            pack_count(&git_dir) > before.skeleton_packs.len(),
+            "the prefetch must have added a window pack"
+        );
+
+        store_whose_repack_cannot_finish(&f)
+            .purge_if_drifted(&k)
+            .await;
+
+        assert!(git_dir.is_dir(), "a shed is not an eviction");
+        let skeleton_packs: BTreeSet<String> = before.skeleton_packs.iter().cloned().collect();
+        assert_eq!(
+            pack_names(&git_dir),
+            skeleton_packs,
+            "only the skeleton packs may remain"
+        );
+        let Some(after) = RepoMeta::load(&entry_dir) else {
+            panic!("meta must survive a shed")
+        };
+        assert!(
+            after.size_bytes < skeleton * 2,
+            "the window's weight must be gone: {} vs skeleton {skeleton}",
+            after.size_bytes
+        );
+        assert_eq!(
+            after.size_bytes,
+            dir_size(&git_dir),
+            "accounting must match the disk"
+        );
+        assert_eq!(
+            after.generation, before.generation,
+            "a shed changes no snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fetched_pack_joins_the_skeleton_and_survives_the_shed() {
+        let (f, k, _) = entry_with_fetched_blobs("shed-keeps-fetch").await;
+        let entry_dir = f.store.entry_dir(&k);
+        let git_dir = entry_dir.join("repo.git");
+
+        sh(
+            &f.root.join("origin"),
+            "echo later > later.txt && git add later.txt && \
+             GIT_AUTHOR_DATE='2026-08-03T10:00:00+0000' \
+             GIT_COMMITTER_DATE='2026-08-03T10:00:00+0000' git commit -qm later",
+        );
+        let guard = match f.store.open(&k, &creds(), always_fetch()).await {
+            Ok(g) => g,
+            Err(e) => panic!("fetch: {e}"),
+        };
+        let head = head_of(guard.git_dir());
+        if let Err(e) = crate::engine::read::blobs::prefetch(
+            f.store.runner(),
+            guard.git_dir(),
+            std::slice::from_ref(&head),
+            &creds(),
+            u64::MAX,
+        )
+        .await
+        {
+            panic!("prefetch: {e}");
+        }
+        drop(guard);
+        let Some(meta) = RepoMeta::load(&entry_dir) else {
+            panic!("meta must exist")
+        };
+        assert_eq!(
+            meta.skeleton_packs.len(),
+            2,
+            "the fetch's pack must join the skeleton: {:?}",
+            meta.skeleton_packs
+        );
+
+        store_whose_repack_cannot_finish(&f)
+            .purge_if_drifted(&k)
+            .await;
+
+        assert_eq!(
+            pack_names(&git_dir).len(),
+            2,
+            "the clone's and the fetch's packs stay; the windows go"
+        );
+        sh(&git_dir, &format!("git cat-file -e {head}^{{tree}}"));
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_predates_pack_tracking_is_never_shed_by_guesswork() {
+        // Without a recorded skeleton no pack can be told from a window: the
+        // repack is the only purge such an entry gets, and a failed one
+        // leaves every pack in place.
+        let (f, k, _) = entry_with_fetched_blobs("shed-legacy").await;
+        let entry_dir = f.store.entry_dir(&k);
+        let git_dir = entry_dir.join("repo.git");
+        forget_skeleton_packs(&entry_dir);
+        let packs = pack_names(&git_dir);
+
+        store_whose_repack_cannot_finish(&f)
+            .purge_if_drifted(&k)
+            .await;
+
+        assert!(git_dir.is_dir(), "one failed purge is a retry");
+        assert_eq!(
+            pack_names(&git_dir),
+            packs,
+            "no pack may be deleted on a guess"
+        );
+    }
+
+    #[test]
+    fn a_fetch_extends_a_recorded_skeleton_and_leaves_an_unrecorded_one_alone() {
+        struct Case {
+            rule: &'static str,
+            recorded: &'static [&'static str],
+            before: &'static [&'static str],
+            after: &'static [&'static str],
+            expected: &'static [&'static str],
+        }
+        let owned =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|n| (*n).to_owned()).collect() };
+        let cases = [
+            Case {
+                rule: "unrecorded stays unrecorded",
+                recorded: &[],
+                before: &["pack-a"],
+                after: &["pack-a", "pack-f"],
+                expected: &[],
+            },
+            Case {
+                rule: "the fetch's pack is added",
+                recorded: &["pack-a"],
+                before: &["pack-a"],
+                after: &["pack-a", "pack-f"],
+                expected: &["pack-a", "pack-f"],
+            },
+            Case {
+                rule: "a window present throughout is not",
+                recorded: &["pack-a"],
+                before: &["pack-a", "pack-w"],
+                after: &["pack-a", "pack-w", "pack-f"],
+                expected: &["pack-a", "pack-f"],
+            },
+            Case {
+                rule: "a fetch that wrote nothing adds nothing",
+                recorded: &["pack-a"],
+                before: &["pack-a"],
+                after: &["pack-a"],
+                expected: &["pack-a"],
+            },
+        ];
+        for case in cases {
+            let before: BTreeSet<String> = owned(case.before).into_iter().collect();
+            let after: BTreeSet<String> = owned(case.after).into_iter().collect();
+            assert_eq!(
+                skeleton_packs_after_fetch(&owned(case.recorded), &before, &after),
+                owned(case.expected),
+                "{}",
+                case.rule
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_pack_is_doomed_with_all_its_siblings_and_nothing_else() {
+        let f = fixture("window-files");
+        let git_dir = f.root.join("packs");
+        let pack_dir = git_dir.join("objects").join("pack");
+        if let Err(e) = std::fs::create_dir_all(&pack_dir) {
+            panic!("pack dir: {e}");
+        }
+        for name in [
+            "pack-a.pack",
+            "pack-a.idx",
+            "pack-a.promisor",
+            "pack-w.pack",
+            "pack-w.idx",
+            "pack-w.rev",
+            "pack-w.promisor",
+            "multi-pack-index",
+        ] {
+            if let Err(e) = std::fs::write(pack_dir.join(name), b"x") {
+                panic!("write {name}: {e}");
+            }
+        }
+
+        let mut doomed: Vec<String> = window_pack_files(&git_dir, &["pack-a".to_owned()])
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        doomed.sort();
+
+        assert_eq!(
+            doomed,
+            ["pack-w.idx", "pack-w.pack", "pack-w.promisor", "pack-w.rev"],
+            "every file of the window pack and only those"
         );
     }
 
@@ -3543,6 +3912,7 @@ pub(crate) mod tests {
         let k = key(&f);
         let guard = open_until_ready(&f, &k, refresh()).await;
         drop(guard);
+        forget_skeleton_packs(&f.store.entry_dir(&k));
 
         // Clones or fetches elsewhere hold every heavy permit.
         let Ok(_held) = f.store.heavy.try_acquire_many(2) else {
