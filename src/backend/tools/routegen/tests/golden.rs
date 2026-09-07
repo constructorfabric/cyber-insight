@@ -53,9 +53,18 @@ fn instance_token_prefix_route_can_strip_its_platform_prefix() {
     let conf = generate(routes, &Settings::default())
         .unwrap_or_else(|error| panic!("core instance-token route should generate: {error}"));
 
-    assert!(conf.contains("location /api/core {"));
-    assert!(conf.contains("require(\"gateway\").pass_instance_token()"));
-    assert!(conf.contains("rewrite ^/api/core/?(.*)$ /$1 break;"));
+    assert!(conf.contains("location = /api/core {"));
+    assert!(conf.contains("location ^~ /api/core/ {"));
+    assert!(!conf.contains("location /api/core {"));
+    assert_eq!(
+        conf.matches("require(\"gateway\").pass_instance_token()")
+            .count(),
+        2
+    );
+    assert_eq!(
+        conf.matches("rewrite ^/api/core/?(.*)$ /$1 break;").count(),
+        2
+    );
     assert!(!conf.contains("require(\"gateway\").exchange()"));
     assert!(!conf.contains("require(\"gateway\").pass_bearer()"));
 }

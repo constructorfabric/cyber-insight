@@ -15,6 +15,8 @@ pid=""
 table_created="false"
 
 cleanup() {
+  status=$?
+  trap - EXIT
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -22,7 +24,11 @@ cleanup() {
   if [[ "$table_created" == "true" ]]; then
     clickhouse_query "DROP TABLE IF EXISTS $table_name" >/dev/null 2>&1 || true
   fi
+  if [[ "$status" != "0" ]] && [[ -s "$log_file" ]]; then
+    cat "$log_file" >&2
+  fi
   rm -f "$log_file"
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -46,6 +52,19 @@ clickhouse_query() {
   curl "${clickhouse_curl[@]}" \
     --data-binary "$1" \
     "$clickhouse_url/?database=$clickhouse_database"
+}
+
+expect_equal() {
+  local expected="$1"
+  local actual="$2"
+  local context="$3"
+
+  if [[ "$actual" == "$expected" ]]; then
+    return 0
+  fi
+
+  printf '%s: expected %q, got %q\n' "$context" "$expected" "$actual" >&2
+  return 1
 }
 
 for _ in 1 2; do
@@ -83,7 +102,7 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
   --output /dev/null --write-out '%{http_code}' \
   --request PUT \
   "http://127.0.0.1:$port/v1/tables/$table_name")"
-[[ "$status" == "401" ]]
+expect_equal "401" "$status" "table creation without a token"
 
 for _ in 1 2; do
   status="$(curl --silent --connect-timeout 2 --max-time 10 \
@@ -91,7 +110,7 @@ for _ in 1 2; do
     --request PUT \
     --header "x-insight-token: $token" \
     "http://127.0.0.1:$port/v1/tables/$table_name")"
-  [[ "$status" == "204" ]] || exit 1
+  expect_equal "204" "$status" "authenticated table creation"
   table_created="true"
 done
 
@@ -99,8 +118,11 @@ schema="$(clickhouse_query "SELECT name, type
 FROM system.columns
 WHERE database = currentDatabase() AND table = '$table_name'
 ORDER BY position
-FORMAT TSV")"
-[[ "$schema" == $'id\tUUID\ntable_name\tString\nraw_data\tString\nreceived_at\tDateTime64(3, \'UTC\')' ]]
+FORMAT TSVRaw")"
+expect_equal \
+  $'id\tUUID\ntable_name\tString\nraw_data\tString\nreceived_at\tDateTime64(3, \'UTC\')' \
+  "$schema" \
+  "created table schema"
 
 raw_values=(
   '{"nested":[1,true,null]}'
@@ -114,7 +136,7 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
   --header 'content-type: application/json' \
   --data-binary "$request_body" \
   "http://127.0.0.1:$port/v1/raw-data")"
-[[ "$status" == "401" ]]
+expect_equal "401" "$status" "raw-data insertion without a token"
 
 status="$(curl --silent --connect-timeout 2 --max-time 10 \
   --output /dev/null --write-out '%{http_code}' \
@@ -122,10 +144,10 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
   --header 'x-insight-token: incorrect-token-0123456789abcdef' \
   --data-binary "$request_body" \
   "http://127.0.0.1:$port/v1/raw-data")"
-[[ "$status" == "401" ]]
+expect_equal "401" "$status" "raw-data insertion with an incorrect token"
 
 before="$(clickhouse_query "SELECT count() FROM $table_name")"
-[[ "$before" == "0" ]]
+expect_equal "0" "$before" "new table row count"
 
 for raw_value in "${raw_values[@]}"; do
   request_body="{\"table\":\"$table_name\",\"raw_data\":$raw_value}"
@@ -135,7 +157,7 @@ for raw_value in "${raw_values[@]}"; do
     --header "x-insight-token: $token" \
     --data-binary "$request_body" \
     "http://127.0.0.1:$port/v1/raw-data")"
-  [[ "$status" == "204" ]]
+  expect_equal "204" "$status" "authenticated raw-data insertion"
 done
 
 stored="$(clickhouse_query "SELECT
@@ -146,4 +168,4 @@ stored="$(clickhouse_query "SELECT
   countIf(raw_data = '42')
 FROM $table_name
 WHERE table_name = '$table_name'")"
-[[ "$stored" == $'4\t1\t1\t1\t1' ]]
+expect_equal $'4\t1\t1\t1\t1' "$stored" "stored raw-data rows"
