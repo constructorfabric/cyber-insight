@@ -343,22 +343,13 @@ struct MessagesRequest<'a> {
     tool_choice: Value,
 }
 
-/// The two tools the model may call. The tool it picks IS the intent, so a
-/// question cannot be mistaken for a creation. The schemas guide the shape and
-/// document the name charset. `strict` is deliberately NOT set: the nested
-/// MetricQuery shape exceeds the API's compiled-grammar budget and a strict
-/// request is refused outright ("the compiled grammar is too large"). What the
-/// schema cannot enforce, our own validation refuses and the repair round fixes.
-fn proposal_tools() -> Vec<Value> {
+/// The structured query a metric carries. Shared by both tools: the
+/// answer tool runs one, the create tool stores one.
+fn metric_query_schema() -> Value {
     let plain = json!({ "type": "string" });
-    let name = json!({
-        "type": "string",
-        "pattern": NAME_PATTERN,
-        "description": "letters, digits, underscore and dash only - never a space",
-    });
     let field_type = json!({ "enum": ["string", "int", "float"] });
 
-    let metric_query = json!({
+    json!({
         "type": "object",
         "additionalProperties": false,
         "required": ["table", "fields", "group_by", "filters"],
@@ -395,7 +386,23 @@ fn proposal_tools() -> Vec<Value> {
             },
             "limit": { "type": "integer" },
         },
+    })
+}
+
+/// The two tools the model may call. The tool it picks IS the intent, so a
+/// question cannot be mistaken for a creation. The schemas guide the shape and
+/// document the name charset. `strict` is deliberately NOT set: the nested
+/// [`MetricQuery`] shape exceeds the API's compiled-grammar budget and a strict
+/// request is refused outright ("the compiled grammar is too large"). What the
+/// schema cannot enforce, our own validation refuses and the repair round fixes.
+fn proposal_tools() -> Vec<Value> {
+    let plain = json!({ "type": "string" });
+    let name = json!({
+        "type": "string",
+        "pattern": NAME_PATTERN,
+        "description": "letters, digits, underscore and dash only - never a space",
     });
+    let metric_query = metric_query_schema();
 
     let widget = json!({
         "type": "object",
