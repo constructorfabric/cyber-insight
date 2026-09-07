@@ -47,7 +47,7 @@ TBD
 
 #### Functional Drivers
 
-Functional requirements are grouped by area in [PRD §5](./PRD.md#5-functional-requirements) and carry no IDs yet, so nothing is allocated against them here.
+Functional requirements and their IDs are in [PRD §5](./PRD.md#5-functional-requirements). Design responses: TBD.
 
 #### Architecture Decision Records
 

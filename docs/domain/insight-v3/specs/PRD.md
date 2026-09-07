@@ -272,7 +272,7 @@ The system **MUST** run within the deployment footprint already recommended for 
 
 - [ ] `p1` - **ID**: `cpt-insightspec-v3-nfr-reliability`
 
-The system **MUST** stay available for ingest and read, and report how fresh its data is per source.
+The system **MUST** stay available for ingest and read.
 
 **Threshold**: at least 99.9% uptime per service.
 
@@ -298,7 +298,7 @@ Published artifacts **MUST** carry no critical findings.
 
 Adding data, a widget type, a dashboard or an alert **MUST NOT** require changes to service or renderer code.
 
-**Threshold**: a new data source lands through the ingest contract alone; a new widget type ships as a schema change alone.
+**Threshold**: a new data source lands through the ingest contract alone; a new widget type ships as a schema change alone; a new dashboard and a new alert are created through the product, with no code change.
 
 
 ### 6.2 NFR Exclusions
@@ -339,6 +339,7 @@ The three Constructor Fabric quality gates, enforced in CI and blocking:
 
 - [ ] Tests and metrics exist and pass for every one of the five quality vectors
 - [ ] New-code line coverage above 80%, and no change lowers a component's coverage
+- [ ] Metrics collected and compared release to release: a metric either improves or does not degrade, and any degradation carries a documented, owned waiver
 
 ## 10. Dependencies
 

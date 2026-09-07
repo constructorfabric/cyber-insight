@@ -24,6 +24,8 @@ date: 2026-09-07
 
 Seven features: data in, data out, metrics over it, widgets, dashboards, alerts, and a chat over all of it.
 
+The platform-usage requirements in [PRD §5.7](./PRD.md#57-platform-usage) are not decomposed yet.
+
 ## 2. Entries
 
 **Overall implementation status:**
