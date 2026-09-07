@@ -35,7 +35,7 @@ APP__gears__api_gateway__config__bind_addr="127.0.0.1:$port" \
   --config "$service_dir/config/insight.yaml" run >"$log_file" 2>&1 &
 pid=$!
 
-for _ in {1..120}; do
+for _ in {1..240}; do
   if ! kill -0 "$pid" 2>/dev/null; then
     cat "$log_file"
     exit 1

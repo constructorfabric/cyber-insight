@@ -11,6 +11,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "ci" / "changed.py"
 BUILD_IMAGES = ROOT / ".github" / "workflows" / "build-images.yml"
+HEALTH_SCRIPT = ROOT / "src" / "backend" / "services" / "insight-v3-core" / "tests" / "health.sh"
 CI_DIR = ROOT / "scripts" / "ci"
 sys.path.insert(0, str(CI_DIR))
 
@@ -19,6 +20,9 @@ from components import COMPONENTS  # noqa: E402
 
 
 class ChangedCliTests(unittest.TestCase):
+    def test_insight_v3_core_health_allows_a_cold_ci_build(self) -> None:
+        self.assertIn("for _ in {1..240}; do", HEALTH_SCRIPT.read_text())
+
     def test_insight_v3_core_image_is_in_the_delivery_workflow(self) -> None:
         workflow = BUILD_IMAGES.read_text()
 
