@@ -8,6 +8,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CustomApiError, type ChatCreated } from "@/api/custom-client";
 import { CustomChat } from "@/components/custom/custom-chat";
 import { CustomWidget } from "@/components/custom/custom-widget";
+import { CustomPageShell } from "@/components/custom/custom-page-shell";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import {
@@ -16,8 +18,10 @@ import {
   metricResultQuery,
   widgetQuery,
 } from "@/queries/custom";
+import { TEXT_BODY, TEXT_HEADING, TEXT_LABEL, TEXT_TITLE } from "@/lib/type-scale";
+import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/portal_/custom/$name")({
+export const Route = createFileRoute("/portal/custom/$name")({
   component: CustomDashboardPage,
 });
 
@@ -50,8 +54,7 @@ function CustomDashboardPage() {
   }
 
   return (
-    <div>
-      <CustomChat onCreated={handleCreated} />
+    <CustomPageShell chat={<CustomChat onCreated={handleCreated} />}>
       <CustomDashboardBody
         dashboard={dashboard}
         isLoading={isLoading}
@@ -60,7 +63,7 @@ function CustomDashboardPage() {
         name={name}
         onRetry={() => void refetch()}
       />
-    </div>
+    </CustomPageShell>
   );
 }
 
@@ -102,12 +105,25 @@ function CustomDashboardBody({
   if (!dashboard) return null;
 
   return (
-    <div>
-      <h1>{dashboard.title}</h1>
-      {dashboard.widgets.map((widgetName) => (
-        <DashboardWidgetSlot key={widgetName} name={widgetName} />
-      ))}
-    </div>
+    <>
+      <header className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h1 className={TEXT_TITLE}>{dashboard.title}</h1>
+        <span className={cn(TEXT_LABEL, "font-mono")}>{name}</span>
+      </header>
+      {dashboard.widgets.length === 0 ? (
+        <ComingSoon
+          variant="card"
+          state="empty"
+          label="This dashboard holds no widgets yet."
+        />
+      ) : (
+        <div className="grid gap-4 @3xl:grid-cols-2">
+          {dashboard.widgets.map((widgetName) => (
+            <DashboardWidgetSlot key={widgetName} name={widgetName} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -119,16 +135,41 @@ function DashboardWidgetSlot({ name }: { name: string }) {
     enabled: Boolean(metric),
   });
 
-  if (widgetState.isPending) return null;
+  if (widgetState.isPending) {
+    return (
+      <Card>
+        <CardContent>
+          <CenteredSpinner className="min-h-40" />
+        </CardContent>
+      </Card>
+    );
+  }
   if (widgetState.isError) {
-    return <p role="alert">{(widgetState.error as Error).message}</p>;
+    return (
+      <Card>
+        <CardContent>
+          <p role="alert" className={cn(TEXT_BODY, "text-destructive")}>
+            {(widgetState.error as Error).message}
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
-    <CustomWidget
-      widget={widgetState.data}
-      result={resultState.data}
-      error={resultState.error as Error | undefined}
-    />
+    <Card>
+      <CardHeader>
+        <CardTitle className={cn(TEXT_HEADING, "font-mono")}>
+          {name}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="max-h-72 overflow-auto">
+        <CustomWidget
+          widget={widgetState.data}
+          result={resultState.data}
+          error={resultState.error as Error | undefined}
+        />
+      </CardContent>
+    </Card>
   );
 }

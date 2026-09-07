@@ -1,17 +1,17 @@
 /**
  * `/portal/custom` and `/portal/custom/$name` are file routes nested under
- * `/portal` in the routes directory, but `PortalLayout` renders no
- * `<Outlet/>` — it renders zone content picked by a `?zone=` search param.
+ * `/portal`, and `PortalLayout` renders them through its `<Outlet/>` — so the
+ * rail, the topbar and the context pane are around them, and the pane lists
+ * the dashboards.
+ *
  * Every other test for these two routes renders the route's `component`
  * directly with `@tanstack/react-router` mocked out (see
- * `src/test/portal-router.tsx`), so none of them would have caught that:
- * the route matched, the component rendered, and the portal shell around it
- * was never in the picture.
- *
- * This one builds a router from the real generated `routeTree` and drives it
- * with a memory history, so the actual route-matching and parenting decide
- * what renders — the same tree `router.ts` hands to `RouterProvider` in the
- * app.
+ * `src/test/portal-router.tsx`), so none of them would catch a page that
+ * escaped the shell: the route matches, the component renders, and the shell
+ * is never in the picture. This one builds a router from the real generated
+ * `routeTree` and drives it with a memory history, so actual route matching
+ * and parenting decide what renders — the same tree `router.ts` hands to
+ * `RouterProvider` in the app.
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -42,12 +42,28 @@ function renderAt(path: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // The shell measures the viewport to decide whether the context pane is in
+  // flow or off-canvas; jsdom implements no media queries.
+  vi.stubGlobal(
+    "matchMedia",
+    (query: string) =>
+      ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList
+  );
   // Empty personId skips the root's viewer-identity prefetch, so this test
   // needs no `@/api/identity-client` mock.
   authStore.setAuthenticated(makeSession({ personId: "" }));
@@ -55,25 +71,33 @@ beforeEach(() => {
 
 afterEach(() => {
   authStore.reset();
+  vi.unstubAllGlobals();
 });
 
 describe("the /portal/custom routes, through the real router", () => {
-  it("renders the dashboard list at /portal/custom, not the portal shell", async () => {
+  it("renders the dashboard list at /portal/custom, inside the portal shell", async () => {
     vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
       "engineering",
     ]);
 
     renderAt("/portal/custom");
 
+    const links = await screen.findAllByRole("link", { name: "engineering" });
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "/portal/custom/engineering");
+    }
+    // The card on the page and the row in the context pane: the pane is the
+    // nav the reader picks dashboards from, so it has to be one of them.
+    expect(links.length).toBeGreaterThan(1);
     expect(
-      await screen.findByRole("link", { name: "engineering" }),
-    ).toHaveAttribute("href", "/portal/custom/engineering");
-    expect(
-      document.querySelector('[data-slot="sidebar-wrapper"]'),
-    ).not.toBeInTheDocument();
+      document.querySelector('[data-slot="sidebar-wrapper"]')
+    ).toBeInTheDocument();
   });
 
-  it("renders a dashboard at /portal/custom/$name, not the portal shell", async () => {
+  it("renders a dashboard at /portal/custom/$name, inside the portal shell", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "engineering",
+    ]);
     vi.mocked(customClient.fetchDashboard).mockResolvedValue({
       title: "Engineering",
       widgets: [],
@@ -83,7 +107,7 @@ describe("the /portal/custom routes, through the real router", () => {
 
     expect(await screen.findByText("Engineering")).toBeInTheDocument();
     expect(
-      document.querySelector('[data-slot="sidebar-wrapper"]'),
-    ).not.toBeInTheDocument();
+      document.querySelector('[data-slot="sidebar-wrapper"]')
+    ).toBeInTheDocument();
   });
 });

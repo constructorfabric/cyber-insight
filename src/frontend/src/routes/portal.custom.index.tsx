@@ -1,13 +1,18 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, LayoutDashboard } from "lucide-react";
 
 import type { ChatCreated } from "@/api/custom-client";
 import { CustomChat } from "@/components/custom/custom-chat";
+import { CustomPageShell } from "@/components/custom/custom-page-shell";
+import { Card, CardContent } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import { dashboardNamesQuery, invalidateDashboardList } from "@/queries/custom";
+import { TEXT_BODY, TEXT_NAME, TEXT_TITLE } from "@/lib/type-scale";
+import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/portal_/custom/")({
+export const Route = createFileRoute("/portal/custom/")({
   component: CustomDashboardIndex,
 });
 
@@ -32,15 +37,20 @@ function CustomDashboardIndex() {
   }
 
   return (
-    <div>
-      <CustomChat onCreated={handleCreated} />
+    <CustomPageShell chat={<CustomChat onCreated={handleCreated} />}>
+      <header className="mb-4">
+        <h1 className={TEXT_TITLE}>Custom</h1>
+        <p className={cn(TEXT_BODY, "text-muted-foreground")}>
+          Dashboards built from your own data. Ask the assistant for a new one.
+        </p>
+      </header>
       <CustomDashboardList
         names={names}
         isLoading={isLoading}
         isError={isError}
         onRetry={() => void refetch()}
       />
-    </div>
+    </CustomPageShell>
   );
 }
 
@@ -70,16 +80,43 @@ function CustomDashboardList({
   if (!names) return null;
 
   if (names.length === 0) {
-    return <p>No dashboards yet.</p>;
+    return (
+      <ComingSoon
+        variant="card"
+        state="empty"
+        label="No dashboards yet. Describe one to the assistant and it will build it."
+      />
+    );
   }
 
   return (
-    <ul>
+    <ul className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
       {names.map((name) => (
         <li key={name}>
-          <Link to="/portal/custom/$name" params={{ name }}>
-            {name}
-          </Link>
+          <Card
+            size="sm"
+            render={
+              <Link
+                to="/portal/custom/$name"
+                params={{ name }}
+                className="block transition-colors hover:bg-accent/50"
+              />
+            }
+          >
+            <CardContent className="flex items-center gap-3">
+              <LayoutDashboard
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+              <span className={cn(TEXT_NAME, "min-w-0 truncate")}>
+                {name}
+              </span>
+              <ChevronRight
+                className="ms-auto size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+            </CardContent>
+          </Card>
         </li>
       ))}
     </ul>

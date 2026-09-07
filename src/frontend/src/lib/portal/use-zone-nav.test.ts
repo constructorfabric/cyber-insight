@@ -39,12 +39,13 @@ function zoneIds(): string[] {
 }
 
 describe("useZoneNav", () => {
-  it("offers a viewer with no cohort their own page only", () => {
+  it("offers a viewer with no cohort their own page and their dashboards", () => {
     mocks.canSeeOthers = false;
     mocks.reachPending = false;
     mocks.isAdmin = false;
 
-    expect(zoneIds()).toEqual(["person"]);
+    // Custom rolls nothing up, so having no reports does not hide it.
+    expect(zoneIds()).toEqual(["person", "custom"]);
   });
 
   it("offers the org zones once the viewer has a cohort", () => {

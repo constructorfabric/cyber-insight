@@ -25,14 +25,17 @@ export function CustomLineChart({ result, x, y }: CustomLineChartProps) {
   }));
 
   return (
-    <div data-testid="custom-line-chart" className="h-64 w-full">
+    <div
+      data-testid="custom-line-chart"
+      className="h-64 w-full text-chart-1"
+    >
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey={x} />
-          <YAxis />
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis dataKey={x} className="text-xs" />
+          <YAxis className="text-xs" />
           <Tooltip />
-          <Line type="linear" dataKey={y} />
+          <Line type="linear" dataKey={y} stroke="currentColor" />
         </LineChart>
       </ResponsiveContainer>
     </div>

@@ -13,7 +13,7 @@ import { useIsAdmin } from "@/queries/identity-me";
  * Zones that still make sense when the viewer manages no one — everything else
  * rolls up a (non-existent) subtree. An IC's portal collapses to these.
  */
-const IC_ZONES = new Set(["person"]);
+const IC_ZONES = new Set(["person", "custom"]);
 
 /**
  * The zone list the viewer may see plus the selection behaviour, shared by the
@@ -54,6 +54,19 @@ export function useZoneNav(): {
     // half-states nobody chose.
     const entity = zone.kind === "person" || zone.kind === "people";
     if (entity && !activePerson) return;
+    // Custom is route-driven like the entity zones, but needs no person.
+    if (zone.kind === "custom") {
+      void navigate({
+        to: "/portal/custom",
+        search: (prev: Record<string, unknown>) => ({
+          ...prev,
+          item: undefined,
+          acct: undefined,
+          zone: undefined,
+        }),
+      });
+      return;
+    }
     void navigate({
       ...(entity
         ? {

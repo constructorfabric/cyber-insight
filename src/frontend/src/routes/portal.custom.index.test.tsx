@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as customClient from "@/api/custom-client";
 import { portalRouter } from "@/test/portal-router";
 
-import { Route } from "./portal_.custom.index";
+import { Route } from "./portal.custom.index";
 
 const Component = (Route as unknown as { component: () => React.ReactNode })
   .component;
