@@ -46,6 +46,7 @@ RUN cargo build --release --bin identity-resolution 2>/dev/null || true
 # --- Source layer ---
 RUN rm -rf libs/insight-clickhouse/src libs/insight-http-metrics/src libs/insight-log-context/src libs/insight-migration/src services/identity-resolution/src \
     target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
+    target/release/deps/insight_log_context* target/release/deps/libinsight_log_context* \
     target/release/identity-resolution target/release/deps/identity_resolution* \
     target/release/deps/insight_clickhouse* target/release/deps/libinsight_clickhouse* \
     target/release/deps/insight_migration* target/release/deps/libinsight_migration*

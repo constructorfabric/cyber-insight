@@ -47,6 +47,7 @@ RUN cargo build --release --bin git-cli-proxy 2>/dev/null || true
 # --- Source layer ---
 RUN rm -rf libs/insight-http-metrics/src libs/insight-log-context/src services/git-cli-proxy/src \
     target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
+    target/release/deps/insight_log_context* target/release/deps/libinsight_log_context* \
     target/release/git-cli-proxy target/release/deps/git_cli_proxy*
 
 COPY libs/insight-http-metrics/src/ ./libs/insight-http-metrics/src/

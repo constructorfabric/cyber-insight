@@ -52,6 +52,7 @@ RUN cargo build --release --bin authenticator 2>/dev/null || true
 # --- Source layer ---
 RUN rm -rf libs/authenticator-sdk/src libs/insight-http-metrics/src libs/insight-log-context/src services/authenticator/src \
     target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
+    target/release/deps/insight_log_context* target/release/deps/libinsight_log_context* \
     target/release/authenticator target/release/deps/authenticator* \
     target/release/deps/libauthenticator*
 

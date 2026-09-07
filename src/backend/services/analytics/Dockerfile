@@ -53,6 +53,7 @@ RUN cargo build --release --bin analytics 2>/dev/null || true
 # --- Source layer ---
 RUN rm -rf libs/insight-clickhouse/src libs/insight-http-metrics/src libs/insight-log-context/src libs/insight-migration/src services/analytics/src \
     target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
+    target/release/deps/insight_log_context* target/release/deps/libinsight_log_context* \
     target/release/analytics target/release/deps/analytics* \
     target/release/deps/insight_clickhouse* target/release/deps/libinsight_clickhouse* \
     target/release/deps/insight_migration* target/release/deps/libinsight_migration*
