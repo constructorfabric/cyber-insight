@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod definitions;
 mod gear;
 mod migration;
 mod raw_data;
