@@ -3,12 +3,12 @@ set -euo pipefail
 
 service_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="$(cd "$service_dir/../.." && pwd)"
-clickhouse_url="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_URL:-http://127.0.0.1:18123}"
-clickhouse_database="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_DATABASE:-insight}"
-clickhouse_user="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_USER:-}"
-clickhouse_password="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_PASSWORD:-}"
+clickhouse_url="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_URL:-${INTEGRATION_TESTS_CLICKHOUSE_URL:-http://127.0.0.1:18123}}"
+clickhouse_database="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_DATABASE:-${INTEGRATION_TESTS_CLICKHOUSE_DATABASE:-insight}}"
+clickhouse_user="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_USER:-${INTEGRATION_TESTS_CLICKHOUSE_USER:-}}"
+clickhouse_password="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_PASSWORD:-${INTEGRATION_TESTS_CLICKHOUSE_PASSWORD:-}}"
 port="${INSIGHT_V3_CORE_TEST_PORT:-18086}"
-token="${INSIGHT_V3_CORE_TEST_TOKEN:-synthetic-test-token}"
+token="${INSIGHT_V3_CORE_TEST_TOKEN:-synthetic-test-token-0123456789abcdef}"
 table_name="synthetic.events.$$"
 log_file="$(mktemp)"
 pid=""
@@ -93,7 +93,7 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
 status="$(curl --silent --connect-timeout 2 --max-time 10 \
   --output /dev/null --write-out '%{http_code}' \
   --header 'content-type: application/json' \
-  --header 'authorization: Bearer incorrect-token' \
+  --header 'x-insight-token: incorrect-token-0123456789abcdef' \
   --data-binary "$request_body" \
   "http://127.0.0.1:$port/v1/raw-data")"
 [[ "$status" == "401" ]]
@@ -107,7 +107,7 @@ for raw_value in "${raw_values[@]}"; do
   status="$(curl --silent --connect-timeout 2 --max-time 10 \
     --output /dev/null --write-out '%{http_code}' \
     --header 'content-type: application/json' \
-    --header "authorization: Bearer $token" \
+    --header "x-insight-token: $token" \
     --data-binary "$request_body" \
     "http://127.0.0.1:$port/v1/raw-data")"
   [[ "$status" == "204" ]]

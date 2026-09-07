@@ -44,6 +44,7 @@ def _matrix_entry(comp: dict, *, lint: bool = False, cover: bool = True, test: b
         entry["clippy"] = comp.get("clippy", True)  # False ⇒ fmt-only (see #1512)
         entry["live_db"] = comp.get("live_db", False)  # DB-backed live_tests (see #1564)
         entry["live_ch"] = comp.get("live_ch", False)  # ClickHouse-backed live_tests (see #1564)
+        entry["live_test"] = comp.get("live_test", "")  # optional executable integration-test script
         # MariaDB database the CI provisions for live_db entries (defaults to
         # the component name — analytics owns `analytics`, identity-resolution
         # owns `identity`).

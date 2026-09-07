@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "ci" / "changed.py"
+BUILD_IMAGES = ROOT / ".github" / "workflows" / "build-images.yml"
 CI_DIR = ROOT / "scripts" / "ci"
 sys.path.insert(0, str(CI_DIR))
 
@@ -18,6 +19,19 @@ from components import COMPONENTS  # noqa: E402
 
 
 class ChangedCliTests(unittest.TestCase):
+    def test_insight_v3_core_image_is_in_the_delivery_workflow(self) -> None:
+        workflow = BUILD_IMAGES.read_text()
+
+        for required in [
+            "insight_v3_core: ${{ steps.filter.outputs.insight_v3_core }}",
+            "src/backend/services/insight-v3-core/**",
+            "backend-insight-v3-core:",
+            "merge-insight-v3-core:",
+            "${{ env.IMAGE_PREFIX }}/insight-v3-core",
+        ]:
+            self.assertIn(required, workflow)
+        self.assertGreaterEqual(workflow.count("- merge-insight-v3-core"), 2)
+
     def test_compare_ref_selects_the_diff_base(self) -> None:
         result = subprocess.run(
             ["python3", str(SCRIPT), "--compare-ref", "HEAD"],
@@ -54,7 +68,8 @@ class ChangedCliTests(unittest.TestCase):
                 "test": True,
                 "clippy": True,
                 "live_db": False,
-                "live_ch": False,
+                "live_ch": True,
+                "live_test": "services/insight-v3-core/tests/ci.sh",
                 "live_db_name": "insight-v3-core",
                 "cover_ignore_regex": "",
             },

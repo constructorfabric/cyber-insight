@@ -4,9 +4,12 @@ set -euo pipefail
 service_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="$(cd "$service_dir/../.." && pwd)"
 port="${INSIGHT_V3_CORE_TEST_PORT:-18086}"
+clickhouse_url="${INSIGHT_V3_CORE_TEST_CLICKHOUSE_URL:-${INTEGRATION_TESTS_CLICKHOUSE_URL:-http://127.0.0.1:18123}}"
 log_file="$(mktemp)"
 pid=""
 
+# Invoked by the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup() {
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
@@ -24,9 +27,9 @@ healthcheck() {
 }
 
 APP__gears__api_gateway__config__bind_addr="127.0.0.1:$port" \
-  APP__gears__insight_v3_core__config__clickhouse_url="http://127.0.0.1:18123" \
+  APP__gears__insight_v3_core__config__clickhouse_url="$clickhouse_url" \
   APP__gears__insight_v3_core__config__clickhouse_database="insight" \
-  APP__gears__insight_v3_core__config__ingest_token="health-test-token" \
+  APP__gears__insight_v3_core__config__ingest_token="health-test-token-0123456789abcdefghi" \
   cargo run --quiet --manifest-path "$backend_dir/Cargo.toml" \
   --package insight-v3-core -- \
   --config "$service_dir/config/insight.yaml" run >"$log_file" 2>&1 &

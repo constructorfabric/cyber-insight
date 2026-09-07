@@ -328,6 +328,16 @@ jobs:
           fi
           cargo test -p ${{ matrix.entry.package }} $feats
 
+      - name: Live integration test (${{ matrix.entry.name }})
+        if: ${{ matrix.entry.test && matrix.entry.live_test != '' }}
+        working-directory: ${{ matrix.entry.root }}
+        env:
+          INTEGRATION_TESTS_CLICKHOUSE_URL: ${{ matrix.entry.live_ch && 'http://127.0.0.1:8123' || '' }}
+          INTEGRATION_TESTS_CLICKHOUSE_DATABASE: ${{ matrix.entry.live_ch && 'insight' || '' }}
+          INTEGRATION_TESTS_CLICKHOUSE_USER: ${{ matrix.entry.live_ch && 'insight' || '' }}
+          INTEGRATION_TESTS_CLICKHOUSE_PASSWORD: ${{ matrix.entry.live_ch && 'insight' || '' }}
+        run: ${{ matrix.entry.live_test }}
+
       - name: Upload Cobertura
         if: ${{ matrix.entry.cover }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

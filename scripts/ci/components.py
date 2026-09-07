@@ -71,15 +71,17 @@ COMPONENTS = [
         "paths": ["src/backend/services/analytics"],
         "triggered_by": ["insight-migration"],
     },
-    # cover=False: readiness/container startup and real ClickHouse migration and
-    # insert behavior are exercised by shell/Docker paths outside llvm-cov.
-    # Formatting, Clippy, and package tests still run on every service change.
+    # cover=False: readiness and real ClickHouse migration/insert behavior are
+    # exercised by the live shell test below rather than llvm-cov. Formatting,
+    # Clippy, package tests, and the live test still gate every service change.
     {
         "name": "insight-v3-core",
         "lang": "rust",
         "root": "src/backend",
         "package": "insight-v3-core",
         "cover": False,
+        "live_ch": True,
+        "live_test": "services/insight-v3-core/tests/ci.sh",
         "paths": ["src/backend/services/insight-v3-core"],
     },
     # cover=False: the api/ and repository layers are still thin on tests, so the

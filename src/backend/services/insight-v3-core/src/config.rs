@@ -3,6 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 const DEFAULT_CLICKHOUSE_DATABASE: &str = "insight";
+pub(crate) const MIN_INGEST_TOKEN_BYTES: usize = 32;
 pub(crate) const MAX_INGEST_TOKEN_BYTES: usize = 1024;
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +96,9 @@ impl IngestToken {
     fn parse(value: SecretString) -> Result<Self, ConfigError> {
         let exposed = value.expose_secret();
         require_non_empty("ingest_token", exposed)?;
+        if exposed.len() < MIN_INGEST_TOKEN_BYTES {
+            return Err(ConfigError::IngestTokenTooShort);
+        }
         if exposed.len() > MAX_INGEST_TOKEN_BYTES {
             return Err(ConfigError::IngestTokenTooLong);
         }
@@ -142,6 +146,8 @@ pub(crate) enum ConfigError {
     IncompleteCredentials,
     #[error("ClickHouse credentials must not be empty")]
     EmptyCredentials,
+    #[error("ingest_token must be at least {MIN_INGEST_TOKEN_BYTES} bytes")]
+    IngestTokenTooShort,
     #[error("ingest_token must be at most {MAX_INGEST_TOKEN_BYTES} bytes")]
     IngestTokenTooLong,
     #[error("ingest_token must contain only non-whitespace ASCII characters")]
@@ -170,7 +176,7 @@ mod tests {
             clickhouse_database: "insight".to_owned(),
             clickhouse_user: None,
             clickhouse_password: None,
-            ingest_token: SecretString::from("test-ingest-token"),
+            ingest_token: SecretString::from("test-ingest-token-0123456789abcdef"),
         }
     }
 
@@ -197,7 +203,7 @@ mod tests {
 
         let rendered = format!("{config:?}");
 
-        assert!(!rendered.contains("test-ingest-token"));
+        assert!(!rendered.contains("test-ingest-token-0123456789abcdef"));
         assert!(!rendered.contains("database-secret"));
     }
 
@@ -213,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_token_must_be_usable_on_the_bearer_wire() {
+    fn ingest_token_must_be_usable_in_the_instance_token_header() {
         let invalid_tokens = [
             "token with space".to_owned(),
             "töken".to_owned(),
@@ -226,7 +232,7 @@ mod tests {
 
             assert!(
                 config.validate().is_err(),
-                "configured token outside the Bearer wire contract must be rejected"
+                "configured token outside the instance-token header contract must be rejected"
             );
         }
     }
@@ -235,6 +241,22 @@ mod tests {
     fn ingest_token_accepts_the_wire_size_boundary() {
         let mut config = valid_config();
         config.ingest_token = SecretString::from("x".repeat(MAX_INGEST_TOKEN_BYTES));
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn ingest_token_rejects_values_shorter_than_32_bytes() {
+        let mut config = valid_config();
+        config.ingest_token = SecretString::from("x".repeat(31));
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn ingest_token_accepts_the_minimum_size_boundary() {
+        let mut config = valid_config();
+        config.ingest_token = SecretString::from("x".repeat(32));
 
         assert!(config.validate().is_ok());
     }

@@ -2,7 +2,6 @@ use std::convert::Infallible;
 use std::task::Poll;
 
 use axum::body::{Body, to_bytes};
-use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, HeaderValue, Request};
 use chrono::{DateTime, Utc};
 use clickhouse::test::{Mock, handlers, status};
@@ -10,12 +9,14 @@ use futures::stream;
 use secrecy::SecretString;
 use serde::Deserialize;
 use serde_json::json;
-use toolkit::api::OpenApiRegistryImpl;
+use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
 use super::*;
 use crate::raw_data::RawDataStore;
+
+const TEST_TOKEN: &str = "correct-token-0123456789abcdefghi";
 
 #[derive(Debug, Deserialize, clickhouse::Row)]
 struct CapturedRawDataRow {
@@ -28,7 +29,7 @@ struct CapturedRawDataRow {
 }
 
 fn verifier() -> TokenVerifier {
-    TokenVerifier::new(&SecretString::from("correct-token".to_owned()))
+    TokenVerifier::new(&SecretString::from(TEST_TOKEN.to_owned()))
 }
 
 fn app(mock: &Mock) -> Router {
@@ -41,17 +42,17 @@ fn app(mock: &Mock) -> Router {
         Router::new(),
         &openapi,
         state,
-        IngestAdmission::new(&SecretString::from("correct-token".to_owned())),
+        IngestAdmission::new(&SecretString::from(TEST_TOKEN.to_owned())),
     )
 }
 
-fn post(body: Body, authorization: Option<&str>) -> Request<Body> {
+fn post(body: Body, token: Option<&str>) -> Request<Body> {
     let mut request = Request::builder()
         .method("POST")
         .uri("/v1/raw-data")
         .header("content-type", "application/json");
-    if let Some(authorization) = authorization {
-        request = request.header(AUTHORIZATION, authorization);
+    if let Some(token) = token {
+        request = request.header(INGEST_TOKEN_HEADER, token);
     }
 
     request
@@ -68,31 +69,25 @@ fn unpollable_body() -> Body {
 }
 
 #[test]
-fn bearer_scheme_is_case_insensitive() {
-    for scheme in ["Bearer", "bearer", "BEARER"] {
-        let mut headers = HeaderMap::new();
-        let value = HeaderValue::from_str(&format!("{scheme} correct-token"))
-            .unwrap_or_else(|error| panic!("test header must be valid: {error}"));
-        headers.insert(AUTHORIZATION, value);
+fn configured_instance_token_is_accepted() {
+    let mut headers = HeaderMap::new();
+    headers.insert(INGEST_TOKEN_HEADER, HeaderValue::from_static(TEST_TOKEN));
 
-        assert!(verifier().authorizes(&headers), "scheme {scheme} must work");
-    }
+    assert!(verifier().authorizes(&headers));
 }
 
 #[test]
-fn malformed_or_wrong_authorization_is_rejected() {
+fn malformed_or_wrong_instance_token_is_rejected() {
     for value in [
         None,
-        Some("Bearer"),
-        Some("Bearer "),
-        Some("Basic correct-token"),
-        Some("Bearer wrong-token"),
-        Some("Bearer correct-token extra"),
+        Some("short-token"),
+        Some("wrong-token-0123456789abcdefghijk"),
+        Some("correct token 0123456789abcdefghij"),
     ] {
         let mut headers = HeaderMap::new();
         if let Some(value) = value {
             headers.insert(
-                AUTHORIZATION,
+                INGEST_TOKEN_HEADER,
                 HeaderValue::from_str(value)
                     .unwrap_or_else(|error| panic!("test header must be valid: {error}")),
             );
@@ -103,16 +98,10 @@ fn malformed_or_wrong_authorization_is_rejected() {
 }
 
 #[test]
-fn duplicate_authorization_headers_are_rejected() {
+fn duplicate_instance_token_headers_are_rejected() {
     let mut headers = HeaderMap::new();
-    headers.append(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer correct-token"),
-    );
-    headers.append(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer correct-token"),
-    );
+    headers.append(INGEST_TOKEN_HEADER, HeaderValue::from_static(TEST_TOKEN));
+    headers.append(INGEST_TOKEN_HEADER, HeaderValue::from_static(TEST_TOKEN));
 
     assert!(!verifier().authorizes(&headers));
 }
@@ -127,10 +116,6 @@ async fn unauthorized_request_does_not_reach_clickhouse() {
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        response.headers().get(WWW_AUTHENTICATE),
-        Some(&HeaderValue::from_static("Bearer"))
-    );
 }
 
 #[tokio::test]
@@ -144,7 +129,7 @@ async fn authorized_request_commits_the_insert_before_returning_no_content() {
     .unwrap_or_else(|error| panic!("test JSON must serialize: {error}"));
 
     let response = app(&mock)
-        .oneshot(post(Body::from(body), Some("Bearer correct-token")))
+        .oneshot(post(Body::from(body), Some(TEST_TOKEN)))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
     let rows: Vec<CapturedRawDataRow> = recording.collect().await;
@@ -164,7 +149,7 @@ async fn invalid_table_name_is_a_client_error_without_an_insert() {
     let response = app(&mock)
         .oneshot(post(
             Body::from(r#"{"table":"   ","raw_data":null}"#),
-            Some("Bearer correct-token"),
+            Some(TEST_TOKEN),
         ))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
@@ -181,7 +166,7 @@ async fn oversized_request_is_rejected_before_an_insert() {
     );
 
     let response = app(&mock)
-        .oneshot(post(Body::from(body), Some("Bearer correct-token")))
+        .oneshot(post(Body::from(body), Some(TEST_TOKEN)))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
 
@@ -194,7 +179,7 @@ async fn saturated_gate_rejects_without_polling_the_body_or_clickhouse() {
     let client =
         insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
     let state = Arc::new(AppState::new(RawDataStore::new(client)));
-    let admission = IngestAdmission::new(&SecretString::from("correct-token".to_owned()));
+    let admission = IngestAdmission::new(&SecretString::from(TEST_TOKEN.to_owned()));
     let _permits: Vec<_> = (0..MAX_CONCURRENT_WRITES)
         .map(|_| {
             admission
@@ -209,11 +194,14 @@ async fn saturated_gate_rejects_without_polling_the_body_or_clickhouse() {
 
     let unauthorized = app
         .clone()
-        .oneshot(post(unpollable_body(), Some("Bearer wrong-token")))
+        .oneshot(post(
+            unpollable_body(),
+            Some("wrong-token-0123456789abcdefghijk"),
+        ))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
     let saturated = app
-        .oneshot(post(unpollable_body(), Some("Bearer correct-token")))
+        .oneshot(post(unpollable_body(), Some(TEST_TOKEN)))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
 
@@ -231,7 +219,7 @@ async fn missing_json_content_type_remains_unsupported_media_type() {
     let request = Request::builder()
         .method("POST")
         .uri("/v1/raw-data")
-        .header(AUTHORIZATION, "Bearer correct-token")
+        .header(INGEST_TOKEN_HEADER, TEST_TOKEN)
         .body(Body::from(r#"{"table":"synthetic.events","raw_data":1}"#))
         .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
 
@@ -251,7 +239,7 @@ async fn clickhouse_failure_returns_only_a_generic_error() {
     let response = app(&mock)
         .oneshot(post(
             Body::from(r#"{"table":"synthetic.events","raw_data":1}"#),
-            Some("Bearer correct-token"),
+            Some(TEST_TOKEN),
         ))
         .await
         .unwrap_or_else(|error| panic!("router must respond: {error}"));
@@ -264,4 +252,42 @@ async fn clickhouse_failure_returns_only_a_generic_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(!body.contains("ClickHouse"));
     assert!(!body.contains("database"));
+}
+
+#[tokio::test]
+async fn openapi_documents_the_instance_token_and_timeout_response() {
+    let mock = Mock::new();
+    let openapi = OpenApiRegistryImpl::new();
+    let client =
+        insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
+    let state = Arc::new(AppState::new(RawDataStore::new(client)));
+    let _ = register_routes(
+        Router::new(),
+        &openapi,
+        state,
+        IngestAdmission::new(&SecretString::from(TEST_TOKEN.to_owned())),
+    );
+    let document = openapi
+        .build_openapi(&OpenApiInfo::default())
+        .unwrap_or_else(|error| panic!("OpenAPI document must build: {error}"));
+    let document = serde_json::to_value(document)
+        .unwrap_or_else(|error| panic!("OpenAPI document must serialize: {error}"));
+    let operation = &document["paths"]["/v1/raw-data"]["post"];
+    let parameters = operation["parameters"]
+        .as_array()
+        .unwrap_or_else(|| panic!("raw-data parameters must be documented"));
+
+    assert!(parameters.iter().any(|parameter| {
+        parameter["name"] == "X-Insight-Token"
+            && parameter["in"] == "header"
+            && parameter["required"] == true
+    }));
+    assert!(operation["responses"].get("504").is_some());
+}
+
+#[test]
+fn insert_timeout_is_reported_as_gateway_timeout() {
+    let response = store_error(&StoreError::Timeout).into_response();
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
 }

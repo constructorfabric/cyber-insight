@@ -152,9 +152,18 @@ pub(crate) enum RawDataError {
 #[derive(Debug, Error)]
 pub(crate) enum StoreError {
     #[error("failed to insert raw data")]
-    ClickHouse(#[from] clickhouse::error::Error),
+    ClickHouse(#[source] clickhouse::error::Error),
     #[error("raw data insert timed out")]
     Timeout,
+}
+
+impl From<clickhouse::error::Error> for StoreError {
+    fn from(error: clickhouse::error::Error) -> Self {
+        match error {
+            clickhouse::error::Error::TimedOut => Self::Timeout,
+            error => Self::ClickHouse(error),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, clickhouse::Row)]
@@ -208,6 +217,13 @@ mod tests {
                 "must reject logical table name: {table:?}"
             );
         }
+    }
+
+    #[test]
+    fn clickhouse_timeout_is_normalized_to_store_timeout() {
+        let error = StoreError::from(clickhouse::error::Error::TimedOut);
+
+        assert!(matches!(error, StoreError::Timeout));
     }
 
     #[tokio::test]
