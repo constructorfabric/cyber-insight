@@ -12,7 +12,7 @@ vi.mock("@tanstack/react-router", async () => {
 
 import { portalRouter } from "@/test/portal-router";
 
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { NormalizedMetricResult } from "@/lib/metrics/collection";
@@ -91,7 +91,7 @@ function metric(
 }
 
 // Roster entity ids: person UUIDs, the same key the metric grid returns.
-const LABELS = ["a", "b", "c", "d"];
+const LABELS = ["d", "a", "c", "b"];
 const MEMBER_LABELS = ["boss", ...LABELS];
 const MEMBER_IDS = MEMBER_LABELS.map(pid);
 
@@ -129,6 +129,11 @@ describe("TeamStateView", () => {
     for (const label of MEMBER_LABELS) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(MEMBER_LABELS);
   });
 
   it("sums counters into a team total and medians ratios — never the reverse", () => {

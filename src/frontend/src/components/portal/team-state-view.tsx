@@ -254,6 +254,7 @@ export function TeamStateView() {
                 displayName: m.name,
                 personId: m.person_id,
               }))}
+              defaultSort="input"
               metricKeys={shownKeys}
               byKey={heatByKey}
               previousByKey={grid.previousByKey}
