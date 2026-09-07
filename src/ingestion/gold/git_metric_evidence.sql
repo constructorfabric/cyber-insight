@@ -290,11 +290,11 @@ unattributed_line_measures AS (
         metric_date,
         line_measure.1 AS measure_key,
         line_measure.2 AS value,
-        -- Written out rather than spliced into source_dimensions: this must
-        -- equal category_source_dimensions key for key, and a literal says so
-        -- at the one place a reader compares them. A different order would not
-        -- fail — it would split one logical dimension set into two breakdown
-        -- rows under `GROUP BY … dimensions`.
+        -- INVARIANT: the same KEYS as category_source_dimensions, which the
+        -- file-derived rows of these same measures carry. A breakdown groups
+        -- by a hidden source-id key as well as the visible ones, so a key
+        -- missing here splits one repository into two rows — a reader
+        -- comparing the two literals is what keeps them in step.
         CAST(
             [
                 tuple('branch_scope', branch_scope_value, branch_scope_label),
@@ -303,6 +303,7 @@ unattributed_line_measures AS (
                 tuple('change_type', '__unknown__', 'Unknown'),
                 tuple('repository', repository_value, repository_label),
                 tuple('project', project_value, project_label),
+                tuple('source_id', coalesce(toString(source_id), ''), coalesce(toString(source_id), '')),
                 tuple('source', source_value, source_label)
             ] AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS dimensions
