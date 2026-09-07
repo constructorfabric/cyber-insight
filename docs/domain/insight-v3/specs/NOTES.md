@@ -47,6 +47,7 @@ Built from scratch in `insight-v3-core`. Nothing from analytics.
 - Work lands on `feat/insight-v3-core-raw-data` ([PR #3255](https://github.com/constructorfabric/insight/pull/3255)), one commit per task.
 - The end-to-end script runs against `./dev-compose.sh up`, and mints its session token with `tests/lib/insight_stand/service_token.py`.
 - The chat is tested against fixtures. No live model call, no key in the repo.
+- Screenshots and screen recordings land in `screenshots-and-etc/` — gitignored, never committed.
 - Plan: [docs/superpowers/plans/2026-09-07-insight-v3-mvp.md](../../../superpowers/plans/2026-09-07-insight-v3-mvp.md)
 
 ### Assumed

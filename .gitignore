@@ -602,3 +602,6 @@ coverage.md
 
 # pnpm's local content-addressable store, when configured beside the repo
 .pnpm-store/
+
+# Screenshots, recordings and other review media produced while driving the UI.
+screenshots-and-etc/

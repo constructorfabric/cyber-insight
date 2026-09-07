@@ -29,6 +29,7 @@
 - The work lands on `feat/insight-v3-core-raw-data`, one commit per task, pushed to that branch — it is [PR #3255](https://github.com/constructorfabric/insight/pull/3255). No new branch, no new PR.
 - Docker and `./dev-compose.sh up` work on this machine. The end-to-end script runs for real against that stack; it is not written and left unrun.
 - The chat is tested against fixtures only. No live model call in any test, and no API key in the repo, a commit, or a test.
+- Review media — screenshots and recordings from driving the UI — goes in `screenshots-and-etc/`, which is gitignored. Record with `agent-browser record start`, convert to GIF with `ffmpeg`. Nothing there is committed.
 
 ---
 
