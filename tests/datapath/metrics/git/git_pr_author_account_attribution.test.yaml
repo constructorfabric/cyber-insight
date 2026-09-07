@@ -24,10 +24,10 @@ description: >
   git_pr_account_attribution, which owns it.
 
 identity_accounts:
-  # Account 9002 is alice's. Account 9001 is deliberately absent — an account
+  # Account 9101 is alice's. Account 9102 is deliberately absent — an account
   # the identity store has never been taught about, which is what a service
   # account or a departed user looks like here.
-  - {source_type: github, source_id: git-test, account_id: "9002", person: alice@example.com}
+  - {source_type: github, source_id: git-test, account_id: "9101", person: alice@example.com}
   # The same pair on Bitbucket, where it carries more weight: the connector
   # publishes no author address at all, so the account binding is the only
   # thing that can ever attribute a request.
@@ -43,17 +43,17 @@ bronze:
     - {$ref: ../templates/git_activity.yaml#/templates/base, unique_key: br-main, repository: "https://github.com/constructor/insight.git", name: main, head_sha: head-main, is_default: true}
 
   bronze_github.pull_requests:
-    # Opened by the bound account 9002.
+    # Opened by the bound account 9101.
     - {$ref: ../templates/git_activity.yaml#/templates/pull_request, unique_key: pr-901, id: 901, number: 901, author_login: alice-gh, created_at: "2026-11-02T08:00:00Z", closed_at: "2026-11-03T09:00:00Z", merged_at: "2026-11-03T09:00:00Z", merge_commit_sha: merge-901}
-    # Opened by the unbound account 9001.
+    # Opened by the unbound account 9102.
     - {$ref: ../templates/git_activity.yaml#/templates/pull_request, unique_key: pr-902, id: 902, number: 902, author_login: releaser-bot, created_at: "2026-11-02T10:00:00Z", closed_at: "2026-11-03T11:00:00Z", merged_at: "2026-11-03T11:00:00Z", merge_commit_sha: merge-902}
 
   bronze_github.pull_request_diff_stats:
     # author_email stays empty on both: GitHub publishes an address only for
     # some authors, and the account id is what the request travels on.
     # author_id IS that account id.
-    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-901, pull_number: 901, additions: 10, author_id: 9002}
-    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-902, pull_number: 902, additions: 10, author_id: 9001}
+    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-901, pull_number: 901, additions: 10, author_id: 9101}
+    - {$ref: ../templates/git_activity.yaml#/templates/diff_stat, unique_key: ds-902, pull_number: 902, additions: 10, author_id: 9102}
 
   bronze_github.pull_request_commits:
     - {$ref: ../templates/git_activity.yaml#/templates/base, unique_key: prc-901, repo_full_name: constructor/insight, pull_number: 901, sha: hash-bob-1, author_email: bob@example.com, is_merge: false}
