@@ -46,6 +46,8 @@ pub fn register_routes(
 
 #[cfg(test)]
 mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
 
 /// Title/version/description of the emitted document. Kept in step with the
 /// `openapi` block of `config/insight.yaml`.

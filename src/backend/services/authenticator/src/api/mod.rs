@@ -65,6 +65,8 @@ pub fn register_routes(
 
 #[cfg(test)]
 mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
 
 /// Declare every operation through the toolkit's `OperationBuilder` so each
 /// lands in the generated OpenAPI (the machine-checkable subrequest contract),

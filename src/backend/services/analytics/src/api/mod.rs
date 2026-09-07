@@ -140,6 +140,8 @@ pub fn register_routes(
 
 #[cfg(test)]
 mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
 
 /// `OpenAPI` document metadata — the stable API-contract identity baked into
 /// the committed `docs/components/backend/analytics/openapi.json` and the

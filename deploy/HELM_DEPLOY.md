@@ -416,6 +416,8 @@ A line a gears service writes while handling a request carries, in its `spans` c
 
 Startup and background lines carry none of these yet — that requires a gears toolkit change, tracked in constructorfabric/insight#2488.
 
+No token, session credential or personal data is reachable from a log line: values a service must hold but never say (session credentials, IdP tokens, client secrets, store passwords, addresses) render as a `<redacted>` marker, and each service's own test suite carries seeded-leak tests that fail where a leaking line is written. One check, `scripts/ci/logging_bar.py`, reports every service against this bar (shape, level, fields, leaks) on each pipeline run.
+
 ## Step 6 — Configure connectors (optional)
 
 Configure connectors after the app is up. Each connector is a single Kubernetes Secret; the `insight-reconcile-loop` CronWorkflow discovers it and provisions the Airbyte source automatically, so there is nothing else to run.
