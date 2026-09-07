@@ -11860,8 +11860,8 @@ alerting:
         annotations:
           summary: "{{ \"{{ $labels.job }}\" }} is serving over 2% 5xx (and at least 5 in 15m) \u2014\
             \ Insight \xB7 RED by service"
-      - uid: insight-red-telemetry-absent
-        title: RED telemetry missing for a known service
+      - uid: insight-otlp-telemetry-absent
+        title: Telemetry missing for a known service
         condition: C
         data:
         - refId: A
@@ -11871,8 +11871,8 @@ alerting:
           datasourceUid: vm
           model:
             refId: A
-            expr: absent(http_server_request_duration_seconds_count{job="insight-analytics"}) or absent(http_server_request_duration_seconds_count{job="insight-authenticator"})
-              or absent(http_server_request_duration_seconds_count{job="insight-identity-resolution"})
+            expr: absent(target_info{job="insight-analytics"}) or absent(target_info{job="insight-authenticator"})
+              or absent(target_info{job="insight-identity-resolution"})
             instant: true
             range: false
         - refId: B
@@ -11905,8 +11905,7 @@ alerting:
         labels:
           severity: critical
         annotations:
-          summary: '{{ "{{ $labels.job }}" }} stopped exporting RED telemetry (or the OTLP pipeline is
-            down)'
+          summary: '{{ "{{ $labels.job }}" }} stopped exporting telemetry (service or OTLP pipeline down)'
       - uid: insight-gateway-exporter-absent
         title: Gateway nginx exporter not reporting
         condition: C
