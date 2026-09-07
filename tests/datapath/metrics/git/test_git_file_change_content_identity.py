@@ -45,6 +45,10 @@ def test_a_change_counts_once_per_content_however_many_commits_carry_it(spec: Sp
                         "metric_key": "git.commits",
                         "views": [{"view": "breakdown", "dimensions": ["repository"]}],
                     },
+                    {
+                        "metric_key": "git.code_lines",
+                        "views": [{"view": "breakdown", "dimensions": ["repository"]}],
+                    },
                 ],
             },
         }
@@ -54,6 +58,9 @@ def test_a_change_counts_once_per_content_however_many_commits_carry_it(spec: Sp
     r.row("git.lines_added", "breakdown", entity_id=ERIN, dimensions=REPOSITORY).equals(value=125)
     r.row("git.lines_removed", "breakdown", entity_id=ERIN, dimensions=REPOSITORY).equals(value=5)
     r.row("git.commits", "breakdown", entity_id=ERIN, dimensions=REPOSITORY).equals(value=6)
+    # Every path here is code, so the dedup has to reach the code measure too: 125, not
+    # the 133 the rows sum to before the repeat of one modification is folded away.
+    r.row("git.code_lines", "breakdown", entity_id=ERIN, dimensions=REPOSITORY).equals(value=125)
 
 
 def test_the_repeat_of_an_earlier_content_reports_no_lines_of_its_own(spec: SpecRun) -> None:
