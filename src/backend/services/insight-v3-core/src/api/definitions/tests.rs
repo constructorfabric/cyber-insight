@@ -14,6 +14,7 @@ use uuid::Uuid;
 use super::*;
 use crate::api::AppState;
 use crate::definitions::{DefinitionRow, DefinitionStore};
+use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
 
@@ -38,6 +39,9 @@ impl TestHarness {
                 insight_clickhouse::Config::new(url, "insight"),
             )),
             DefinitionStore::new(insight_clickhouse::Client::new(
+                insight_clickhouse::Config::new(url, "insight"),
+            )),
+            MetricRunner::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
         ));

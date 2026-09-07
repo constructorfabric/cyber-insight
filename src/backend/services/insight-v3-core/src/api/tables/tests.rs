@@ -11,6 +11,7 @@ use super::*;
 use crate::api::AppState;
 use crate::api::admission::{INGEST_TOKEN_HEADER, IngestAdmission};
 use crate::definitions::DefinitionStore;
+use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
 
@@ -26,6 +27,9 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
             insight_clickhouse::Config::new(url, "insight"),
         )),
         DefinitionStore::new(insight_clickhouse::Client::new(
+            insight_clickhouse::Config::new(url, "insight"),
+        )),
+        MetricRunner::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
     ));

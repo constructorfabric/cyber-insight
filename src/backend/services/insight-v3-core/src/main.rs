@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod definitions;
 mod gear;
+mod metric_query;
 mod migration;
 mod raw_data;
 mod tables;
