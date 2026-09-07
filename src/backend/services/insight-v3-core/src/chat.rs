@@ -19,6 +19,14 @@ const CREATE_TOOL: &str = "create";
 /// Definition names: what `DefinitionName::parse` accepts.
 const NAME_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
 
+/// A table data has been ingested into, and what is in it.
+#[derive(Debug, Clone)]
+pub(crate) struct KnownTable {
+    pub(crate) name: String,
+    /// `day (string), lines (int)`, empty until something has landed.
+    pub(crate) fields: String,
+}
+
 /// One of the two things the model can propose in reply to a chat message.
 #[derive(Debug)]
 pub(crate) enum Proposal {
@@ -34,6 +42,46 @@ pub(crate) enum Proposal {
 }
 
 impl Proposal {
+    /// [`Proposal::parse`], then refuse a table the reader does not have.
+    ///
+    /// Asked what data exists, the model reaches for `information_schema` and
+    /// friends; the charset check passes such a name and the query then fails
+    /// in the database, which surfaced as an internal error. The refusal goes
+    /// back through the repair round, so the model gets the real table list.
+    /// With no known tables at all the check stands aside — refusing
+    /// everything would be worse than the guess.
+    pub(crate) fn checked(reply: &str, known: &[KnownTable]) -> Result<Self, ChatError> {
+        let proposal = Self::parse(reply)?;
+
+        if known.is_empty() {
+            return Ok(proposal);
+        }
+
+        match proposal.table() {
+            Some(table) if !known.iter().any(|entry| entry.name == table) => {
+                Err(ChatError::UnknownTable {
+                    table: table.to_owned(),
+                    known: known
+                        .iter()
+                        .map(|entry| entry.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })
+            }
+            _ => Ok(proposal),
+        }
+    }
+
+    /// The table this proposal reads, when it names one.
+    fn table(&self) -> Option<&str> {
+        match self {
+            Self::Answer { query, .. } => Some(query.table()),
+            Self::Create { metric, .. } => metric
+                .as_ref()
+                .and_then(|(_, body)| body.get("table").and_then(Value::as_str)),
+        }
+    }
+
     /// Strips any prose or code fence around the JSON object, deserializes on
     /// `intent`, and compiles every query and every proposed metric with
     /// [`MetricQuery::compile`] — a refusal is [`ChatError::Metric`], and
@@ -127,6 +175,8 @@ pub(crate) enum ChatError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Metric(#[from] MetricQueryError),
+    #[error("there is no table named `{table}`; the tables are: {known}")]
+    UnknownTable { table: String, known: String },
     #[error("a create must carry at least one metric, widget or dashboard")]
     EmptyCreate,
     #[error("the key was rejected upstream")]
@@ -198,7 +248,7 @@ impl ChatClient {
     pub(crate) async fn propose(
         &self,
         message: &str,
-        tables: &[String],
+        tables: &[KnownTable],
     ) -> Result<Proposal, ChatError> {
         match &self.backend {
             ChatBackend::Canned => Ok(canned_proposal(message)),
@@ -208,7 +258,7 @@ impl ChatClient {
                 let system = system_prompt(tables);
                 let first = call_model(http, token, model, &system, message).await?;
 
-                match Proposal::parse(&first) {
+                match Proposal::checked(&first, tables) {
                     Ok(proposal) => Ok(proposal),
                     // One repair round: hand the model its own rejection and
                     // let it correct itself. The schema stops malformed
@@ -221,7 +271,7 @@ impl ChatClient {
                             "{message}\n\nYour previous proposal was rejected: {detail}\nIt was:\n{first}\nReturn a corrected proposal."
                         );
                         let second = call_model(http, token, model, &system, &retry).await?;
-                        Proposal::parse(&second)
+                        Proposal::checked(&second, tables)
                     }
                 }
             }
@@ -287,7 +337,7 @@ fn transport_error(error: &reqwest::Error) -> ChatError {
     ChatError::Failed
 }
 
-fn system_prompt(tables: &[String]) -> String {
+fn system_prompt(tables: &[KnownTable]) -> String {
     let mut prompt = String::from(
         "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\n\
          - Call `answer` to answer a question: it runs one query and stores nothing.\n\
@@ -303,7 +353,11 @@ fn system_prompt(tables: &[String]) -> String {
         prompt.push_str("\nKnown tables:\n");
         for table in tables {
             prompt.push_str("- ");
-            prompt.push_str(table);
+            prompt.push_str(&table.name);
+            if !table.fields.is_empty() {
+                prompt.push_str(": ");
+                prompt.push_str(&table.fields);
+            }
             prompt.push('\n');
         }
     }
@@ -581,6 +635,103 @@ mod tests {
         let reply = r#"{"intent":"create","reply":"x","metric":{"name":"bad","body":{"table":"events`--","fields":[],"group_by":[],"filters":[]}},"widgets":[],"dashboard":null}"#;
 
         assert!(matches!(Proposal::parse(reply), Err(ChatError::Metric(_))));
+    }
+
+    #[test]
+    fn the_prompt_names_every_table_with_its_fields() {
+        let prompt = system_prompt(&[
+            KnownTable {
+                name: "events".to_owned(),
+                fields: "day (string), lines (int)".to_owned(),
+            },
+            KnownTable {
+                name: "empty_yet".to_owned(),
+                fields: String::new(),
+            },
+        ]);
+
+        assert!(
+            prompt.contains("- events: day (string), lines (int)"),
+            "{prompt}"
+        );
+        // A table nothing has landed in yet is still a table it may read.
+        assert!(prompt.contains("- empty_yet\n"), "{prompt}");
+        assert!(!prompt.contains("No tables are known yet"), "{prompt}");
+    }
+
+    #[test]
+    fn an_answer_naming_a_table_the_reader_does_not_have_is_refused() {
+        let known = [KnownTable {
+            name: "events".to_owned(),
+            fields: "day (string)".to_owned(),
+        }];
+        let reply = json!({
+            "intent": "answer",
+            "reply": "here",
+            "query": {
+                "table": "information_schema_tables",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }],
+                "group_by": [],
+                "filters": []
+            }
+        })
+        .to_string();
+
+        let Err(rejection) = Proposal::checked(&reply, &known) else {
+            panic!("a table that does not exist must not reach the database");
+        };
+
+        // The message is what the repair round hands back, so it has to name
+        // the tables that DO exist.
+        let feedback = rejection.feedback();
+        assert!(feedback.contains("information_schema_tables"), "{feedback}");
+        assert!(feedback.contains("events"), "{feedback}");
+    }
+
+    #[test]
+    fn a_known_table_passes_the_check() {
+        let known = [KnownTable {
+            name: "events".to_owned(),
+            fields: String::new(),
+        }];
+        let reply = json!({
+            "intent": "answer",
+            "reply": "here",
+            "query": {
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }],
+                "group_by": [],
+                "filters": []
+            }
+        })
+        .to_string();
+
+        assert!(matches!(
+            Proposal::checked(&reply, &known),
+            Ok(Proposal::Answer { .. })
+        ));
+    }
+
+    #[test]
+    fn with_nothing_ingested_the_check_stands_aside() {
+        // Refusing every table when we know of none would block the chat
+        // outright on a stand whose listing failed.
+        let reply = json!({
+            "intent": "answer",
+            "reply": "here",
+            "query": {
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }],
+                "group_by": [],
+                "filters": []
+            }
+        })
+        .to_string();
+
+        assert!(matches!(
+            Proposal::checked(&reply, &[]),
+            Ok(Proposal::Answer { .. })
+        ));
     }
 
     #[test]

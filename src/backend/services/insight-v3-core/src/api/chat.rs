@@ -14,7 +14,7 @@ use toolkit_canonical_errors::{CanonicalError, resource_error};
 use utoipa::ToSchema;
 
 use super::AppState;
-use crate::chat::{ChatError, Proposal};
+use crate::chat::{ChatError, KnownTable, Proposal};
 use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
 use crate::metric_query::{MetricQueryError, RunResult};
 use crate::tables::TableName;
@@ -179,43 +179,26 @@ async fn store_definition(
     Ok(StoreOutcome::Created(name))
 }
 
-/// Best-effort table hints for the model's system prompt: the physical
-/// tables already referenced by a stored metric, each described by the
-/// field names and types `TableStore::sample_fields` found in its most
-/// recent rows. A store failure here degrades the hint, it does not fail
-/// the chat.
-async fn known_tables(state: &AppState) -> Vec<String> {
-    let metric_names = match state.definitions().list(DefinitionKind::Metric).await {
+/// The tables the reader has data in, each with the field names and types
+/// `TableStore::sample_fields` found in its most recent rows.
+///
+/// Read from the ingested tables themselves. Deriving them from the stored
+/// metrics instead meant a stand with no metrics yet told the model there
+/// was no data at all — so asked what data existed, it invented
+/// `information_schema` and the query failed in the database. A listing
+/// failure degrades the hint; it does not fail the chat.
+async fn known_tables(state: &AppState) -> Vec<KnownTable> {
+    let names = match state.tables().list().await {
         Ok(names) => names,
         Err(error) => {
-            tracing::warn!(error = ?error, "could not list metrics to seed chat table hints");
+            tracing::warn!(error = ?error, "could not list tables to seed chat table hints");
             return Vec::new();
         }
     };
 
-    let mut table_names: Vec<String> = Vec::new();
-    for name in metric_names {
-        let Ok(definition_name) = DefinitionName::parse(&name) else {
-            continue;
-        };
-        let Ok(Some(body)) = state
-            .definitions()
-            .get(DefinitionKind::Metric, &definition_name)
-            .await
-        else {
-            continue;
-        };
-        let Some(table) = body.get("table").and_then(Value::as_str) else {
-            continue;
-        };
-        if !table_names.iter().any(|existing| existing == table) {
-            table_names.push(table.to_owned());
-        }
-    }
-
-    let mut described = Vec::with_capacity(table_names.len());
-    for table in table_names {
-        let Ok(table_name) = TableName::parse(&table) else {
+    let mut described = Vec::with_capacity(names.len());
+    for name in names {
+        let Ok(table_name) = TableName::parse(&name) else {
             continue;
         };
         let fields = state
@@ -224,15 +207,13 @@ async fn known_tables(state: &AppState) -> Vec<String> {
             .await
             .unwrap_or_default();
 
-        described.push(if fields.is_empty() {
-            table
-        } else {
-            let fields = fields
+        described.push(KnownTable {
+            fields: fields
                 .iter()
-                .map(|(name, kind)| format!("{name} ({kind})"))
+                .map(|(field, kind)| format!("{field} ({kind})"))
                 .collect::<Vec<_>>()
-                .join(", ");
-            format!("{table}: {fields}")
+                .join(", "),
+            name,
         });
     }
 
@@ -246,6 +227,9 @@ fn chat_error(error: ChatError) -> CanonicalError {
             .create(),
         ChatError::Metric(source) => ChatApiError::invalid_argument()
             .with_field_violation("reply", source.to_string(), "INVALID")
+            .create(),
+        ChatError::UnknownTable { .. } => ChatApiError::invalid_argument()
+            .with_field_violation("query", error.to_string(), "INVALID")
             .create(),
         ChatError::EmptyCreate => ChatApiError::invalid_argument()
             .with_field_violation("reply", ChatError::EmptyCreate.to_string(), "INVALID")

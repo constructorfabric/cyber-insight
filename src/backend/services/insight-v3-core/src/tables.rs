@@ -14,6 +14,12 @@ const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS ? (
 )
 ENGINE = MergeTree
 ORDER BY (table_name, received_at, id)";
+/// The ingest tables, told apart from every other service's tables in the
+/// same database by the ORDER BY that `CREATE_TABLE` above gives them.
+const LIST_TABLES: &str = "SELECT name FROM system.tables
+WHERE database = currentDatabase()
+  AND sorting_key = 'table_name, received_at, id'
+ORDER BY name";
 
 #[derive(Debug, Clone)]
 pub(crate) struct TableName(String);
@@ -74,6 +80,16 @@ impl TableStore {
             .map_err(|_| TableStoreError::Timeout)??;
 
         Ok(())
+    }
+
+    /// Every table data has been ingested into.
+    pub(crate) async fn list(&self) -> Result<Vec<String>, TableStoreError> {
+        Ok(self
+            .client
+            .inner()
+            .query(LIST_TABLES)
+            .fetch_all::<String>()
+            .await?)
     }
 
     /// Field names and inferred types, read from the most recent rows.
@@ -186,6 +202,34 @@ mod tests {
         assert!(query.contains("raw_data String"));
         assert!(query.contains("received_at DateTime64(3, 'UTC')"));
         assert!(query.contains("ORDER BY (table_name, received_at, id)"));
+    }
+
+    #[test]
+    fn listing_selects_only_tables_shaped_like_an_ingest_table() {
+        // The database holds tables from every other service too, so the
+        // ingest schema's own ORDER BY is what separates ours from theirs.
+        assert!(LIST_TABLES.contains("system.tables"));
+        assert!(LIST_TABLES.contains("database = currentDatabase()"));
+        assert!(LIST_TABLES.contains("table_name, received_at, id"));
+    }
+
+    #[tokio::test]
+    async fn listing_returns_the_table_names() {
+        let mock = Mock::new();
+        mock.add(handlers::provide(vec![
+            "events".to_owned(),
+            "raw_data".to_owned(),
+        ]));
+        let client =
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(mock.url(), "insight"));
+        let store = TableStore::new(client);
+
+        let names = store
+            .list()
+            .await
+            .unwrap_or_else(|error| panic!("tables should list: {error}"));
+
+        assert_eq!(names, vec!["events".to_owned(), "raw_data".to_owned()]);
     }
 
     #[tokio::test]

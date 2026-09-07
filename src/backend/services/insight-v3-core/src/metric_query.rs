@@ -179,6 +179,10 @@ pub(crate) enum MetricQueryError {
 }
 
 impl MetricQuery {
+    pub(crate) fn table(&self) -> &str {
+        &self.table
+    }
+
     pub(crate) fn compile(&self) -> Result<CompiledQuery, MetricQueryError> {
         if !is_identifier(&self.table) {
             return Err(MetricQueryError::Identifier(self.table.clone()));
