@@ -14,11 +14,10 @@ const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const CHAT_TIMEOUT_SECS: u64 = 30;
 const CHAT_MAX_TOKENS: u32 = 2048;
-const PROPOSAL_TOOL: &str = "propose";
+const ANSWER_TOOL: &str = "answer";
+const CREATE_TOOL: &str = "create";
 /// Definition names: what `DefinitionName::parse` accepts.
 const NAME_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
-/// SQL identifiers: what `MetricQuery::compile` accepts.
-const IDENTIFIER_PATTERN: &str = "^[A-Za-z0-9_]{1,128}$";
 
 /// One of the two things the model can propose in reply to a chat message.
 #[derive(Debug)]
@@ -226,8 +225,8 @@ async fn call_model(
             role: "user",
             content: message,
         }],
-        tools: vec![proposal_tool()],
-        tool_choice: json!({ "type": "tool", "name": PROPOSAL_TOOL }),
+        tools: proposal_tools(),
+        tool_choice: json!({ "type": "any" }),
     };
 
     let response = http
@@ -344,13 +343,19 @@ struct MessagesRequest<'a> {
     tool_choice: Value,
 }
 
-/// The tool the model must call. Its schema carries the constraints we would
-/// otherwise only ask for in prose — a name charset, a closed intent, closed
-/// field types and aggregates — and `strict` has the API validate arguments
-/// against it, so a name with a space cannot reach us at all.
-fn proposal_tool() -> Value {
-    let identifier = json!({ "type": "string", "pattern": IDENTIFIER_PATTERN });
-    let name = json!({ "type": "string", "pattern": NAME_PATTERN });
+/// The two tools the model may call. The tool it picks IS the intent, so a
+/// question cannot be mistaken for a creation. The schemas guide the shape and
+/// document the name charset. `strict` is deliberately NOT set: the nested
+/// MetricQuery shape exceeds the API's compiled-grammar budget and a strict
+/// request is refused outright ("the compiled grammar is too large"). What the
+/// schema cannot enforce, our own validation refuses and the repair round fixes.
+fn proposal_tools() -> Vec<Value> {
+    let plain = json!({ "type": "string" });
+    let name = json!({
+        "type": "string",
+        "pattern": NAME_PATTERN,
+        "description": "letters, digits, underscore and dash only - never a space",
+    });
     let field_type = json!({ "enum": ["string", "int", "float"] });
 
     let metric_query = json!({
@@ -358,7 +363,7 @@ fn proposal_tool() -> Value {
         "additionalProperties": false,
         "required": ["table", "fields", "group_by", "filters"],
         "properties": {
-            "table": identifier,
+            "table": plain,
             "fields": {
                 "type": "array",
                 "items": {
@@ -366,14 +371,14 @@ fn proposal_tool() -> Value {
                     "additionalProperties": false,
                     "required": ["json", "type", "as_name"],
                     "properties": {
-                        "json": identifier,
+                        "json": plain,
                         "type": field_type,
                         "agg": { "enum": ["count", "sum", "avg", "min", "max"] },
-                        "as_name": identifier,
+                        "as_name": plain,
                     },
                 },
             },
-            "group_by": { "type": "array", "items": identifier },
+            "group_by": { "type": "array", "items": plain },
             "filters": {
                 "type": "array",
                 "items": {
@@ -381,10 +386,10 @@ fn proposal_tool() -> Value {
                     "additionalProperties": false,
                     "required": ["json", "type", "op", "value"],
                     "properties": {
-                        "json": identifier,
+                        "json": plain,
                         "type": field_type,
                         "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte"] },
-                        "value": {},
+                        "value": { "type": ["string", "number", "boolean"] },
                     },
                 },
             },
@@ -392,6 +397,27 @@ fn proposal_tool() -> Value {
         },
     });
 
+    let widget = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "metric"],
+        "properties": {
+            "type": { "enum": ["table", "line"] },
+            "metric": name,
+            "columns": { "type": "array", "items": plain },
+            "x": plain,
+            "y": plain,
+        },
+    });
+    let dashboard = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "widgets"],
+        "properties": {
+            "title": { "type": "string" },
+            "widgets": { "type": "array", "items": name },
+        },
+    });
     let named = |body: Value| {
         json!({
             "type": "object",
@@ -401,24 +427,33 @@ fn proposal_tool() -> Value {
         })
     };
 
-    json!({
-        "name": PROPOSAL_TOOL,
-        "description": "Answer a question about the data, or create definitions to store.",
-        "strict": true,
-        "input_schema": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["intent", "reply"],
-            "properties": {
-                "intent": { "enum": ["answer", "create"] },
-                "reply": { "type": "string" },
-                "query": metric_query.clone(),
-                "metric": named(metric_query),
-                "widgets": { "type": "array", "items": named(json!({ "type": "object" })) },
-                "dashboard": named(json!({ "type": "object" })),
+    vec![
+        json!({
+            "name": ANSWER_TOOL,
+            "description": "Answer a question about the data by running one query. Stores nothing.",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["reply", "query"],
+                "properties": { "reply": { "type": "string" }, "query": metric_query.clone() },
             },
-        },
-    })
+        }),
+        json!({
+            "name": CREATE_TOOL,
+            "description": "Build metric, widget and dashboard definitions to store. Use only when asked to build or save something.",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["reply"],
+                "properties": {
+                    "reply": { "type": "string" },
+                    "metric": named(metric_query),
+                    "widgets": { "type": "array", "items": named(widget) },
+                    "dashboard": named(dashboard),
+                },
+            },
+        }),
+    ]
 }
 
 #[derive(Serialize)]
@@ -444,14 +479,27 @@ impl MessagesResponse {
             .join("\n\n")
     }
 
-    /// The forced tool call's arguments, already schema-validated upstream.
-    /// Falls back to the text blocks when a reply arrives without one.
+    /// The forced tool call's arguments, tagged with the intent the chosen
+    /// tool implies, in the shape `Proposal::parse` reads. Falls back to the
+    /// text blocks when a reply arrives without a tool call at all.
     fn proposal_json(&self) -> String {
-        self.content
-            .iter()
-            .find(|block| block.kind == "tool_use" && block.name == PROPOSAL_TOOL)
-            .and_then(|block| block.input.as_ref())
-            .map_or_else(|| self.text(), ToString::to_string)
+        for block in &self.content {
+            if block.kind != "tool_use" {
+                continue;
+            }
+            let intent = match block.name.as_str() {
+                ANSWER_TOOL => "answer",
+                CREATE_TOOL => "create",
+                _ => continue,
+            };
+            if let Some(Value::Object(fields)) = block.input.clone() {
+                let mut tagged = fields;
+                tagged.insert("intent".to_owned(), Value::String(intent.to_owned()));
+                return Value::Object(tagged).to_string();
+            }
+        }
+
+        self.text()
     }
 }
 
@@ -509,62 +557,57 @@ mod tests {
     }
 
     #[test]
-    fn the_tool_schema_makes_an_invalid_name_unrepresentable() {
-        let tool = proposal_tool();
-        let schema = &tool["input_schema"];
+    fn one_tool_per_intent_carries_the_name_charset() {
+        let tools = proposal_tools();
 
-        assert_eq!(tool["strict"], json!(true));
-        assert_eq!(tool["name"], json!(PROPOSAL_TOOL));
-        assert_eq!(schema["additionalProperties"], json!(false));
-        assert_eq!(
-            schema["properties"]["intent"]["enum"],
-            json!(["answer", "create"])
-        );
+        assert_eq!(tools.len(), 2, "one tool per intent");
+        assert_eq!(tools[0]["name"], json!(ANSWER_TOOL));
+        assert_eq!(tools[1]["name"], json!(CREATE_TOOL));
 
-        // Every name the model can propose carries the charset that
-        // DefinitionName::parse enforces, so a name with a space is rejected
-        // by the API before it ever reaches us.
+        // Not strict on purpose: the nested MetricQuery exceeds the API's
+        // compiled-grammar budget and a strict request is refused outright.
+        // Verified by hand against the live API before this was written.
+        for tool in &tools {
+            assert!(tool.get("strict").is_none(), "strict must stay off");
+            assert_eq!(tool["input_schema"]["additionalProperties"], json!(false));
+        }
+
+        // Every name the model invents carries the charset DefinitionName
+        // enforces, stated where the model reads it.
+        let create = &tools[1]["input_schema"]["properties"];
         for path in [
-            &schema["properties"]["metric"]["properties"]["name"],
-            &schema["properties"]["dashboard"]["properties"]["name"],
-            &schema["properties"]["widgets"]["items"]["properties"]["name"],
+            &create["metric"]["properties"]["name"],
+            &create["dashboard"]["properties"]["name"],
+            &create["widgets"]["items"]["properties"]["name"],
         ] {
             assert_eq!(path["pattern"], json!(NAME_PATTERN), "missing name pattern");
         }
-
-        // And every SQL identifier carries the compiler's charset.
-        let query = &schema["properties"]["query"];
-        assert_eq!(
-            query["properties"]["table"]["pattern"],
-            json!(IDENTIFIER_PATTERN)
-        );
-        assert_eq!(
-            query["properties"]["fields"]["items"]["properties"]["as_name"]["pattern"],
-            json!(IDENTIFIER_PATTERN)
-        );
     }
 
     #[test]
-    fn a_forced_tool_call_is_read_out_of_the_tool_input_not_the_text() {
-        let response: MessagesResponse = serde_json::from_value(json!({
+    fn the_chosen_tool_becomes_the_intent() {
+        let answered: MessagesResponse = serde_json::from_value(json!({
             "content": [
-                { "type": "text", "text": "I'll look that up." },
-                {
-                    "type": "tool_use",
-                    "name": PROPOSAL_TOOL,
-                    "input": { "intent": "answer", "reply": "here", "query": {} },
-                },
+                { "type": "text", "text": "looking that up" },
+                { "type": "tool_use", "name": ANSWER_TOOL,
+                  "input": { "reply": "here", "query": {} } },
             ],
         }))
         .unwrap_or_else(|error| panic!("the fixture deserializes: {error}"));
 
-        let json = response.proposal_json();
-
+        let json = answered.proposal_json();
         assert!(json.contains("\"intent\":\"answer\""), "got {json}");
-        assert!(
-            !json.contains("I'll look that up"),
-            "text leaked into the proposal"
-        );
+        assert!(!json.contains("looking that up"), "text leaked in");
+
+        let created: MessagesResponse = serde_json::from_value(json!({
+            "content": [
+                { "type": "tool_use", "name": CREATE_TOOL,
+                  "input": { "reply": "made it", "widgets": [] } },
+            ],
+        }))
+        .unwrap_or_else(|error| panic!("the fixture deserializes: {error}"));
+
+        assert!(created.proposal_json().contains("\"intent\":\"create\""));
     }
 
     #[test]
