@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PeopleListItem } from "@/api/identity-client";
@@ -47,9 +48,20 @@ vi.mock("@/components/ui/sidebar", () => ({
   SidebarMenuItem: ({ children }: { children?: React.ReactNode }) => (
     <li>{children}</li>
   ),
-  SidebarMenuButton: ({ children }: { children?: React.ReactNode }) => (
-    <span>{children}</span>
-  ),
+  SidebarMenuButton: ({
+    children,
+    render,
+  }: {
+    children?: React.ReactNode;
+    render?: React.ReactElement;
+  }) =>
+    render ? (
+      <a href="/person" onClick={(event) => event.preventDefault()}>
+        {children}
+      </a>
+    ) : (
+      <button>{children}</button>
+    ),
 }));
 
 function person(
@@ -107,6 +119,53 @@ describe("OrgTree", () => {
     expect(screen.getByText("Lead Person")).toBeInTheDocument();
     // Nothing is active, so the lead's reports stay folded away.
     expect(screen.queryByText("Deep Person")).not.toBeInTheDocument();
+  });
+
+  it("opens and closes reports without following the person link", async () => {
+    const user = userEvent.setup();
+    render(<OrgTree />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Expand Lead Person" }),
+    );
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Lead Person" }));
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Lead Person" }),
+    );
+    expect(screen.queryByText("Deep Person")).not.toBeInTheDocument();
+  });
+
+  it("allows the root row to collapse and reopen", async () => {
+    const user = userEvent.setup();
+    render(<OrgTree />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Root Person" }),
+    );
+    expect(screen.queryByText("Lead Person")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Expand Root Person" }),
+    );
+    expect(screen.getByText("Lead Person")).toBeInTheDocument();
+  });
+
+  it("restores manual expansion after search is cleared", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<OrgTree />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Root Person" }),
+    );
+    rerender(<OrgTree query="Deep" />);
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    rerender(<OrgTree query="" />);
+    expect(screen.queryByText("Lead Person")).not.toBeInTheDocument();
   });
 
   it("reveals a deep match and the managers above it, and nothing else", () => {
