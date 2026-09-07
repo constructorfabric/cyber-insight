@@ -27,6 +27,22 @@ c71d7d6ef85cd006  Gitlab             src/ingestion/connectors/git/gitlab/dbt/git
 28dd5d564e2c82c3  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__repository_branches.sql  # code identifier / constant name
 a1d64ea5858af851  Gitlab             src/ingestion/tools/seed/insight_seed/generators/git_repos.py  # the vendor project seeding function's name, not a token
 b7724cdd5c80cebb  Gitlab             src/ingestion/tools/seed/tests/test_git_repos.py  # a bronze relation name in the vendor-relation assertion, not a token
+17941e7c349f9b80  Gitlab             src/ingestion/connectors/git/gitlab/README.md  # code identifier / constant name
+0d11bcc8018d8086  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__account_emails.sql  # code identifier / constant name
+80d5a03ac107ffac  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__bronze_promoted.sql  # code identifier / constant name
+ee8d1fe3c4f9e4e5  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__ci_runs.sql  # code identifier / constant name
+1a229c8a7225a517  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__deployment_events.sql  # code identifier / constant name
+5eae1b0f9c40368f  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__deployments.sql  # code identifier / constant name
+00a3815754557032  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__deployments.sql  # code identifier / constant name
+7b422bd28516d8f7  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__item_events.sql  # code identifier / constant name
+0f59ee53b851ea82  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__pr_review_events.sql  # code identifier / constant name
+065b5e46fa7954a8  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__pull_requests_commits.sql  # code identifier / constant name
+30b51188bf3e2a87  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__unowned_commit_emails.sql  # code identifier / constant name
+136fc1e55088a7de  Gitlab             src/ingestion/connectors/git/gitlab/tests/test_gitlab_proxy_streams.py  # code identifier / constant name
+7a55702f5399e506  Gitlab             src/ingestion/scripts/connectors-ddl/gitlab.sql  # a bronze relation name in the DDL snapshot, not a token
+24adf9f9c51d34de  Gitlab             src/ingestion/tests/e2e/identity/test_gitlab_account_binding.py  # code identifier / constant name
+2b998af6aa12a827  Gitlab             src/ingestion/tests/e2e/metrics/git_pr_gitlab_account_attribution.test.yaml  # code identifier / constant name
+9e1bf9e4933b0be4  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_gitlab.pull_request_commits.yaml  # code identifier / constant name
 5976017fb71ea0e2  HubSpotApiKey      docs/architecture/CONNECTOR_AUTOMATION.md  # synthetic UUID fixture
 10c14a66053d0859  SQLServer          src/backend/services/identity/.env.local.example  # placeholder in an example env file / unit test
 a41e6a136aac6865  SQLServer          src/backend/services/identity/tests/Insight.Identity.Tests.Unit/MariaDbConnectionFactoryTests.cs  # placeholder in an example env file / unit test
