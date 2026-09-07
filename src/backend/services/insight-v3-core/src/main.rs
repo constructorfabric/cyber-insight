@@ -46,6 +46,19 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_server(config).await,
-        Commands::Migrate => gear::run_migrate(&config).await,
+        Commands::Migrate => {
+            init_subcommand_logging();
+            gear::run_migrate(&config).await
+        }
     }
+}
+
+/// Plain stdout logging for `migrate`, which runs outside the bootstrap server.
+fn init_subcommand_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
 }

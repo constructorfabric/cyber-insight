@@ -48,7 +48,7 @@ class ChangedCliTests(unittest.TestCase):
         completed = subprocess.CompletedProcess(
             args=["git", "diff"],
             returncode=0,
-            stdout="src/backend/services/insight-v3-core/src/gear.rs\\n",
+            stdout="src/backend/services/insight-v3-core/src/gear.rs\n",
         )
 
         with patch.object(changed.subprocess, "run", return_value=completed):
@@ -74,6 +74,19 @@ class ChangedCliTests(unittest.TestCase):
                 "cover_ignore_regex": "",
             },
         )
+
+    def test_insight_clickhouse_change_runs_insight_v3_core_tests(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout="src/backend/libs/insight-clickhouse/src/lib.rs\n",
+        )
+
+        with patch.object(changed.subprocess, "run", return_value=completed):
+            matrix = changed.changed_components("origin/main", COMPONENTS)
+
+        core_job = next(job for job in matrix["rust"] if job["name"] == "insight-v3-core")
+        self.assertTrue(core_job["test"])
 
 
 if __name__ == "__main__":

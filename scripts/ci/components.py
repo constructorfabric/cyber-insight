@@ -83,6 +83,7 @@ COMPONENTS = [
         "live_ch": True,
         "live_test": "services/insight-v3-core/tests/ci.sh",
         "paths": ["src/backend/services/insight-v3-core"],
+        "triggered_by": ["insight-clickhouse"],
     },
     # cover=False: the api/ and repository layers are still thin on tests, so the
     # 80% gate would block every change to this crate rather than the ones that
