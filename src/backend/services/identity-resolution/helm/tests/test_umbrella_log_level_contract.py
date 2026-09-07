@@ -15,7 +15,14 @@ import re
 
 from conftest import TENANT, UMBRELLA, UMBRELLA_BASE, render
 
-GEARS_SERVICES = {"analytics", "authenticator", "gitCliProxy", "identityResolution", "previews"}
+GEARS_SERVICES = {
+    "analytics",
+    "authenticator",
+    "gitCliProxy",
+    "identityResolution",
+    "insightV3Core",
+    "previews",
+}
 
 
 def rendered_per_service(stdout: str, key: str) -> dict[str, list[str]]:
