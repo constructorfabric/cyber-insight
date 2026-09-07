@@ -14,6 +14,11 @@ const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const CHAT_TIMEOUT_SECS: u64 = 30;
 const CHAT_MAX_TOKENS: u32 = 2048;
+const PROPOSAL_TOOL: &str = "propose";
+/// Definition names: what `DefinitionName::parse` accepts.
+const NAME_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
+/// SQL identifiers: what `MetricQuery::compile` accepts.
+const IDENTIFIER_PATTERN: &str = "^[A-Za-z0-9_]{1,128}$";
 
 /// One of the two things the model can propose in reply to a chat message.
 #[derive(Debug)]
@@ -183,49 +188,76 @@ impl ChatClient {
             ChatBackend::Scripted(build) => Ok(build()),
             ChatBackend::Live { http, token, model } => {
                 let system = system_prompt(tables);
-                let body = MessagesRequest {
-                    model,
-                    max_tokens: CHAT_MAX_TOKENS,
-                    system: &system,
-                    messages: vec![Message {
-                        role: "user",
-                        content: message,
-                    }],
-                };
+                let first = call_model(http, token, model, &system, message).await?;
 
-                let response = http
-                    .post(format!("{ANTHROPIC_API_BASE}/v1/messages"))
-                    .header("x-api-key", token.expose_secret())
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|error| transport_error(&error))?;
-
-                let status = response.status();
-                if status == reqwest::StatusCode::UNAUTHORIZED
-                    || status == reqwest::StatusCode::FORBIDDEN
-                {
-                    return Err(ChatError::TokenRejected);
+                match Proposal::parse(&first) {
+                    Ok(proposal) => Ok(proposal),
+                    // One repair round: hand the model its own rejection and
+                    // let it correct itself. The schema stops malformed
+                    // arguments; this catches what only our own validation
+                    // knows — an unknown table, a field that is not there.
+                    Err(rejection) => {
+                        tracing::info!(rejection = %rejection, "asking the model to correct its proposal");
+                        let retry = format!(
+                            "{message}\n\nYour previous proposal was rejected: {rejection}\nIt was:\n{first}\nReturn a corrected proposal."
+                        );
+                        let second = call_model(http, token, model, &system, &retry).await?;
+                        Proposal::parse(&second)
+                    }
                 }
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    tracing::warn!(status = %status, "the model call was refused upstream");
-                    return Err(ChatError::Unavailable);
-                }
-                if !status.is_success() {
-                    tracing::error!(status = %status, "the model call failed upstream");
-                    return Err(ChatError::Failed);
-                }
-
-                let parsed: MessagesResponse = response.json().await.map_err(|error| {
-                    tracing::error!(error = %error, "the model answer could not be read");
-                    ChatError::Failed
-                })?;
-
-                Proposal::parse(&parsed.text())
             }
         }
     }
+}
+
+/// One forced tool call, returning the proposal JSON the model produced.
+async fn call_model(
+    http: &reqwest::Client,
+    token: &SecretString,
+    model: &str,
+    system: &str,
+    message: &str,
+) -> Result<String, ChatError> {
+    let body = MessagesRequest {
+        model,
+        max_tokens: CHAT_MAX_TOKENS,
+        system,
+        messages: vec![Message {
+            role: "user",
+            content: message,
+        }],
+        tools: vec![proposal_tool()],
+        tool_choice: json!({ "type": "tool", "name": PROPOSAL_TOOL }),
+    };
+
+    let response = http
+        .post(format!("{ANTHROPIC_API_BASE}/v1/messages"))
+        .header("x-api-key", token.expose_secret())
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| transport_error(&error))?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(ChatError::TokenRejected);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        tracing::warn!(status = %status, "the model call was refused upstream");
+        return Err(ChatError::Unavailable);
+    }
+    if !status.is_success() {
+        tracing::error!(status = %status, "the model call failed upstream");
+        return Err(ChatError::Failed);
+    }
+
+    let parsed: MessagesResponse = response.json().await.map_err(|error| {
+        tracing::error!(error = %error, "the model answer could not be read");
+        ChatError::Failed
+    })?;
+
+    Ok(parsed.proposal_json())
 }
 
 fn transport_error(error: &reqwest::Error) -> ChatError {
@@ -308,6 +340,85 @@ struct MessagesRequest<'a> {
     max_tokens: u32,
     system: &'a str,
     messages: Vec<Message<'a>>,
+    tools: Vec<Value>,
+    tool_choice: Value,
+}
+
+/// The tool the model must call. Its schema carries the constraints we would
+/// otherwise only ask for in prose — a name charset, a closed intent, closed
+/// field types and aggregates — and `strict` has the API validate arguments
+/// against it, so a name with a space cannot reach us at all.
+fn proposal_tool() -> Value {
+    let identifier = json!({ "type": "string", "pattern": IDENTIFIER_PATTERN });
+    let name = json!({ "type": "string", "pattern": NAME_PATTERN });
+    let field_type = json!({ "enum": ["string", "int", "float"] });
+
+    let metric_query = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table", "fields", "group_by", "filters"],
+        "properties": {
+            "table": identifier,
+            "fields": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["json", "type", "as_name"],
+                    "properties": {
+                        "json": identifier,
+                        "type": field_type,
+                        "agg": { "enum": ["count", "sum", "avg", "min", "max"] },
+                        "as_name": identifier,
+                    },
+                },
+            },
+            "group_by": { "type": "array", "items": identifier },
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["json", "type", "op", "value"],
+                    "properties": {
+                        "json": identifier,
+                        "type": field_type,
+                        "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte"] },
+                        "value": {},
+                    },
+                },
+            },
+            "limit": { "type": "integer" },
+        },
+    });
+
+    let named = |body: Value| {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "body"],
+            "properties": { "name": name, "body": body },
+        })
+    };
+
+    json!({
+        "name": PROPOSAL_TOOL,
+        "description": "Answer a question about the data, or create definitions to store.",
+        "strict": true,
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["intent", "reply"],
+            "properties": {
+                "intent": { "enum": ["answer", "create"] },
+                "reply": { "type": "string" },
+                "query": metric_query.clone(),
+                "metric": named(metric_query),
+                "widgets": { "type": "array", "items": named(json!({ "type": "object" })) },
+                "dashboard": named(json!({ "type": "object" })),
+            },
+        },
+    })
 }
 
 #[derive(Serialize)]
@@ -332,6 +443,16 @@ impl MessagesResponse {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+
+    /// The forced tool call's arguments, already schema-validated upstream.
+    /// Falls back to the text blocks when a reply arrives without one.
+    fn proposal_json(&self) -> String {
+        self.content
+            .iter()
+            .find(|block| block.kind == "tool_use" && block.name == PROPOSAL_TOOL)
+            .and_then(|block| block.input.as_ref())
+            .map_or_else(|| self.text(), ToString::to_string)
+    }
 }
 
 #[derive(Deserialize)]
@@ -340,6 +461,10 @@ struct ContentBlock {
     kind: String,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    input: Option<Value>,
 }
 
 #[cfg(test)]
@@ -381,6 +506,65 @@ mod tests {
         let reply = r#"{"intent":"create","reply":"x","metric":{"name":"bad","body":{"table":"events`--","fields":[],"group_by":[],"filters":[]}},"widgets":[],"dashboard":null}"#;
 
         assert!(matches!(Proposal::parse(reply), Err(ChatError::Metric(_))));
+    }
+
+    #[test]
+    fn the_tool_schema_makes_an_invalid_name_unrepresentable() {
+        let tool = proposal_tool();
+        let schema = &tool["input_schema"];
+
+        assert_eq!(tool["strict"], json!(true));
+        assert_eq!(tool["name"], json!(PROPOSAL_TOOL));
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(
+            schema["properties"]["intent"]["enum"],
+            json!(["answer", "create"])
+        );
+
+        // Every name the model can propose carries the charset that
+        // DefinitionName::parse enforces, so a name with a space is rejected
+        // by the API before it ever reaches us.
+        for path in [
+            &schema["properties"]["metric"]["properties"]["name"],
+            &schema["properties"]["dashboard"]["properties"]["name"],
+            &schema["properties"]["widgets"]["items"]["properties"]["name"],
+        ] {
+            assert_eq!(path["pattern"], json!(NAME_PATTERN), "missing name pattern");
+        }
+
+        // And every SQL identifier carries the compiler's charset.
+        let query = &schema["properties"]["query"];
+        assert_eq!(
+            query["properties"]["table"]["pattern"],
+            json!(IDENTIFIER_PATTERN)
+        );
+        assert_eq!(
+            query["properties"]["fields"]["items"]["properties"]["as_name"]["pattern"],
+            json!(IDENTIFIER_PATTERN)
+        );
+    }
+
+    #[test]
+    fn a_forced_tool_call_is_read_out_of_the_tool_input_not_the_text() {
+        let response: MessagesResponse = serde_json::from_value(json!({
+            "content": [
+                { "type": "text", "text": "I'll look that up." },
+                {
+                    "type": "tool_use",
+                    "name": PROPOSAL_TOOL,
+                    "input": { "intent": "answer", "reply": "here", "query": {} },
+                },
+            ],
+        }))
+        .unwrap_or_else(|error| panic!("the fixture deserializes: {error}"));
+
+        let json = response.proposal_json();
+
+        assert!(json.contains("\"intent\":\"answer\""), "got {json}");
+        assert!(
+            !json.contains("I'll look that up"),
+            "text leaked into the proposal"
+        );
     }
 
     #[test]
