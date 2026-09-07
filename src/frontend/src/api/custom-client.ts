@@ -28,6 +28,27 @@ export interface Dashboard {
   widgets: string[];
 }
 
+export interface ChatCreated {
+  metric?: string;
+  widgets: string[];
+  dashboard?: string;
+}
+
+export interface ChatSkipped {
+  kind: string;
+  name: string;
+  reason: string;
+}
+
+export interface ChatReply {
+  reply: string;
+  result?: MetricResult;
+  created?: ChatCreated;
+  skipped?: ChatSkipped[];
+}
+
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
 export class CustomApiError extends Error {
   status: number;
   body: unknown;
@@ -55,14 +76,14 @@ export async function fetchDashboardNames(): Promise<string[]> {
 
 export async function fetchDashboard(name: string): Promise<Dashboard> {
   const res = await fetchWithAuth(
-    `${BASE}/dashboards/${encodeURIComponent(name)}`,
+    `${BASE}/dashboards/${encodeURIComponent(name)}`
   );
   return readJson<Dashboard>(res);
 }
 
 export async function fetchWidget(name: string): Promise<Widget> {
   const res = await fetchWithAuth(
-    `${BASE}/widgets/${encodeURIComponent(name)}`,
+    `${BASE}/widgets/${encodeURIComponent(name)}`
   );
   return readJson<Widget>(res);
 }
@@ -70,7 +91,16 @@ export async function fetchWidget(name: string): Promise<Widget> {
 export async function runMetric(name: string): Promise<MetricResult> {
   const res = await fetchWithAuth(
     `${BASE}/metrics/${encodeURIComponent(name)}/run`,
-    { method: "POST" },
+    { method: "POST" }
   );
   return readJson<MetricResult>(res);
+}
+
+export async function sendChat(message: string): Promise<ChatReply> {
+  const res = await fetchWithAuth(`${BASE}/chat`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ message }),
+  });
+  return readJson<ChatReply>(res);
 }
