@@ -398,6 +398,69 @@ services:
     ports:
       - "${IDENTITY_RESOLUTION_PORT:-8086}:8082"
 
+  # ── Insight v3 Core (raw-data ingest + definitions) ────────────────────
+  #
+  # Owns the ClickHouse `raw_data` table plus the metrics/widgets/dashboards
+  # definition tables. The server never migrates them itself — compose must
+  # run `migrate` first, exactly like analytics/identity-resolution above.
+  # Exits 0 and stays exited; the server gates on it.
+  insight-v3-core-migrate:
+    # backend-common supplies the insight network (without it the migrator lands
+    # on the default network, can't resolve `clickhouse`, and the server blocks
+    # forever on service_completed_successfully) + restart:no + init.
+    !!merge <<: *backend-common
+    image: ${INSIGHT_V3_CORE_IMAGE:-insight-v3-core:dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-insight}-insight-v3-core-migrate
+    build:
+      context: src/backend
+      dockerfile: services/insight-v3-core/Dockerfile
+    depends_on:
+      clickhouse: {condition: service_healthy, required: false}
+    environment:
+      APP__gears__insight_v3_core__config__clickhouse_url: "http://${CLICKHOUSE_HOST:-clickhouse}:${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
+      APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
+      APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
+      APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      # INVARIANT: migrate's DDL never reads this, but ValidatedConfig
+      # validates the whole gear section (32-byte-minimum token included), so
+      # migrate fails without it.
+      APP__gears__insight_v3_core__config__ingest_token: "${INSIGHT_V3_INGEST_TOKEN:-insight-v3-core-local-dev-ingest-token}"
+    command:
+      - "/app/insight-v3-core" # <watched path — unused, one-shot>
+      - "--"
+      - "/app/insight-v3-core"
+      - "-c"
+      - "/app/config/insight.yaml"
+      - "migrate"
+
+  insight-v3-core:
+    !!merge <<: *backend-common
+    image: ${INSIGHT_V3_CORE_IMAGE:-insight-v3-core:dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-insight}-insight-v3-core
+    build:
+      context: src/backend
+      dockerfile: services/insight-v3-core/Dockerfile
+    depends_on:
+      clickhouse: {condition: service_healthy, required: false}
+      insight-v3-core-migrate: {condition: service_completed_successfully}
+    environment:
+      !!merge <<: *backend-env
+      APP__gears__insight_v3_core__config__clickhouse_url: "http://${CLICKHOUSE_HOST:-clickhouse}:${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
+      APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
+      APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
+      APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      # Dev-only value — see .env.compose.example.
+      APP__gears__insight_v3_core__config__ingest_token: "${INSIGHT_V3_INGEST_TOKEN:-insight-v3-core-local-dev-ingest-token}"
+    command:
+      - "/app/insight-v3-core" # <watched path>
+      - "--"
+      - "/app/insight-v3-core"
+      - "-c"
+      - "/app/config/insight.yaml"
+      - "run"
+    ports:
+      - "${INSIGHT_V3_CORE_PORT:-8087}:8086"
+
   # ── Authenticator (OIDC login + sessions + cookie-to-JWT exchange) ─────
   #
   # The BFF / token-handler service (nginx+auth step 04). Runs the OIDC
@@ -559,6 +622,7 @@ services:
       authenticator: {condition: service_started}
       analytics: {condition: service_started}
       identity-resolution: {condition: service_started}
+      insight-v3-core: {condition: service_started}
     environment:
       GATEWAY_AUTHENTICATOR_URL: "http://authenticator:8083"
       GATEWAY_MCP_PUBLIC_URL: "${MCP_PUBLIC_URL:-}"
