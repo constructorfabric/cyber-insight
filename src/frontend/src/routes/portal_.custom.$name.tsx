@@ -8,7 +8,7 @@ import {
   widgetQuery,
 } from "@/queries/custom";
 
-export const Route = createFileRoute("/portal/custom/$name")({
+export const Route = createFileRoute("/portal_/custom/$name")({
   component: CustomDashboardPage,
 });
 

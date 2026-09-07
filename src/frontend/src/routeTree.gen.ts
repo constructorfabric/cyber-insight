@@ -16,8 +16,8 @@ import { Route as IcPersonRouteImport } from './routes/ic.$person'
 import { Route as IcPersonIndexRouteImport } from './routes/ic.$person.index'
 import { Route as IcPersonPersonalRouteImport } from './routes/ic.$person.personal'
 import { Route as IcPersonTeamRouteImport } from './routes/ic.$person.team'
-import { Route as PortalCustomIndexRouteImport } from './routes/portal.custom.index'
-import { Route as PortalCustomNameRouteImport } from './routes/portal.custom.$name'
+import { Route as PortalCustomIndexRouteImport } from './routes/portal_.custom.index'
+import { Route as PortalCustomNameRouteImport } from './routes/portal_.custom.$name'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -55,20 +55,20 @@ const IcPersonTeamRoute = IcPersonTeamRouteImport.update({
   getParentRoute: () => IcPersonRoute,
 } as any)
 const PortalCustomIndexRoute = PortalCustomIndexRouteImport.update({
-  id: '/custom/',
-  path: '/custom/',
-  getParentRoute: () => PortalRoute,
+  id: '/portal_/custom/',
+  path: '/portal/custom/',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const PortalCustomNameRoute = PortalCustomNameRouteImport.update({
-  id: '/custom/$name',
-  path: '/custom/$name',
-  getParentRoute: () => PortalRoute,
+  id: '/portal_/custom/$name',
+  path: '/portal/custom/$name',
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/portal': typeof PortalRouteWithChildren
+  '/portal': typeof PortalRoute
   '/ic/$person': typeof IcPersonRouteWithChildren
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
@@ -79,7 +79,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/portal': typeof PortalRouteWithChildren
+  '/portal': typeof PortalRoute
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
   '/portal/custom/$name': typeof PortalCustomNameRoute
@@ -90,13 +90,13 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/portal': typeof PortalRouteWithChildren
+  '/portal': typeof PortalRoute
   '/ic/$person': typeof IcPersonRouteWithChildren
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
-  '/portal/custom/$name': typeof PortalCustomNameRoute
+  '/portal_/custom/$name': typeof PortalCustomNameRoute
   '/ic/$person/': typeof IcPersonIndexRoute
-  '/portal/custom/': typeof PortalCustomIndexRoute
+  '/portal_/custom/': typeof PortalCustomIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -128,16 +128,18 @@ export interface FileRouteTypes {
     | '/ic/$person'
     | '/ic/$person/personal'
     | '/ic/$person/team'
-    | '/portal/custom/$name'
+    | '/portal_/custom/$name'
     | '/ic/$person/'
-    | '/portal/custom/'
+    | '/portal_/custom/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SplatRoute: typeof SplatRoute
-  PortalRoute: typeof PortalRouteWithChildren
+  PortalRoute: typeof PortalRoute
   IcPersonRoute: typeof IcPersonRouteWithChildren
+  PortalCustomNameRoute: typeof PortalCustomNameRoute
+  PortalCustomIndexRoute: typeof PortalCustomIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -191,35 +193,22 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IcPersonTeamRouteImport
       parentRoute: typeof IcPersonRoute
     }
-    '/portal/custom/': {
-      id: '/portal/custom/'
-      path: '/custom'
+    '/portal_/custom/': {
+      id: '/portal_/custom/'
+      path: '/portal/custom'
       fullPath: '/portal/custom/'
       preLoaderRoute: typeof PortalCustomIndexRouteImport
-      parentRoute: typeof PortalRoute
+      parentRoute: typeof rootRouteImport
     }
-    '/portal/custom/$name': {
-      id: '/portal/custom/$name'
-      path: '/custom/$name'
+    '/portal_/custom/$name': {
+      id: '/portal_/custom/$name'
+      path: '/portal/custom/$name'
       fullPath: '/portal/custom/$name'
       preLoaderRoute: typeof PortalCustomNameRouteImport
-      parentRoute: typeof PortalRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
-
-interface PortalRouteChildren {
-  PortalCustomNameRoute: typeof PortalCustomNameRoute
-  PortalCustomIndexRoute: typeof PortalCustomIndexRoute
-}
-
-const PortalRouteChildren: PortalRouteChildren = {
-  PortalCustomNameRoute: PortalCustomNameRoute,
-  PortalCustomIndexRoute: PortalCustomIndexRoute,
-}
-
-const PortalRouteWithChildren =
-  PortalRoute._addFileChildren(PortalRouteChildren)
 
 interface IcPersonRouteChildren {
   IcPersonPersonalRoute: typeof IcPersonPersonalRoute
@@ -240,8 +229,10 @@ const IcPersonRouteWithChildren = IcPersonRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
-  PortalRoute: PortalRouteWithChildren,
+  PortalRoute: PortalRoute,
   IcPersonRoute: IcPersonRouteWithChildren,
+  PortalCustomNameRoute: PortalCustomNameRoute,
+  PortalCustomIndexRoute: PortalCustomIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

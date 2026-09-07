@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { dashboardNamesQuery } from "@/queries/custom";
 
-export const Route = createFileRoute("/portal/custom/")({
+export const Route = createFileRoute("/portal_/custom/")({
   component: CustomDashboardIndex,
 });
 

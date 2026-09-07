@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as customClient from "@/api/custom-client";
 import { portalRouter } from "@/test/portal-router";
 
-import { Route } from "./portal.custom.$name";
+import { Route } from "./portal_.custom.index";
 
 const Component = (Route as unknown as { component: () => React.ReactNode })
   .component;
@@ -32,31 +32,28 @@ beforeEach(() => {
   portalRouter.reset();
 });
 
-describe("/portal/custom/$name", () => {
-  it("renders a widget per name in the dashboard", async () => {
-    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
-      title: "Engineering",
-      widgets: ["commits_table"],
-    });
-    vi.mocked(customClient.fetchWidget).mockResolvedValue({
-      type: "table",
-      metric: "commits_per_day",
-      columns: ["day", "lines"],
-    });
-    vi.mocked(customClient.runMetric).mockResolvedValue({
-      columns: ["day", "lines"],
-      rows: [["2026-09-01", 59]],
-    });
-    portalRouter.go("/portal/custom/engineering");
+describe("/portal/custom", () => {
+  it("lists every dashboard as a link", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "engineering",
+      "delivery",
+    ]);
 
     render(<Component />, { wrapper });
 
-    expect(await screen.findByText("Engineering")).toBeInTheDocument();
     expect(
-      await screen.findByRole("cell", { name: "2026-09-01" }),
-    ).toBeInTheDocument();
+      await screen.findByRole("link", { name: "engineering" }),
+    ).toHaveAttribute("href", "/portal/custom/engineering");
     expect(
-      await screen.findByRole("cell", { name: "59" }),
+      await screen.findByRole("link", { name: "delivery" }),
     ).toBeInTheDocument();
+  });
+
+  it("says so when there are no dashboards yet", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([]);
+
+    render(<Component />, { wrapper });
+
+    expect(await screen.findByText(/no dashboards yet/i)).toBeInTheDocument();
   });
 });
