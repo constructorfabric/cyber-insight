@@ -104,6 +104,17 @@ impl NamedBody {
     }
 }
 
+impl ChatError {
+    /// What the repair round tells the model. `Display` on the JSON variant
+    /// names a category; the serde message names the offending field.
+    fn feedback(&self) -> String {
+        match self {
+            Self::Json(error) => error.to_string(),
+            other => other.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum ChatError {
     #[error("the model reply was not valid JSON")]
@@ -196,9 +207,10 @@ impl ChatClient {
                     // arguments; this catches what only our own validation
                     // knows — an unknown table, a field that is not there.
                     Err(rejection) => {
-                        tracing::info!(rejection = %rejection, "asking the model to correct its proposal");
+                        let detail = rejection.feedback();
+                        tracing::info!(rejection = %detail, "asking the model to correct its proposal");
                         let retry = format!(
-                            "{message}\n\nYour previous proposal was rejected: {rejection}\nIt was:\n{first}\nReturn a corrected proposal."
+                            "{message}\n\nYour previous proposal was rejected: {detail}\nIt was:\n{first}\nReturn a corrected proposal."
                         );
                         let second = call_model(http, token, model, &system, &retry).await?;
                         Proposal::parse(&second)
@@ -269,10 +281,9 @@ fn transport_error(error: &reqwest::Error) -> ChatError {
 
 fn system_prompt(tables: &[String]) -> String {
     let mut prompt = String::from(
-        "You are the Insight v3 chat assistant. Reply with exactly one JSON object and nothing else.\n\n\
-         Two intents are possible:\n\
-         - {\"intent\":\"answer\",\"reply\":<string>,\"query\":<MetricQuery>} answers a one-time question by running a query. Nothing is stored.\n\
-         - {\"intent\":\"create\",\"reply\":<string>,\"metric\":{\"name\":<string>,\"body\":<MetricQuery>}|null,\"widgets\":[{\"name\":<string>,\"body\":<widget>}],\"dashboard\":{\"name\":<string>,\"body\":<dashboard>}|null} builds definitions to store.\n\n\
+        "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\n\
+         - Call `answer` to answer a question: it runs one query and stores nothing.\n\
+         - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition.\n\n\
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"limit\":<int>|null}.\n\
          A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
     );
@@ -280,7 +291,7 @@ fn system_prompt(tables: &[String]) -> String {
     if tables.is_empty() {
         prompt.push_str("\nNo tables are known yet.\n");
     } else {
-        prompt.push_str("\nKnown tables and their fields:\n");
+        prompt.push_str("\nKnown tables:\n");
         for table in tables {
             prompt.push_str("- ");
             prompt.push_str(table);
