@@ -132,10 +132,14 @@ pub fn register_routes(
 ) -> Router {
     let api = build_operations(Router::new(), openapi)
         .layer(Extension(state))
-        .layer(insight_http_metrics::ServerMetricsLayer::new("analytics"));
+        .layer(insight_http_metrics::ServerMetricsLayer::new("analytics"))
+        .layer(insight_log_context::LogContextLayer::new());
 
     host_router.merge(api)
 }
+
+#[cfg(test)]
+mod log_context_tests;
 
 /// `OpenAPI` document metadata — the stable API-contract identity baked into
 /// the committed `docs/components/backend/analytics/openapi.json` and the

@@ -136,6 +136,7 @@ dependencies = [
  "hex",
  "insight-clickhouse",
  "insight-http-metrics",
+ "insight-log-context",
  "insight-migration",
  "jsonwebtoken",
  "opentelemetry",
@@ -546,6 +547,7 @@ dependencies = [
  "clap",
  "futures",
  "insight-http-metrics",
+ "insight-log-context",
  "jsonwebtoken",
  "openidconnect",
  "opentelemetry",
@@ -3054,6 +3056,7 @@ dependencies = [
  "clap",
  "hex",
  "insight-http-metrics",
+ "insight-log-context",
  "opentelemetry",
  "reqwest 0.12.28",
  "rustix",
@@ -3068,6 +3071,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -3612,6 +3616,7 @@ dependencies = [
  "clickhouse",
  "insight-clickhouse",
  "insight-http-metrics",
+ "insight-log-context",
  "insight-migration",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3719,6 +3724,21 @@ dependencies = [
  "opentelemetry_sdk",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "insight-log-context"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cf-gears-toolkit-security",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -5141,6 +5161,7 @@ dependencies = [
  "cf-gears-types-registry",
  "chrono",
  "clap",
+ "insight-log-context",
  "k8s-openapi",
  "kube",
  "regex-lite",

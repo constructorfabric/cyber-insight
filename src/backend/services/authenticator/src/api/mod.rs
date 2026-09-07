@@ -58,9 +58,13 @@ pub fn register_routes(
         .layer(Extension(state))
         .layer(insight_http_metrics::ServerMetricsLayer::new(
             "authenticator",
-        ));
+        ))
+        .layer(insight_log_context::LogContextLayer::new());
     host_router.merge(api)
 }
+
+#[cfg(test)]
+mod log_context_tests;
 
 /// Declare every operation through the toolkit's `OperationBuilder` so each
 /// lands in the generated OpenAPI (the machine-checkable subrequest contract),
