@@ -23,17 +23,23 @@ export interface ManagerNode {
   person_id: string;
   name: string;
   depth: number;
-  teamSize: number;
+  /** Manager plus every descendant. */
+  subtreeMemberCount: number;
+  /** Manager plus direct reports. */
+  directMemberCount: number;
 }
 
 /** The scope resolved against the viewer's own subtree — the permission boundary. */
 export interface ResolvedScope {
   /** The scope pivot (root manager node); null while the tree loads. */
   pivot: IdentityPerson | null;
-  /** Everyone inside the scope (subtree or direct reports). */
+  /** Reports below the pivot (full subtree or direct reports). */
   roster: RosterEntry[] | null;
   label: string;
-  count: number;
+  /** Number of reports used by report-only analytics. */
+  rosterCount: number;
+  /** Number of people represented by the scope selector, pivot included. */
+  scopeMemberCount: number;
   /** All manager nodes of the viewer's tree, for the ScopeSelect picker. */
   managerNodes: ManagerNode[];
   /** Whether directOnly can change anything at this pivot. */
@@ -59,7 +65,8 @@ export function flatOrgScope(
       pivot: null,
       roster: null,
       label: WHOLE_ORG_LABEL,
-      count: 0,
+      rosterCount: 0,
+      scopeMemberCount: 0,
       managerNodes: [],
       canDirectOnly: false,
     };
@@ -79,7 +86,8 @@ export function flatOrgScope(
     pivot: null,
     roster: members,
     label: WHOLE_ORG_LABEL,
-    count: members.length,
+    rosterCount: members.length,
+    scopeMemberCount: members.length,
     managerNodes: [],
     canDirectOnly: false,
   };
@@ -100,7 +108,8 @@ export function resolveScopeRoster(
       pivot: null,
       roster: null,
       label: "",
-      count: 0,
+      rosterCount: 0,
+      scopeMemberCount: 0,
       managerNodes: [],
       canDirectOnly: false,
     };
@@ -116,9 +125,9 @@ export function resolveScopeRoster(
   const roster = scopeRosterToDirectReports(full, canDirectOnly && scope.directOnly);
 
   const managerNodes: ManagerNode[] = [];
-  // One pass: each call returns its own subtree size, so a team size costs one
-  // visit per node. Flattening per manager node re-walked that manager's whole
-  // subtree — O(n · depth), which degrades on a deep reporting chain.
+  // One pass: each call returns its inclusive subtree member count. Flattening
+  // per manager node re-walked that manager's whole subtree — O(n · depth),
+  // which degrades on a deep reporting chain.
   //
   // The entry is pushed BEFORE recursing and its size filled in after, so the
   // picker keeps its depth-first outline order (a lead, then that lead's leads).
@@ -129,14 +138,15 @@ export function resolveScopeRoster(
             person_id: node.person_id,
             name: personDisplayName(node),
             depth,
-            teamSize: 0,
+            subtreeMemberCount: 0,
+            directMemberCount: node.subordinates.length + 1,
           }
         : null;
     if (entry) managerNodes.push(entry);
-    let size = 0;
-    for (const sub of node.subordinates) size += 1 + walk(sub, depth + 1);
-    if (entry) entry.teamSize = size;
-    return size;
+    let memberCount = 1;
+    for (const sub of node.subordinates) memberCount += walk(sub, depth + 1);
+    if (entry) entry.subtreeMemberCount = memberCount;
+    return memberCount;
   };
   walk(viewerNode, 0);
 
@@ -144,7 +154,8 @@ export function resolveScopeRoster(
     pivot,
     roster,
     label: personDisplayName(pivot),
-    count: roster?.length ?? 0,
+    rosterCount: roster?.length ?? 0,
+    scopeMemberCount: (roster?.length ?? 0) + 1,
     managerNodes,
     canDirectOnly,
   };

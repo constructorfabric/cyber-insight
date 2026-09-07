@@ -12,7 +12,8 @@ vi.mock("@tanstack/react-router", async () => {
 
 import { portalRouter } from "@/test/portal-router";
 
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { NormalizedMetricResult } from "@/lib/metrics/collection";
@@ -91,7 +92,7 @@ function metric(
 }
 
 // Roster entity ids: person UUIDs, the same key the metric grid returns.
-const LABELS = ["a", "b", "c", "d"];
+const LABELS = ["d", "a", "c", "b"];
 const MEMBER_LABELS = ["boss", ...LABELS];
 const MEMBER_IDS = MEMBER_LABELS.map(pid);
 
@@ -129,6 +130,103 @@ describe("TeamStateView", () => {
     for (const label of MEMBER_LABELS) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(MEMBER_LABELS);
+    expect(
+      screen.getByRole("button", { name: "Filter people, all 5 shown" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows only selected people without changing the team scope", async () => {
+    const user = userEvent.setup();
+    render(<TeamStateView />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter people, all 5 shown" }),
+    );
+    await user.click(screen.getByRole("button", { name: "None" }));
+    await user.click(screen.getByRole("checkbox", { name: "boss" }));
+    await user.click(screen.getByRole("checkbox", { name: "c" }));
+
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(["boss", "c"]);
+    expect(screen.getByText(/5 people · state & attention/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Filter people, 2 of 5 shown" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an empty selection state and restores all people", async () => {
+    const user = userEvent.setup();
+    render(<TeamStateView />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter people, all 5 shown" }),
+    );
+    await user.click(screen.getByRole("button", { name: "None" }));
+
+    expect(screen.getByText("No people selected.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(MEMBER_LABELS);
+  });
+
+  it("resets the selection when the manager scope changes", async () => {
+    const user = userEvent.setup();
+    render(<TeamStateView />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter people, all 5 shown" }),
+    );
+    await user.click(screen.getByRole("button", { name: "None" }));
+    await user.click(screen.getByRole("checkbox", { name: "boss" }));
+
+    act(() => portalRouter.set({ scope: pid("c") }));
+
+    expect(
+      screen.getByRole("button", { name: "Filter people, all 1 shown" }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(["c"]);
+  });
+
+  it("resets the selection when direct reports mode changes", async () => {
+    mocks.tree = person("boss", [
+      person("a", [person("c")]),
+      person("b"),
+    ]);
+    mocks.roster = peopleFromIdentityTree(mocks.tree);
+    const user = userEvent.setup();
+    render(<TeamStateView />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Filter people, all 4 shown" }),
+    );
+    await user.click(screen.getByRole("button", { name: "None" }));
+    await user.click(screen.getByRole("checkbox", { name: "boss" }));
+
+    act(() => portalRouter.set({ direct: true }));
+
+    expect(
+      screen.getByRole("button", { name: "Filter people, all 3 shown" }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("table"))
+        .getAllByRole("rowheader")
+        .map((header) => header.textContent),
+    ).toEqual(["boss", "a", "b"]);
   });
 
   it("sums counters into a team total and medians ratios — never the reverse", () => {

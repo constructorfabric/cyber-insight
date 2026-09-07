@@ -1,6 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, User, Users } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { PeopleListItem } from "@/api/identity-client";
 import { useViewer } from "@/auth";
@@ -40,6 +40,8 @@ function PersonNode({
   activePersonId,
   leadsToTeam,
   filter,
+  expansionOverrides,
+  onExpandedChange,
 }: {
   node: IdentityPerson;
   depth: number;
@@ -47,6 +49,8 @@ function PersonNode({
   /** Lead (has reports) links to their team roster instead of their own page. */
   leadsToTeam: boolean;
   filter: OrgTreeFilter | null;
+  expansionOverrides: ReadonlyMap<string, boolean>;
+  onExpandedChange: (personId: string, expanded: boolean) => void;
 }) {
   const { setScope } = usePortalNavActions();
   if (filter && !filter.visible.has(node.person_id)) return null;
@@ -60,7 +64,11 @@ function PersonNode({
       : false;
   // While filtering, the chain to a match is what the reader asked to see, so
   // it opens regardless of where they happen to be standing.
-  const open = filter ? true : depth === 0 || isActive || hasActiveDescendant;
+  const defaultOpen = depth === 0 || isActive || hasActiveDescendant;
+  const open = filter
+    ? true
+    : (expansionOverrides.get(node.person_id) ?? defaultOpen);
+  const label = personName(node) ?? UNNAMED_PERSON;
   // A lead's name lands on their team; an IC's on their own page. (The two
   // literal `to`s keep the typed router happy vs. a computed path.) Drilling
   // into a lead also *sets the org scope* (design §6) so the topbar badge and
@@ -78,23 +86,41 @@ function PersonNode({
   return (
     <>
       <SidebarMenuItem>
-        <SidebarMenuButton
-          isActive={isActive}
-          render={link}
+        <div
+          className="flex min-w-0 items-center gap-1"
           style={{ paddingLeft: `${0.5 + depth * 0.875}rem` }}
         >
           {hasReports ? (
-            open ? (
-              <ChevronDown />
+            filter ? (
+              <span
+                aria-hidden
+                className="flex size-8 shrink-0 items-center justify-center text-muted-foreground [&>svg]:size-4"
+              >
+                <ChevronDown />
+              </span>
             ) : (
-              <ChevronRight />
+              <SidebarMenuButton
+                type="button"
+                aria-expanded={open}
+                aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+                className="w-8 shrink-0 justify-center p-0 text-muted-foreground"
+                onClick={() => onExpandedChange(node.person_id, !open)}
+              >
+                {open ? <ChevronDown /> : <ChevronRight />}
+              </SidebarMenuButton>
             )
           ) : (
-            <span className="w-4 shrink-0" />
+            <span aria-hidden className="size-8 shrink-0" />
           )}
-          {hasReports ? <Users /> : <User />}
-          <span className="truncate">{personName(node) ?? UNNAMED_PERSON}</span>
-        </SidebarMenuButton>
+          <SidebarMenuButton
+            isActive={isActive}
+            render={link}
+            className="min-w-0 flex-1 ps-2"
+          >
+            {hasReports ? <Users /> : <User />}
+            <span className="truncate">{label}</span>
+          </SidebarMenuButton>
+        </div>
       </SidebarMenuItem>
       {hasReports && open
         ? node.subordinates.map((sub) => (
@@ -105,6 +131,8 @@ function PersonNode({
               activePersonId={activePersonId}
               leadsToTeam={leadsToTeam}
               filter={filter}
+              expansionOverrides={expansionOverrides}
+              onExpandedChange={onExpandedChange}
             />
           ))
         : null}
@@ -158,26 +186,26 @@ function RosterList({
     // Padding INSIDE the scroll region the pane owns, so the first and last
     // names clear its edges instead of touching them.
     <SidebarMenu className="pb-2">
-        {listed.map(({ person, label }) => (
-          <SidebarMenuItem key={person.person_id}>
-            <SidebarMenuButton
-              isActive={
-                activePersonId
-                  ? personIdEq(activePersonId, person.person_id)
-                  : false
-              }
-              render={
-                <Link
-                  to="/ic/$person/personal"
-                  params={{ person: person.person_id }}
-                />
-              }
-            >
-              <span className="w-4 shrink-0" />
-              <User />
-              <span className="truncate">{label}</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+      {listed.map(({ person, label }) => (
+        <SidebarMenuItem key={person.person_id}>
+          <SidebarMenuButton
+            isActive={
+              activePersonId
+                ? personIdEq(activePersonId, person.person_id)
+                : false
+            }
+            render={
+              <Link
+                to="/ic/$person/personal"
+                params={{ person: person.person_id }}
+              />
+            }
+          >
+            <span className="w-4 shrink-0" />
+            <User />
+            <span className="truncate">{label}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
       ))}
     </SidebarMenu>
   );
@@ -193,7 +221,7 @@ export function OrgTree({
   const { roster } = useVisibleRoster(true);
   const viewer = useMemo(
     () => (viewerPersonId ? rosterTree(roster, viewerPersonId) : null),
-    [roster, viewerPersonId],
+    [roster, viewerPersonId]
   );
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activePersonId = useMemo(() => {
@@ -203,6 +231,17 @@ export function OrgTree({
     return null;
   }, [pathname, viewerPersonId]);
   const filter = useMemo(() => filterOrgTree(viewer, query), [viewer, query]);
+  const [expansionOverrides, setExpansionOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+
+  const setExpanded = (personId: string, expanded: boolean) => {
+    setExpansionOverrides((current) => {
+      const next = new Map(current);
+      next.set(personId, expanded);
+      return next;
+    });
+  };
 
   if (isFlat) return <RosterList query={query} roster={roster} />;
   if (!viewer) return null;
@@ -222,6 +261,8 @@ export function OrgTree({
         activePersonId={activePersonId}
         leadsToTeam={leadsToTeam}
         filter={filter}
+        expansionOverrides={expansionOverrides}
+        onExpandedChange={setExpanded}
       />
     </SidebarMenu>
   );

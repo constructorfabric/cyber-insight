@@ -25,7 +25,8 @@ const mocks = vi.hoisted(() => ({
     person_id: string;
     name: string;
     depth: number;
-    teamSize: number;
+    subtreeMemberCount: number;
+    directMemberCount: number;
   }>,
   icCalls: [] as string[],
   roster: [] as PeopleListItem[],
@@ -94,7 +95,13 @@ describe("PersonHeader", () => {
 
   it("offers the supervisor once they are inside the viewer's subtree", () => {
     mocks.managerNodes = [
-      { person_id: BOSS, name: "Boss", depth: 0, teamSize: 4 },
+      {
+        person_id: BOSS,
+        name: "Boss",
+        depth: 0,
+        subtreeMemberCount: 5,
+        directMemberCount: 5,
+      },
     ];
     mocks.roster.push(rosterPerson(BOSS, "Boss", null));
     render(<PersonHeader person={LEAD} />);
@@ -109,7 +116,13 @@ describe("PersonHeader", () => {
       supervisor_name: "Activity Name",
     });
     mocks.managerNodes = [
-      { person_id: BOSS, name: "Roster Boss", depth: 0, teamSize: 4 },
+      {
+        person_id: BOSS,
+        name: "Roster Boss",
+        depth: 0,
+        subtreeMemberCount: 5,
+        directMemberCount: 5,
+      },
     ];
     mocks.roster.push(rosterPerson(BOSS, "Roster Boss", null));
 
