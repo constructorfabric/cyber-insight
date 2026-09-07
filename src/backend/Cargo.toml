@@ -6,6 +6,7 @@ members = [
     "libs/authenticator-sdk",
     "services/analytics",
     "services/git-cli-proxy",
+    "services/insight-v3-core",
     "services/identity-resolution",
     "services/previews",
     "services/authenticator",

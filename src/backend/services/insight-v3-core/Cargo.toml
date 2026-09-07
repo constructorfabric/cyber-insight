@@ -1,0 +1,50 @@
+[package]
+name = "insight-v3-core"
+version = "0.1.0"
+description = "Insight v3 Core"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+toolkit = { workspace = true, features = ["bootstrap"] }
+toolkit-canonical-errors = { workspace = true }
+insight-clickhouse = { workspace = true }
+
+api_gateway = { workspace = true }
+authn-resolver = { workspace = true }
+authz-resolver = { workspace = true }
+oidc-authn-plugin = { workspace = true }
+tenant-resolver = { workspace = true }
+single-tenant-tr-plugin = { workspace = true }
+static-authz-plugin = { workspace = true }
+grpc_hub = { workspace = true }
+gear_orchestrator = { workspace = true }
+types_registry = { workspace = true }
+
+anyhow = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clickhouse = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+utoipa = { version = "5.5", features = ["uuid"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+clickhouse = { workspace = true, features = ["test-util"] }
+futures = { workspace = true }
+tower = { version = "0.5", features = ["util"] }

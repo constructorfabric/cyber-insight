@@ -1,23 +1,11 @@
-# Multi-stage build for the Insight Authenticator.
-#
-# Build context: src/backend/
-# Usage: cd src/backend && docker build -f services/authenticator/Dockerfile -t insight-authenticator:dev .
-
-# Stage 1: Builder
 FROM rust:1.95-bookworm AS builder
 
-# protobuf-compiler is required by grpc-hub -> prost-build; cmake + the libcurl
-# headers build the vendored librdkafka (audit events to Redpanda, step 10.8 —
-# librdkafka's OAUTHBEARER path pulls in curl/curl.h even with WITH_CURL=0).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev cmake libcurl4-openssl-dev && \
+    apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# --- Dependency caching layer: copy every workspace member's manifest + a stub
-#     source so the dependency graph resolves and deps get cached without the
-#     real code. ---
 COPY Cargo.toml Cargo.lock ./
 COPY libs/insight-clickhouse/Cargo.toml ./libs/insight-clickhouse/Cargo.toml
 COPY libs/insight-http-metrics/Cargo.toml ./libs/insight-http-metrics/Cargo.toml
@@ -25,14 +13,10 @@ COPY libs/authenticator-sdk/Cargo.toml ./libs/authenticator-sdk/Cargo.toml
 COPY libs/insight-migration/Cargo.toml ./libs/insight-migration/Cargo.toml
 COPY services/analytics/Cargo.toml ./services/analytics/Cargo.toml
 COPY services/authenticator/Cargo.toml ./services/authenticator/Cargo.toml
-# identity-resolution is a workspace member; cargo must load its manifest to
-# resolve the workspace even though this image never builds or ships it.
 COPY services/identity-resolution/Cargo.toml ./services/identity-resolution/Cargo.toml
 COPY services/git-cli-proxy/Cargo.toml ./services/git-cli-proxy/Cargo.toml
 COPY services/insight-v3-core/Cargo.toml ./services/insight-v3-core/Cargo.toml
 COPY services/previews/Cargo.toml ./services/previews/Cargo.toml
-# routegen is a workspace member (build-time CLI); cargo must load its manifest
-# to resolve the workspace even though this image never builds it.
 COPY tools/routegen/Cargo.toml ./tools/routegen/Cargo.toml
 
 RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/src/lib.rs && \
@@ -47,28 +31,23 @@ RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/sr
     mkdir -p services/previews/src && echo "fn main() {}" > services/previews/src/main.rs && \
     mkdir -p tools/routegen/src && echo "fn main() {}" > tools/routegen/src/main.rs
 
-RUN cargo build --release --bin authenticator 2>/dev/null || true
+RUN cargo build --release --bin insight-v3-core 2>/dev/null || true
 
-# --- Source layer ---
-RUN rm -rf libs/authenticator-sdk/src libs/insight-http-metrics/src services/authenticator/src \
-    target/release/deps/insight_http_metrics* target/release/deps/libinsight_http_metrics* \
-    target/release/authenticator target/release/deps/authenticator* \
-    target/release/deps/libauthenticator*
+RUN rm -rf libs/insight-clickhouse/src services/insight-v3-core/src \
+    target/release/insight-v3-core target/release/deps/insight_v3_core* \
+    target/release/deps/insight_clickhouse* target/release/deps/libinsight_clickhouse*
 
-COPY libs/authenticator-sdk/src/ ./libs/authenticator-sdk/src/
-COPY libs/insight-http-metrics/src/ ./libs/insight-http-metrics/src/
-COPY services/authenticator/src/ ./services/authenticator/src/
-COPY services/authenticator/config/ ./services/authenticator/config/
+COPY libs/insight-clickhouse/src/ ./libs/insight-clickhouse/src/
+COPY services/insight-v3-core/src/ ./services/insight-v3-core/src/
+COPY services/insight-v3-core/config/ ./services/insight-v3-core/config/
 
-RUN cargo build --release --bin authenticator
+RUN cargo build --release --bin insight-v3-core
 
-# Stage 2: Runtime
 FROM debian:bookworm-slim
 
 ARG TARGETARCH
 ARG WATCHEXEC_VERSION=2.3.2
 
-# Runtime deps + watchexec (auto-reload wrapper in compose).
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
       amd64) WX_ARCH=x86_64-unknown-linux-musl ;; \
@@ -90,18 +69,14 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/authenticator /app/authenticator
-# Gears config baked at /app/config/. Compose bind-mounts over it for hot edits;
-# k8s mounts a ConfigMap here. Signing keys are NOT baked — they come from a
-# mounted Secret (signing_keys_path); compose bind-mounts the dev keys.
-COPY --from=builder /build/services/authenticator/config/ /app/config/
+COPY --from=builder /build/target/release/insight-v3-core /app/insight-v3-core
+COPY --from=builder /build/services/insight-v3-core/config/ /app/config/
 
-RUN useradd -U -u 1000 -m appuser && chown -R 1000:1000 /app
+RUN useradd -U -u 1000 -m appuser && \
+    chown -R 1000:1000 /app
 USER 1000
 
-EXPOSE 8083
+EXPOSE 8086
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["/app/authenticator", "--", "/app/authenticator", "-c", "/app/config/insight.yaml", "run"]
-
-# CI rebuild marker -- appVersion bump now covers this subchart (fix/ci-publish-gateway-authenticator).
+CMD ["/app/insight-v3-core", "--", "/app/insight-v3-core", "-c", "/app/config/insight.yaml", "run"]

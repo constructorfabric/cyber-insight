@@ -30,6 +30,7 @@ COPY services/authenticator/Cargo.toml ./services/authenticator/Cargo.toml
 # resolve the workspace even though this image never builds or ships it.
 COPY services/identity-resolution/Cargo.toml ./services/identity-resolution/Cargo.toml
 COPY services/git-cli-proxy/Cargo.toml ./services/git-cli-proxy/Cargo.toml
+COPY services/insight-v3-core/Cargo.toml ./services/insight-v3-core/Cargo.toml
 COPY services/previews/Cargo.toml ./services/previews/Cargo.toml
 # routegen is a workspace member (build-time CLI); cargo must load its manifest
 # to resolve the workspace even though this image never builds it.
@@ -43,6 +44,7 @@ RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/sr
     mkdir -p services/authenticator/src && echo "fn main() {}" > services/authenticator/src/main.rs && \
     mkdir -p services/identity-resolution/src && echo "fn main() {}" > services/identity-resolution/src/main.rs && \
     mkdir -p services/git-cli-proxy/src && echo "fn main() {}" > services/git-cli-proxy/src/main.rs && \
+    mkdir -p services/insight-v3-core/src && echo "fn main() {}" > services/insight-v3-core/src/main.rs && \
     mkdir -p services/previews/src && echo "fn main() {}" > services/previews/src/main.rs && \
     mkdir -p tools/routegen/src && echo "fn main() {}" > tools/routegen/src/main.rs
 
