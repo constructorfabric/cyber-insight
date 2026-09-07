@@ -1,5 +1,33 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Deterministic, DOM-inspectable stand-ins for the recharts wrappers (which
+// render nothing under jsdom's zero-size ResponsiveContainer).
+vi.mock("recharts", () => ({
+  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+  LineChart: ({
+    data,
+    children,
+  }: {
+    data: Record<string, unknown>[];
+    children: React.ReactNode;
+  }) => (
+    <div data-testid="line-chart" data-chart-data={JSON.stringify(data)}>
+      {children}
+    </div>
+  ),
+  CartesianGrid: () => null,
+  Tooltip: () => null,
+  XAxis: ({ dataKey }: { dataKey: string }) => (
+    <div data-testid="x-axis" data-key={dataKey} />
+  ),
+  YAxis: () => null,
+  Line: ({ dataKey }: { dataKey: string }) => (
+    <div data-testid="line" data-key={dataKey} />
+  ),
+}));
 
 import { CustomWidget } from "./custom-widget";
 
@@ -32,6 +60,23 @@ describe("<CustomWidget>", () => {
     expect(screen.getByTestId("custom-line-chart")).toBeInTheDocument();
   });
 
+  it("maps the widget's x and y fields to the chart axes and row values", () => {
+    render(
+      <CustomWidget widget={{ type: "line", metric: "m", x: "day", y: "lines" }} result={result} />,
+    );
+
+    expect(screen.getByTestId("x-axis")).toHaveAttribute("data-key", "day");
+    expect(screen.getByTestId("line")).toHaveAttribute("data-key", "lines");
+
+    const chartData = JSON.parse(
+      screen.getByTestId("line-chart").getAttribute("data-chart-data")!,
+    );
+    expect(chartData).toEqual([
+      { day: "2026-09-01", lines: 59 },
+      { day: "2026-09-02", lines: 12 },
+    ]);
+  });
+
   it("shows an error in place of the content when the run failed", () => {
     render(
       <CustomWidget
@@ -58,5 +103,39 @@ describe("<CustomWidget>", () => {
     render(<CustomWidget widget={{ type: "sankey", metric: "m" } as never} result={result} />);
 
     expect(screen.getByText(/unknown widget type/i)).toBeInTheDocument();
+  });
+
+  it("says there is no data when neither a result nor an error was passed", () => {
+    render(<CustomWidget widget={{ type: "table", metric: "m", columns: ["day"] }} />);
+
+    expect(screen.getByText(/no data/i)).toBeInTheDocument();
+  });
+
+  it("pads a short row with empty cells instead of misaligning columns", () => {
+    render(
+      <CustomWidget
+        widget={{ type: "table", metric: "m", columns: ["day", "lines", "extra"] }}
+        result={{ columns: ["day", "lines", "extra"], rows: [["2026-09-01", 59]] }}
+      />,
+    );
+
+    const cells = screen.getAllByRole("cell");
+    expect(cells).toHaveLength(3);
+    expect(cells[0]).toHaveTextContent("2026-09-01");
+    expect(cells[1]).toHaveTextContent("59");
+    expect(cells[2]).toHaveTextContent("");
+  });
+
+  it("does not spill a long row past the declared columns", () => {
+    render(
+      <CustomWidget
+        widget={{ type: "table", metric: "m", columns: ["day"] }}
+        result={{ columns: ["day"], rows: [["2026-09-01", 59, "extra"]] }}
+      />,
+    );
+
+    const cells = screen.getAllByRole("cell");
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toHaveTextContent("2026-09-01");
   });
 });

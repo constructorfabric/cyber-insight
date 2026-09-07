@@ -25,8 +25,10 @@ export function CustomTable({ result }: CustomTableProps) {
       <TableBody>
         {result.rows.map((row, rowIndex) => (
           <TableRow key={rowIndex}>
-            {row.map((cell, cellIndex) => (
-              <TableCell key={cellIndex}>{String(cell)}</TableCell>
+            {result.columns.map((_, columnIndex) => (
+              <TableCell key={columnIndex}>
+                {columnIndex < row.length ? String(row[columnIndex]) : ""}
+              </TableCell>
             ))}
           </TableRow>
         ))}
