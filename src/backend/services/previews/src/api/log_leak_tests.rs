@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
-const SEEDED_BEARER: &str = "eyJhbGciOiJSUzI1NiJ9.seeded-bearer-3192";
+const SEEDED_BEARER: &str = "seeded-bearer-3192";
 const SEEDED_SESSION_COOKIE: &str = "seeded-session-cookie-3192";
 
 #[test]

@@ -7,7 +7,7 @@ use insight_log_context::test_support::capture_output;
 use crate::config::{HostIdpConfig, IdpConfig};
 use crate::session::{LoginState, SessionRecord};
 
-const SEEDED_ID_TOKEN: &str = "eyJhbGciOiJSUzI1NiJ9.seeded-id-token-3192";
+const SEEDED_ID_TOKEN: &str = "seeded-id-token-3192";
 const SEEDED_REFRESH_TOKEN: &str = "seeded-refresh-token-3192";
 const SEEDED_COOKIE_CREDENTIAL: &str = "seeded-cookie-credential-3192";
 const SEEDED_CSRF_TOKEN: &str = "seeded-csrf-token-3192";

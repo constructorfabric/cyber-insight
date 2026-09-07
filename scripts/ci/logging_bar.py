@@ -52,11 +52,21 @@ class Verdict:
 
 def rust_services(root: Path) -> list[Path]:
     services = root / SERVICES_DIR
+    if not services.is_dir():
+        return []
     return sorted(entry for entry in services.iterdir() if entry.is_dir() and (entry / "Cargo.toml").is_file())
 
 
 def read_or_empty(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def has_capture_test(path: Path, capture_symbols: tuple[str, ...]) -> bool:
+    """A declared test module must actually exercise the capture path: at least
+    one #[test] plus a call to a line-capture helper. Presence alone would let
+    a no-op module report compliance."""
+    content = read_or_empty(path)
+    return "#[test]" in content and any(f"{symbol}(" in content for symbol in capture_symbols)
 
 
 def judge(service: Path) -> Verdict:
@@ -70,8 +80,14 @@ def judge(service: Path) -> Verdict:
         service=service.name,
         shape=bool(FORMAT_KNOB.search(configmap)),
         level=bool(LEVEL_KNOB.search(configmap)),
-        fields=("LogContextLayer" in api_mod and "mod log_context_tests;" in api_mod and context_test.is_file()),
-        leaks="mod log_leak_tests;" in api_mod and leak_test.is_file(),
+        fields=(
+            "LogContextLayer" in api_mod
+            and "mod log_context_tests;" in api_mod
+            and has_capture_test(context_test, ("capture_probe_line",))
+        ),
+        leaks=(
+            "mod log_leak_tests;" in api_mod and has_capture_test(leak_test, ("capture_output", "capture_probe_output"))
+        ),
     )
 
 
@@ -100,8 +116,8 @@ def render_markdown(verdicts: list[Verdict]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    verdicts = [judge(service) for service in rust_services(ROOT)]
+def main(root: Path = ROOT) -> int:
+    verdicts = [judge(service) for service in rust_services(root)]
     if not verdicts:
         print("no Rust services found under", SERVICES_DIR, file=sys.stderr)  # noqa: T201
         return 1
