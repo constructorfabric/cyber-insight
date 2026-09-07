@@ -425,6 +425,9 @@ services:
       # validates the whole gear section (32-byte-minimum token included), so
       # migrate fails without it.
       APP__gears__insight_v3_core__config__ingest_token: "${INSIGHT_V3_INGEST_TOKEN:-insight-v3-core-local-dev-ingest-token}"
+      APP__gears__insight_v3_core__config__anthropic_token: "${ANTHROPIC_API_KEY:-}"
+      APP__gears__insight_v3_core__config__chat_mode: "${INSIGHT_V3_CHAT_MODE:-canned}"
+      APP__gears__insight_v3_core__config__chat_model: "${INSIGHT_V3_CHAT_MODEL:-claude-haiku-4-5-20251001}"
     command:
       - "/app/insight-v3-core" # <watched path — unused, one-shot>
       - "--"
@@ -451,6 +454,9 @@ services:
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
       # Dev-only value — see .env.compose.example.
       APP__gears__insight_v3_core__config__ingest_token: "${INSIGHT_V3_INGEST_TOKEN:-insight-v3-core-local-dev-ingest-token}"
+      APP__gears__insight_v3_core__config__anthropic_token: "${ANTHROPIC_API_KEY:-}"
+      APP__gears__insight_v3_core__config__chat_mode: "${INSIGHT_V3_CHAT_MODE:-canned}"
+      APP__gears__insight_v3_core__config__chat_model: "${INSIGHT_V3_CHAT_MODEL:-claude-haiku-4-5-20251001}"
     command:
       - "/app/insight-v3-core" # <watched path>
       - "--"
