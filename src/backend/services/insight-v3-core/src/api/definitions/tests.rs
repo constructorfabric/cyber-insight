@@ -1,28 +1,27 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::http::{Request, StatusCode};
-use chrono::Utc;
-use clickhouse::test::{Mock, handlers};
+use clickhouse::test::Mock;
 use serde_json::json;
 use toolkit::api::OpenApiRegistryImpl;
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 use super::*;
 use crate::api::AppState;
 use crate::chat::ChatClient;
-use crate::definitions::{DefinitionRow, DefinitionStore};
+use crate::definitions::Definitions;
+use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
 
 struct TestHarness {
-    mock: Mock,
+    /// Held, not read: the stores this harness does not exercise are built
+    /// against its address, so it has to outlive them.
+    _clickhouse: Mock,
     router: Router,
-    table: Mutex<HashMap<String, String>>,
 }
 
 impl TestHarness {
@@ -32,6 +31,7 @@ impl TestHarness {
         mock.non_exhaustive();
         let openapi = OpenApiRegistryImpl::new();
         let url = mock.url();
+        let definitions: Arc<dyn Definitions> = Arc::new(MemoryDefinitions::new());
         let state = Arc::new(AppState::new(
             RawDataStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
@@ -39,9 +39,7 @@ impl TestHarness {
             TableStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
-            DefinitionStore::new(insight_clickhouse::Client::new(
-                insight_clickhouse::Config::new(url, "insight"),
-            )),
+            definitions.clone(),
             MetricRunner::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
@@ -50,14 +48,12 @@ impl TestHarness {
         let router = register_routes(Router::new(), &openapi, state);
 
         Self {
-            mock,
+            _clickhouse: mock,
             router,
-            table: Mutex::new(HashMap::new()),
         }
     }
 
     async fn put_json(&self, path: &str, body: serde_json::Value) -> TestResponse {
-        let recording = self.mock.add(handlers::record::<DefinitionRow>());
         let request = Request::builder()
             .method("PUT")
             .uri(path)
@@ -74,42 +70,10 @@ impl TestHarness {
             .await
             .unwrap_or_else(|error| panic!("router must respond: {error}"));
 
-        if response.status() == StatusCode::NO_CONTENT {
-            let rows: Vec<DefinitionRow> = recording.collect().await;
-            if let Some(row) = rows.into_iter().next() {
-                self.table
-                    .lock()
-                    .unwrap_or_else(|error| panic!("test harness lock poisoned: {error}"))
-                    .insert(path.to_owned(), row.body);
-            }
-        }
-
         TestResponse::from_response(response).await
     }
 
     async fn get_json(&self, path: &str) -> TestResponse {
-        let stored = self
-            .table
-            .lock()
-            .unwrap_or_else(|error| panic!("test harness lock poisoned: {error}"))
-            .get(path)
-            .cloned();
-
-        match stored {
-            Some(body) => {
-                self.mock.add(handlers::provide(vec![DefinitionRow {
-                    id: Uuid::now_v7(),
-                    name: path.rsplit('/').next().unwrap_or_default().to_owned(),
-                    body,
-                    updated_at: Utc::now(),
-                }]));
-            }
-            None => {
-                self.mock
-                    .add(handlers::provide(Vec::<DefinitionRow>::new()));
-            }
-        }
-
         let request = Request::builder()
             .method("GET")
             .uri(path)
@@ -126,9 +90,7 @@ impl TestHarness {
         TestResponse::from_response(response).await
     }
 
-    async fn list_json(&self, path: &str, names: Vec<String>) -> TestResponse {
-        self.mock.add(handlers::provide(names));
-
+    async fn list_json(&self, path: &str) -> TestResponse {
         let request = Request::builder()
             .method("GET")
             .uri(path)
@@ -205,15 +167,18 @@ async fn a_name_outside_the_charset_is_rejected() {
 }
 
 #[tokio::test]
-async fn list_returns_the_stored_names() {
+async fn list_returns_the_stored_names_in_order() {
     let harness = TestHarness::new().await;
 
-    let got = harness
-        .list_json(
-            "/v1/metrics",
-            vec!["commits_per_day".to_owned(), "lines_per_day".to_owned()],
-        )
-        .await;
+    // Stored out of order, listed in it.
+    for name in ["lines_per_day", "commits_per_day"] {
+        let put = harness
+            .put_json(&format!("/v1/metrics/{name}"), json!({ "table": "events" }))
+            .await;
+        assert_eq!(put.status(), StatusCode::NO_CONTENT);
+    }
+
+    let got = harness.list_json("/v1/metrics").await;
 
     assert_eq!(got.status(), StatusCode::OK);
     assert_eq!(

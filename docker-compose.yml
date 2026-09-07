@@ -416,11 +416,14 @@ services:
       dockerfile: services/insight-v3-core/Dockerfile
     depends_on:
       clickhouse: {condition: service_healthy, required: false}
+      mariadb: {condition: service_healthy, required: false}
     environment:
       APP__gears__insight_v3_core__config__clickhouse_url: "http://${CLICKHOUSE_HOST:-clickhouse}:${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      # The metric, widget and dashboard definitions live here.
+      APP__gears__insight_v3_core__config__database_url: "mysql://${MARIADB_USER:-insight}:${MARIADB_PASSWORD:-insight-local}@${MARIADB_HOST:-mariadb}:${MARIADB_INTERNAL_PORT:-3306}/insight_v3"
       # INVARIANT: migrate's DDL never reads this, but ValidatedConfig
       # validates the whole gear section (32-byte-minimum token included), so
       # migrate fails without it.
@@ -445,6 +448,7 @@ services:
       dockerfile: services/insight-v3-core/Dockerfile
     depends_on:
       clickhouse: {condition: service_healthy, required: false}
+      mariadb: {condition: service_healthy, required: false}
       insight-v3-core-migrate: {condition: service_completed_successfully}
     environment:
       !!merge <<: *backend-env
@@ -452,6 +456,7 @@ services:
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      APP__gears__insight_v3_core__config__database_url: "mysql://${MARIADB_USER:-insight}:${MARIADB_PASSWORD:-insight-local}@${MARIADB_HOST:-mariadb}:${MARIADB_INTERNAL_PORT:-3306}/insight_v3"
       # Dev-only value — see .env.compose.example.
       APP__gears__insight_v3_core__config__ingest_token: "${INSIGHT_V3_INGEST_TOKEN:-insight-v3-core-local-dev-ingest-token}"
       APP__gears__insight_v3_core__config__anthropic_token: "${ANTHROPIC_API_KEY:-}"

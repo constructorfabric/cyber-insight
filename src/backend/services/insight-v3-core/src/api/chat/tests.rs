@@ -1,21 +1,19 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::http::{Request, StatusCode};
-use chrono::Utc;
 use clickhouse::test::{Mock, handlers};
 use serde::Deserialize;
 use serde_json::json;
 use toolkit::api::OpenApiRegistryImpl;
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 use super::*;
 use crate::api::AppState;
 use crate::chat::{ChatClient, Proposal};
-use crate::definitions::{DefinitionRow, DefinitionStore};
+use crate::definitions::Definitions;
+use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
@@ -23,7 +21,7 @@ use crate::tables::TableStore;
 struct TestHarness {
     mock: Mock,
     router: Router,
-    table: Mutex<HashMap<String, String>>,
+    definitions: Arc<dyn Definitions>,
 }
 
 impl TestHarness {
@@ -33,6 +31,7 @@ impl TestHarness {
         mock.non_exhaustive();
         let openapi = OpenApiRegistryImpl::new();
         let url = mock.url();
+        let definitions: Arc<dyn Definitions> = Arc::new(MemoryDefinitions::new());
         let state = Arc::new(AppState::new(
             RawDataStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
@@ -40,9 +39,7 @@ impl TestHarness {
             TableStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
-            DefinitionStore::new(insight_clickhouse::Client::new(
-                insight_clickhouse::Config::new(url, "insight"),
-            )),
+            definitions.clone(),
             MetricRunner::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(url, "insight"),
             )),
@@ -55,18 +52,11 @@ impl TestHarness {
         Self {
             mock,
             router,
-            table: Mutex::new(HashMap::new()),
+            definitions,
         }
     }
 
-    fn lock_table(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
-        self.table
-            .lock()
-            .unwrap_or_else(|error| panic!("test harness lock poisoned: {error}"))
-    }
-
     async fn put_json(&self, path: &str, body: serde_json::Value) -> TestResponse {
-        let recording = self.mock.add(handlers::record::<DefinitionRow>());
         let request = Request::builder()
             .method("PUT")
             .uri(path)
@@ -83,53 +73,30 @@ impl TestHarness {
             .await
             .unwrap_or_else(|error| panic!("router must respond: {error}"));
 
-        if response.status() == StatusCode::NO_CONTENT {
-            let rows: Vec<DefinitionRow> = recording.collect().await;
-            if let Some(row) = rows.into_iter().next() {
-                self.lock_table().insert(path.to_owned(), row.body);
-            }
-        }
-
         TestResponse::from_response(response).await
     }
 
-    /// Queues the ClickHouse response for a `DefinitionStore::get` lookup
-    /// at `path` — the row stashed by an earlier [`Self::put_json`], or an
-    /// empty result if nothing is stored there.
-    /// What a chat request reads before it stores anything: the ingest table
-    /// list, then the metric, widget and dashboard names for the prompt. A
-    /// helper rather than four calls per test, so a change to what the prompt
-    /// is told does not rewrite every test that posts a chat message.
+    /// The only ClickHouse read a chat request makes before it answers: the
+    /// list of ingest tables for the prompt. The definitions it reads come
+    /// from the store, which needs no priming.
     fn queue_chat_context(&self) {
         self.mock.add(handlers::provide(Vec::<String>::new()));
-        for _ in 0..3 {
-            self.mock
-                .add(handlers::provide(Vec::<DefinitionRow>::new()));
-        }
     }
 
-    fn queue_stored_or_empty(&self, path: &str) {
-        let stored = self.lock_table().get(path).cloned();
-        match stored {
-            Some(body) => {
-                self.mock.add(handlers::provide(vec![DefinitionRow {
-                    id: Uuid::now_v7(),
-                    name: path.rsplit('/').next().unwrap_or_default().to_owned(),
-                    body,
-                    updated_at: Utc::now(),
-                }]));
-            }
-            None => {
-                self.mock
-                    .add(handlers::provide(Vec::<DefinitionRow>::new()));
-            }
-        }
+    /// What the store holds under `name`, for the cases about what a request
+    /// wrote rather than what it answered.
+    async fn stored(&self, kind: DefinitionKind, name: &str) -> serde_json::Value {
+        let name = crate::definitions::DefinitionName::parse(name)
+            .unwrap_or_else(|error| panic!("test name must parse: {error}"));
+
+        self.definitions
+            .get(kind, &name)
+            .await
+            .unwrap_or_else(|error| panic!("the store must answer: {error}"))
+            .unwrap_or_else(|| panic!("nothing stored under {}", name.as_str()))
     }
 
-    /// Posts `message` to `/v1/chat`. The caller must have already queued a
-    /// ClickHouse response for every store call `handle_chat` will make, in
-    /// the order it will make them — starting with `known_tables`'s
-    /// `DefinitionStore::list(Metric)`.
+    /// Posts `message` to `/v1/chat`.
     async fn post_chat(&self, message: &str) -> TestResponse {
         let request = Request::builder()
             .method("POST")
@@ -224,8 +191,6 @@ async fn a_name_already_in_use_is_replaced_and_reported_as_updated() {
         .await;
 
     harness.queue_chat_context();
-    harness.queue_stored_or_empty("/v1/widgets/commits_table");
-    harness.mock.add(handlers::record::<DefinitionRow>());
 
     let response = harness.post_chat("commits_table").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -236,21 +201,18 @@ async fn a_name_already_in_use_is_replaced_and_reported_as_updated() {
     // write goes through and the reply says which names it replaced.
     assert_eq!(created.updated.widgets, vec!["commits_table".to_owned()]);
     assert!(created.created.widgets.is_empty());
+
+    let stored = harness
+        .stored(DefinitionKind::Widget, "commits_table")
+        .await;
+    assert_eq!(stored["metric"], "m", "the new body must have replaced it");
 }
 
 #[tokio::test]
 async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
     let harness = TestHarness::new(ChatClient::canned()).await;
 
-    // Then a not-found lookup followed by an insert for the metric, each of
-    // the two widgets, and the dashboard, in that order.
     harness.queue_chat_context();
-    for _ in 0..4 {
-        harness
-            .mock
-            .add(handlers::provide(Vec::<DefinitionRow>::new()));
-        harness.mock.add(handlers::record::<DefinitionRow>());
-    }
 
     let response = harness.post_chat("delivery report").await;
     assert_eq!(response.status(), StatusCode::OK);

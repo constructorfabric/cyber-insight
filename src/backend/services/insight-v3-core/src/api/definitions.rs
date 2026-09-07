@@ -168,10 +168,12 @@ fn definition_error(error: DefinitionError) -> CanonicalError {
 
 fn definition_store_error(error: DefinitionStoreError) -> CanonicalError {
     match error {
-        DefinitionStoreError::Timeout => {
+        // Waiting for a connection is the store being busy, not broken.
+        DefinitionStoreError::Database(sea_orm::DbErr::ConnectionAcquire(source)) => {
+            tracing::warn!(error = ?source, "definition store connection timed out");
             DefinitionApiError::deadline_exceeded("definition store timed out").create()
         }
-        DefinitionStoreError::ClickHouse(source) => {
+        DefinitionStoreError::Database(source) => {
             tracing::error!(error = ?source, "definition store operation failed");
             CanonicalError::internal("definition store operation failed").create()
         }

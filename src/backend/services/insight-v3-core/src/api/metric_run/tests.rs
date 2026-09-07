@@ -4,16 +4,15 @@ use axum::body::{Body, Bytes, to_bytes};
 use axum::http::{Request, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
-use chrono::Utc;
-use clickhouse::test::{Mock, handlers};
+use clickhouse::test::Mock;
 use serde_json::json;
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 use super::*;
 use crate::api::AppState;
 use crate::chat::ChatClient;
-use crate::definitions::{DefinitionRow, DefinitionStore};
+use crate::definitions::Definitions;
+use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
@@ -21,8 +20,11 @@ use crate::tables::TableStore;
 type R = Result<(), Box<dyn std::error::Error>>;
 
 struct TestHarness {
-    mock: Mock,
+    /// Held, not read: the stores this harness does not exercise are built
+    /// against its address, so it has to outlive them.
+    _clickhouse: Mock,
     router: Router,
+    definitions: Arc<dyn Definitions>,
 }
 
 impl TestHarness {
@@ -36,6 +38,7 @@ impl TestHarness {
             metrics_url,
             "insight",
         ));
+        let definitions: Arc<dyn Definitions> = Arc::new(MemoryDefinitions::new());
         let state = Arc::new(AppState::new(
             RawDataStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(definitions_url, "insight"),
@@ -43,32 +46,27 @@ impl TestHarness {
             TableStore::new(insight_clickhouse::Client::new(
                 insight_clickhouse::Config::new(definitions_url, "insight"),
             )),
-            DefinitionStore::new(insight_clickhouse::Client::new(
-                insight_clickhouse::Config::new(definitions_url, "insight"),
-            )),
+            definitions.clone(),
             MetricRunner::new(metrics_client),
             ChatClient::canned(),
         ));
         let router = register_routes(Router::new(), &openapi, state);
 
-        Self { mock, router }
+        Self {
+            _clickhouse: mock,
+            router,
+            definitions,
+        }
     }
 
     async fn run(&self, name: &str, stored: Option<serde_json::Value>) -> TestResponse {
-        match stored {
-            Some(body) => {
-                self.mock.add(handlers::provide(vec![DefinitionRow {
-                    id: Uuid::now_v7(),
-                    name: name.to_owned(),
-                    body: serde_json::to_string(&body)
-                        .unwrap_or_else(|error| panic!("test JSON must serialize: {error}")),
-                    updated_at: Utc::now(),
-                }]));
-            }
-            None => {
-                self.mock
-                    .add(handlers::provide(Vec::<DefinitionRow>::new()));
-            }
+        if let Some(body) = stored {
+            let parsed = crate::definitions::DefinitionName::parse(name)
+                .unwrap_or_else(|error| panic!("test name must parse: {error}"));
+            self.definitions
+                .put(crate::definitions::DefinitionKind::Metric, &parsed, &body)
+                .await
+                .unwrap_or_else(|error| panic!("the store must accept it: {error}"));
         }
 
         let request = Request::builder()

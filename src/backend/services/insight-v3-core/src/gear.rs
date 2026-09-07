@@ -37,6 +37,12 @@ impl Gear for InsightV3CoreGear {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
         let config: crate::config::GearConfig = ctx.config()?;
         let config = config.validate()?;
+        // The definitions are rows read by name and edited in place, so they
+        // live in MariaDB rather than beside the data they describe.
+        let definitions: Arc<dyn crate::definitions::Definitions> =
+            Arc::new(crate::definitions::MariaDefinitions::new(
+                sea_orm::Database::connect(config.database_url()).await?,
+            ));
         let admission = crate::api::admission::IngestAdmission::new(config.ingest_token());
         let chat = match config.chat_mode() {
             crate::config::ChatMode::Live => {
@@ -48,7 +54,7 @@ impl Gear for InsightV3CoreGear {
             app: Arc::new(crate::api::AppState::new(
                 crate::raw_data::RawDataStore::new(config.clickhouse_client()),
                 crate::tables::TableStore::new(config.clickhouse_client()),
-                crate::definitions::DefinitionStore::new(config.clickhouse_client()),
+                definitions,
                 crate::metric_query::MetricRunner::new(config.clickhouse_client()),
                 chat,
             )),
@@ -89,6 +95,11 @@ pub(crate) async fn run_migrate(app: &toolkit::bootstrap::AppConfig) -> anyhow::
 
     crate::migration::migrate(&client).await?;
     tracing::info!("raw_data migration complete");
+
+    let db = sea_orm::Database::connect(config.database_url()).await?;
+    <crate::definitions::migration::Migrator as sea_orm_migration::MigratorTrait>::up(&db, None)
+        .await?;
+    tracing::info!("definitions migration complete");
 
     Ok(())
 }

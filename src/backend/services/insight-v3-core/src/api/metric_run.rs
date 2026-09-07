@@ -96,10 +96,12 @@ fn compile_error(error: &MetricQueryError) -> CanonicalError {
 
 fn definition_store_error(error: DefinitionStoreError) -> CanonicalError {
     match error {
-        DefinitionStoreError::Timeout => {
+        // Waiting for a connection is the store being busy, not broken.
+        DefinitionStoreError::Database(sea_orm::DbErr::ConnectionAcquire(source)) => {
+            tracing::warn!(error = ?source, "definition store connection timed out");
             MetricRunApiError::deadline_exceeded("definition store timed out").create()
         }
-        DefinitionStoreError::ClickHouse(source) => {
+        DefinitionStoreError::Database(source) => {
             tracing::error!(error = ?source, "metric definition lookup failed");
             CanonicalError::internal("definition store operation failed").create()
         }

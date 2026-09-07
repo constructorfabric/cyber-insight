@@ -29,6 +29,7 @@ pub(crate) struct GearConfig {
     pub(crate) anthropic_token: SecretString,
     pub(crate) chat_mode: ChatMode,
     pub(crate) chat_model: String,
+    pub(crate) database_url: String,
 }
 
 impl Default for GearConfig {
@@ -42,6 +43,7 @@ impl Default for GearConfig {
             anthropic_token: SecretString::from(String::new()),
             chat_mode: ChatMode::Live,
             chat_model: DEFAULT_CHAT_MODEL.to_owned(),
+            database_url: String::new(),
         }
     }
 }
@@ -56,6 +58,7 @@ pub(crate) struct ValidatedConfig {
     anthropic_token: SecretString,
     chat_mode: ChatMode,
     chat_model: String,
+    database_url: String,
 }
 
 impl ValidatedConfig {
@@ -100,6 +103,10 @@ impl ValidatedConfig {
     pub(crate) fn chat_model(&self) -> String {
         self.chat_model.clone()
     }
+
+    pub(crate) fn database_url(&self) -> &str {
+        &self.database_url
+    }
 }
 
 impl GearConfig {
@@ -107,6 +114,7 @@ impl GearConfig {
         require_non_empty("clickhouse_url", &self.clickhouse_url)?;
         require_non_empty("clickhouse_database", &self.clickhouse_database)?;
         require_non_empty("chat_model", &self.chat_model)?;
+        require_non_empty("database_url", &self.database_url)?;
         let ingest_token = IngestToken::parse(self.ingest_token)?;
         if self.chat_mode == ChatMode::Live {
             require_non_empty("anthropic_token", self.anthropic_token.expose_secret())?;
@@ -125,6 +133,7 @@ impl GearConfig {
             anthropic_token: self.anthropic_token,
             chat_mode: self.chat_mode,
             chat_model: self.chat_model,
+            database_url: self.database_url,
         })
     }
 }
@@ -220,6 +229,7 @@ mod tests {
             anthropic_token: SecretString::from("test-anthropic-token"),
             chat_mode: ChatMode::Live,
             chat_model: "claude-haiku-4-5-20251001".to_owned(),
+            database_url: "mysql://insight:secret@mariadb.example.test:3306/insight_v3".to_owned(),
         }
     }
 

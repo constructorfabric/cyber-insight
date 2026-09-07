@@ -22,7 +22,8 @@ use crate::api::admission::{
     TokenVerifier,
 };
 use crate::chat::ChatClient;
-use crate::definitions::DefinitionStore;
+use crate::definitions::Definitions;
+use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
@@ -45,6 +46,7 @@ fn verifier() -> TokenVerifier {
 
 fn state(mock: &Mock) -> Arc<AppState> {
     let url = mock.url();
+    let definitions: Arc<dyn Definitions> = Arc::new(MemoryDefinitions::new());
     Arc::new(AppState::new(
         RawDataStore::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
@@ -52,9 +54,7 @@ fn state(mock: &Mock) -> Arc<AppState> {
         TableStore::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
-        DefinitionStore::new(insight_clickhouse::Client::new(
-            insight_clickhouse::Config::new(url, "insight"),
-        )),
+        definitions.clone(),
         MetricRunner::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),

@@ -8,7 +8,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use toolkit::api::{OpenApiRegistry, OperationBuilder};
 use toolkit_canonical_errors::{CanonicalError, resource_error};
 use utoipa::ToSchema;
@@ -109,29 +108,54 @@ async fn handle_chat(
             widgets,
             dashboard,
         } => {
+            let mut asked = Vec::new();
+            if let Some((name, body)) = metric {
+                asked.push((DefinitionKind::Metric, name, body));
+            }
+            for (name, body) in widgets {
+                asked.push((DefinitionKind::Widget, name, body));
+            }
+            if let Some((name, body)) = dashboard {
+                asked.push((DefinitionKind::Dashboard, name, body));
+            }
+
+            // Every name is checked before anything is written, so one bad
+            // name in the set stores none of it.
+            let mut writes = Vec::with_capacity(asked.len());
+            for (kind, name, body) in asked {
+                let parsed = DefinitionName::parse(&name).map_err(definition_error)?;
+                writes.push((kind, parsed, body, name));
+            }
+
+            // Which names are new is read before the write, so a name another
+            // writer takes in between is reported as created rather than
+            // replaced. The write itself is one transaction either way.
             let mut created = CreatedNames::default();
             let mut updated = CreatedNames::default();
-
-            if let Some((name, body)) = metric {
-                match store_definition(&state, DefinitionKind::Metric, name, body).await? {
-                    StoreOutcome::Created(name) => created.metric = Some(name),
-                    StoreOutcome::Updated(name) => updated.metric = Some(name),
+            for (kind, parsed, _, name) in &writes {
+                let held = state
+                    .definitions()
+                    .get(*kind, parsed)
+                    .await
+                    .map_err(definition_store_error)?
+                    .is_some();
+                let names = if held { &mut updated } else { &mut created };
+                match kind {
+                    DefinitionKind::Metric => names.metric = Some(name.clone()),
+                    DefinitionKind::Widget => names.widgets.push(name.clone()),
+                    DefinitionKind::Dashboard => names.dashboard = Some(name.clone()),
                 }
             }
 
-            for (name, body) in widgets {
-                match store_definition(&state, DefinitionKind::Widget, name, body).await? {
-                    StoreOutcome::Created(name) => created.widgets.push(name),
-                    StoreOutcome::Updated(name) => updated.widgets.push(name),
-                }
-            }
-
-            if let Some((name, body)) = dashboard {
-                match store_definition(&state, DefinitionKind::Dashboard, name, body).await? {
-                    StoreOutcome::Created(name) => created.dashboard = Some(name),
-                    StoreOutcome::Updated(name) => updated.dashboard = Some(name),
-                }
-            }
+            let batch: Vec<_> = writes
+                .into_iter()
+                .map(|(kind, parsed, body, _)| (kind, parsed, body))
+                .collect();
+            state
+                .definitions()
+                .put_all(&batch)
+                .await
+                .map_err(definition_store_error)?;
 
             Ok(Json(ChatCreatedResponse {
                 reply,
@@ -141,44 +165,6 @@ async fn handle_chat(
             .into_response())
         }
     }
-}
-
-enum StoreOutcome {
-    Created(String),
-    Updated(String),
-}
-
-/// Stores `body` under `name`, replacing whatever that name held.
-///
-/// Reusing a name is how a dashboard is changed: the reader asks for it to
-/// hold something else and the model builds it again. Skipping instead left
-/// the reader unable to change anything by asking, which is the only way in
-/// they have.
-async fn store_definition(
-    state: &AppState,
-    kind: DefinitionKind,
-    name: String,
-    body: Value,
-) -> Result<StoreOutcome, CanonicalError> {
-    let parsed_name = DefinitionName::parse(&name).map_err(definition_error)?;
-
-    let existing = state
-        .definitions()
-        .get(kind, &parsed_name)
-        .await
-        .map_err(definition_store_error)?;
-
-    state
-        .definitions()
-        .put(kind, &parsed_name, &body)
-        .await
-        .map_err(definition_store_error)?;
-
-    Ok(if existing.is_some() {
-        StoreOutcome::Updated(name)
-    } else {
-        StoreOutcome::Created(name)
-    })
 }
 
 /// What is already stored, so the model can name it, reuse it, and replace it
@@ -315,10 +301,12 @@ fn definition_error(error: DefinitionError) -> CanonicalError {
 
 fn definition_store_error(error: DefinitionStoreError) -> CanonicalError {
     match error {
-        DefinitionStoreError::Timeout => {
+        // Waiting for a connection is the store being busy, not broken.
+        DefinitionStoreError::Database(sea_orm::DbErr::ConnectionAcquire(source)) => {
+            tracing::warn!(error = ?source, "definition store connection timed out");
             ChatApiError::deadline_exceeded("definition store timed out").create()
         }
-        DefinitionStoreError::ClickHouse(source) => {
+        DefinitionStoreError::Database(source) => {
             tracing::error!(error = ?source, "definition store operation failed");
             CanonicalError::internal("definition store operation failed").create()
         }

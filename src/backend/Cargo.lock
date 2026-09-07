@@ -3757,6 +3757,8 @@ dependencies = [
  "futures",
  "insight-clickhouse",
  "reqwest 0.12.28",
+ "sea-orm",
+ "sea-orm-migration",
  "secrecy",
  "serde",
  "serde_json",

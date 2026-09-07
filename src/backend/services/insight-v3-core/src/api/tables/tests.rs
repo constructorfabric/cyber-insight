@@ -11,7 +11,8 @@ use super::*;
 use crate::api::AppState;
 use crate::api::admission::{INGEST_TOKEN_HEADER, IngestAdmission};
 use crate::chat::ChatClient;
-use crate::definitions::DefinitionStore;
+use crate::definitions::Definitions;
+use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
@@ -20,6 +21,7 @@ const TEST_TOKEN: &str = "correct-token-0123456789abcdefghi";
 
 fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
     let url = mock.url();
+    let definitions: Arc<dyn Definitions> = Arc::new(MemoryDefinitions::new());
     let state = Arc::new(AppState::new(
         RawDataStore::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
@@ -27,9 +29,7 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
         TableStore::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
-        DefinitionStore::new(insight_clickhouse::Client::new(
-            insight_clickhouse::Config::new(url, "insight"),
-        )),
+        definitions.clone(),
         MetricRunner::new(insight_clickhouse::Client::new(
             insight_clickhouse::Config::new(url, "insight"),
         )),
