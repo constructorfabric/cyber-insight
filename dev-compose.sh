@@ -1893,6 +1893,22 @@ TEST_STAND_SERVICE_PROBES=(
   "identity-resolution|IDENTITY_RESOLUTION_PORT"
 )
 
+# A published port as the running stand has it: the env file where it names one,
+# else the base docker-compose.yml falls back to. `test_stand_write_env` only
+# writes the keys it overrides, so a default stand's file omits most of them.
+test_stand_published_port() {
+  local key="$1" entry value
+  value="$(env_file_value "$TEST_STAND_ENV_FILE" "$key")"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  for entry in "${TEST_STAND_PUBLISHED_PORTS[@]}"; do
+    [[ "${entry%%=*}" == "$key" ]] && { printf '%s' "${entry#*=}"; return 0; }
+  done
+  return 1
+}
+
 # Readiness for a stand whose data its caller will write itself. The gold gate
 # below certifies rows a data-path run deletes as its first act, so waiting on
 # them would mean waiting for something about to be destroyed.
@@ -1905,13 +1921,13 @@ test_stand_wait_services() {
     for probe in "${TEST_STAND_SERVICE_PROBES[@]}"; do
       name="${probe%%|*}"
       var="${probe##*|}"
-      port="$(env_file_value "$TEST_STAND_ENV_FILE" "$var")"
+      port="$(test_stand_published_port "$var")"
       curl -sf -o /dev/null --max-time 5 "http://localhost:${port:-0}/health" \
         || pending+=("${name} (:${port:-unset})")
     done
     # Keycloak serves no /health on the app port, and the suite's first act is a
     # real login: the realm document proves the import finished, not just the JVM.
-    kc_port="$(env_file_value "$TEST_STAND_ENV_FILE" KEYCLOAK_PORT)"
+    kc_port="$(test_stand_published_port KEYCLOAK_PORT)"
     curl -sf -o /dev/null --max-time 5 \
       "http://localhost:${kc_port:-0}/kc/realms/insight/.well-known/openid-configuration" \
       || pending+=("keycloak realm (:${kc_port:-unset})")
