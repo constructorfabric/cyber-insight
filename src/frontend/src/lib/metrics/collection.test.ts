@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { buildMetricErrorView } from "@/mocks/metric-results-factory";
 import {
   MEDIAN_METRIC_FIXTURE,
   RATIO_METRIC_FIXTURE,
@@ -8,6 +9,8 @@ import {
 import {
   buildMetricCollectionRequest,
   entityObserved,
+  filterCollectionToAvailable,
+  filterCollectionToDeclaredDimensions,
   type NormalizedMetricResult,
   chunkEntityIds,
   entityChunkSize,
@@ -15,6 +18,8 @@ import {
   mergeNormalizedResults,
   normalizeMetricResult,
   normalizeMetricResults,
+  projectComparison,
+  projectPrimary,
   projectViews,
   resolveBucket,
   type MetricCollectionConfig,
@@ -77,6 +82,172 @@ describe("buildMetricCollectionRequest", () => {
       { view: "breakdown", dimensions: ["tool"] },
     ]);
   });
+
+  it("omits the comparison window entirely when none was asked for", () => {
+    // The field is absent, not null: an uncompared request keeps the exact
+    // wire form it had before comparison windows existed.
+    const request = buildMetricCollectionRequest(
+      COLLECTION,
+      { type: "person", ids: ["alice@example.com"] },
+      RANGE
+    );
+    expect("compare_to" in request).toBe(false);
+  });
+
+  it("carries the comparison window", () => {
+    const request = buildMetricCollectionRequest(
+      COLLECTION,
+      { type: "person", ids: ["alice@example.com"] },
+      RANGE,
+      { from: "2026-05-01", to: "2026-05-31" }
+    );
+    expect(request.compare_to).toEqual({ from: "2026-05-01", to: "2026-05-31" });
+  });
+});
+
+/**
+ * A windowed breakdown groups over every window at once, so its row set is the
+ * union of them. These cases pin the rule that makes a projected window equal
+ * to the standalone request it replaced: rows are chosen by `present`, never by
+ * whether the value happens to be null.
+ */
+describe("a compared breakdown's row set", () => {
+  /** `org/a` only in the primary period (ratio null there), `org/b` only in the window. */
+  const disjoint = (): Map<string, NormalizedMetricResult> =>
+    new Map([
+      [
+        "ci.gate_pass_rate",
+        {
+          metric_key: "ci.gate_pass_rate",
+          label: "Pass rate",
+          unit: null,
+          computation: "ratio",
+          format: "percent",
+          direction: "higher_is_better",
+          breakdown: {
+            view: "breakdown",
+            dimensions: ["repository"],
+            values: [
+              {
+                entity_id: "t",
+                dimensions: [{ key: "repository", value: "org/a" }],
+                value: null,
+                present: true,
+                compare_to: { value: null, present: false },
+              },
+              {
+                entity_id: "t",
+                dimensions: [{ key: "repository", value: "org/b" }],
+                value: null,
+                present: false,
+                compare_to: { value: 20, present: true },
+              },
+            ],
+          },
+        } satisfies NormalizedMetricResult,
+      ],
+    ]);
+
+  const repositories = (result: NormalizedMetricResult | undefined) =>
+    result?.breakdown?.values.map((row) => row.dimensions[0]?.value);
+
+  it("gives the comparison window only the groups it had", () => {
+    // A standalone request over the window would have returned org/b alone.
+    const projected = projectComparison(disjoint()).get("ci.gate_pass_rate");
+    expect(repositories(projected)).toEqual(["org/b"]);
+    expect(projected?.breakdown?.values[0]?.value).toBe(20);
+  });
+
+  it("keeps a present group whose value is genuinely null", () => {
+    // org/a IS in the primary period; its ratio is null because the
+    // denominator is zero. Dropping it would lose a row the standalone
+    // request returns — which is why presence cannot be read off the value.
+    const primary = projectPrimary(disjoint()).get("ci.gate_pass_rate");
+    expect(repositories(primary)).toEqual(["org/a"]);
+    expect(primary?.breakdown?.values[0]?.value).toBeNull();
+  });
+
+  it("leaves an uncompared response untouched", () => {
+    const plain = new Map([
+      [
+        "git.commits",
+        {
+          metric_key: "git.commits",
+          label: "Commits",
+          unit: null,
+          computation: "sum",
+          format: "integer",
+          direction: "higher_is_better",
+          breakdown: {
+            view: "breakdown",
+            dimensions: ["repository"],
+            values: [
+              {
+                entity_id: "t",
+                dimensions: [{ key: "repository", value: "org/a" }],
+                value: 0,
+              },
+            ],
+          },
+        } satisfies NormalizedMetricResult,
+      ],
+    ]);
+    expect(projectPrimary(plain).get("git.commits")).toBe(plain.get("git.commits"));
+  });
+});
+
+describe("projectComparison", () => {
+  const windowed = (): Map<string, NormalizedMetricResult> =>
+    new Map([
+      [
+        "git.commits",
+        {
+          metric_key: "git.commits",
+          label: "Commits",
+          unit: null,
+          computation: "sum",
+          format: "integer",
+          direction: "higher_is_better",
+          period: {
+            view: "period",
+            values: [{ entity_id: "a", value: 9, compare_to: 2 }],
+          },
+          peer: {
+            view: "peer",
+            values: [
+              {
+                entity_id: "a",
+                target_value: 9,
+                p25: 1,
+                median: 5,
+                p75: 8,
+                min: 0,
+                max: 10,
+                n: 7,
+              },
+            ],
+          },
+        } satisfies NormalizedMetricResult,
+      ],
+    ]);
+
+  it("reads the comparison window as the value", () => {
+    expect(
+      projectComparison(windowed()).get("git.commits")?.period?.values[0]?.value
+    ).toBe(2);
+  });
+
+  it("drops the views the comparison window does not carry", () => {
+    // Keeping `peer` would answer the primary period's standing under a
+    // previous-period label — a mispairing no consumer could detect.
+    expect(projectComparison(windowed()).get("git.commits")?.peer).toBeUndefined();
+  });
+
+  it("leaves the source map untouched", () => {
+    const source = windowed();
+    projectComparison(source);
+    expect(source.get("git.commits")?.period?.values[0]?.value).toBe(9);
+  });
 });
 
 describe("projectViews", () => {
@@ -117,6 +288,46 @@ describe("normalizeMetricResult forward-compat", () => {
     const normalized = normalizeMetricResult(withUnknown);
     expect(normalized.period).toBeDefined();
     expect(normalized.peer).toBeDefined();
+  });
+});
+
+describe("normalizeMetricResult error views", () => {
+  it("stores the error instead of warning, keeping the healthy views", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const withError = {
+        ...SUM_METRIC_FIXTURE,
+        views: [
+          ...SUM_METRIC_FIXTURE.views,
+          buildMetricErrorView({ code: "QUERY_TIMEOUT", message: "took too long" }),
+        ],
+      };
+      const normalized = normalizeMetricResult(withError);
+      expect(normalized.error).toEqual({
+        code: "QUERY_TIMEOUT",
+        message: "took too long",
+      });
+      // The failed view's slot stays unset; sibling views are unaffected.
+      expect(normalized.period).toBeDefined();
+      expect(normalized.peer).toBeDefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the first error when several views failed", () => {
+    const normalized = normalizeMetricResult({
+      ...SUM_METRIC_FIXTURE,
+      views: [
+        buildMetricErrorView({ code: "SOURCE_RELATION_MISSING", message: "first" }),
+        buildMetricErrorView({ code: "QUERY_FAILED", message: "second" }),
+      ],
+    });
+    expect(normalized.error).toEqual({
+      code: "SOURCE_RELATION_MISSING",
+      message: "first",
+    });
   });
 });
 
@@ -199,6 +410,26 @@ describe("row-limit chunking", () => {
     expect(metric.period?.values.length).toBeGreaterThan(0);
     expect(metric.peer?.values.length ?? 0).toBeGreaterThan(1);
   });
+
+  it("keeps a later chunk's error when the accumulator has none", () => {
+    const healthy = normalizeMetricResults([SUM_METRIC_FIXTURE]);
+    const failed = structuredClone(SUM_METRIC_FIXTURE);
+    failed.views = [
+      buildMetricErrorView({ code: "QUERY_FAILED", message: "chunk two failed" }),
+    ];
+
+    const merged = mergeNormalizedResults([
+      healthy,
+      normalizeMetricResults([failed]),
+    ]);
+    const metric = merged.get("ai.accepted_lines")!;
+    expect(metric.error).toEqual({
+      code: "QUERY_FAILED",
+      message: "chunk two failed",
+    });
+    // The healthy chunk's data still merges alongside the error.
+    expect(metric.period?.values.length).toBeGreaterThan(0);
+  });
 });
 
 describe("histogram view", () => {
@@ -243,6 +474,78 @@ describe("histogram view", () => {
 
   it("is not chunkable (single-entity drilldown view)", () => {
     expect(entityChunkSize(HISTOGRAM_COLLECTION)).toBeNull();
+  });
+});
+
+describe("rollup view", () => {
+  const ROLLUP_COLLECTION: MetricCollectionConfig = {
+    metrics: [
+      {
+        key: "git.prs_merged",
+        views: [
+          {
+            view: "rollup",
+            dimensions: ["repository"],
+            groupLimit: {
+              count: 10,
+              rank_by_metric: "git.prs_merged",
+              include_remainder: true,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  it("derives the rollup wire view with its group limit", () => {
+    const request = buildMetricCollectionRequest(
+      ROLLUP_COLLECTION,
+      { type: "person", ids: ["alice@example.com"] },
+      RANGE
+    );
+    expect(request.metrics[0]?.views).toEqual([
+      {
+        view: "rollup",
+        dimensions: ["repository"],
+        group_limit: {
+          count: 10,
+          rank_by_metric: "git.prs_merged",
+          include_remainder: true,
+        },
+      },
+    ]);
+  });
+
+  it("normalizes onto the rollup field", () => {
+    const normalized = normalizeMetricResult({
+      ...SUM_METRIC_FIXTURE,
+      views: [
+        {
+          view: "rollup",
+          dimensions: ["repository"],
+          values: [
+            {
+              dimensions: [
+                { key: "repository", value: "r1", label: "org/repo" },
+              ],
+              value: 12,
+              contributing_entity_count: 3,
+            },
+          ],
+        },
+      ],
+    });
+    expect(normalized.rollup?.values).toEqual([
+      {
+        dimensions: [{ key: "repository", value: "r1", label: "org/repo" }],
+        value: 12,
+        contributing_entity_count: 3,
+      },
+    ]);
+  });
+
+  it("is not chunkable — rollup rows carry no entity grain to merge on", () => {
+    expect(entityChunkSize(ROLLUP_COLLECTION)).toBeNull();
   });
 });
 
@@ -385,5 +688,137 @@ describe("entityObserved", () => {
       period: { view: "period", values: [{ entity_id: "a@x", value: 0 }] },
     } as unknown as NormalizedMetricResult;
     expect(entityObserved(noPeer, "a@x")).toBe(false);
+  });
+});
+
+describe("filterCollectionToDeclaredDimensions", () => {
+  const REPO = [{ dimension: "repository", values: ["src:acme/api"] }];
+  const declared = new Map<string, ReadonlySet<string>>([
+    ["git.commits", new Set(["repository", "hour_block"])],
+    ["git.prs_merged", new Set(["repository"])],
+    ["tasks.closed", new Set(["project"])],
+  ]);
+  const scoped: MetricCollectionConfig = {
+    metrics: [
+      { key: "git.commits", filters: REPO, views: [{ view: "period" }] },
+      { key: "tasks.closed", filters: REPO, views: [{ view: "period" }] },
+    ],
+  };
+
+  it("drops a metric narrowed by a dimension it does not declare", () => {
+    // The backend answers the whole request with 400 "metric tasks.closed does
+    // not support dimension repository", so this is the difference between a
+    // scoped screen and a blank one.
+    const out = filterCollectionToDeclaredDimensions(scoped, declared);
+    expect(out.metrics.map((m) => m.key)).toEqual(["git.commits"]);
+  });
+
+  it("keeps a metric that asks for no dimension at all", () => {
+    const plain: MetricCollectionConfig = {
+      metrics: [{ key: "tasks.closed", views: [{ view: "period" }] }],
+    };
+    expect(filterCollectionToDeclaredDimensions(plain, declared)).toBe(plain);
+  });
+
+  it("needs EVERY named dimension, not just one of them", () => {
+    const both: MetricCollectionConfig = {
+      metrics: [
+        {
+          key: "git.prs_merged",
+          filters: [
+            { dimension: "repository", values: ["src:acme/api"] },
+            { dimension: "hour_block", values: ["08"] },
+          ],
+          views: [{ view: "period" }],
+        },
+      ],
+    };
+    // git.prs_merged declares `repository` and not `hour_block`.
+    expect(filterCollectionToDeclaredDimensions(both, declared).metrics).toEqual(
+      [],
+    );
+  });
+
+  it("drops a metric the catalog does not describe at all", () => {
+    const unknown: MetricCollectionConfig = {
+      metrics: [
+        { key: "git.mystery", filters: REPO, views: [{ view: "period" }] },
+      ],
+    };
+    expect(
+      filterCollectionToDeclaredDimensions(unknown, declared).metrics,
+    ).toEqual([]);
+  });
+
+  it("judges each entry by its OWN filters, not by the first with that key", () => {
+    // Two entries can name one metric under different filters. Deciding the
+    // second by the first's filters would leave an unsupported filter in the
+    // request, which is the 400 this gate exists to prevent.
+    const twice: MetricCollectionConfig = {
+      metrics: [
+        { key: "git.commits", filters: REPO, views: [{ view: "period" }] },
+        {
+          key: "git.commits",
+          filters: [{ dimension: "team", values: ["platform"] }],
+          views: [{ view: "peer" }],
+        },
+      ],
+    };
+    const out = filterCollectionToDeclaredDimensions(twice, declared);
+    // git.commits declares `repository` and not `team`.
+    expect(out.metrics).toEqual([twice.metrics[0]]);
+  });
+
+  it("drops nothing while the catalog is unknown", () => {
+    // Null is "not answered yet" — the caller holds the request instead.
+    expect(filterCollectionToDeclaredDimensions(scoped, null)).toBe(scoped);
+  });
+
+  it("returns the SAME object when every filter is supported", () => {
+    const fine: MetricCollectionConfig = {
+      metrics: [
+        { key: "git.commits", filters: REPO, views: [{ view: "period" }] },
+      ],
+    };
+    expect(filterCollectionToDeclaredDimensions(fine, declared)).toBe(fine);
+  });
+});
+
+describe("filterCollectionToAvailable", () => {
+  const collection: MetricCollectionConfig = {
+    metrics: [
+      { key: "git.commits", views: [{ view: "period" }] },
+      { key: "tasks.closed_non_bug", views: [{ view: "period" }] },
+      { key: "ai.cost", views: [{ view: "period" }] },
+    ],
+  };
+
+  it("drops a key the catalog does not offer, keeping the rest", () => {
+    // The backend rejects the WHOLE request over one unknown key, so this is
+    // the difference between a blank screen and one metric with no data.
+    const out = filterCollectionToAvailable(
+      collection,
+      new Set(["git.commits", "ai.cost"]),
+    );
+    expect(out.metrics.map((m) => m.key)).toEqual(["git.commits", "ai.cost"]);
+  });
+
+  it("returns the SAME object when every key is available", () => {
+    // Identity matters: the config rides in the react-query key, and a fresh
+    // object per render would re-key every metric query.
+    const all = new Set(["git.commits", "tasks.closed_non_bug", "ai.cost"]);
+    expect(filterCollectionToAvailable(collection, all)).toBe(collection);
+  });
+
+  it("drops nothing while the catalog is unknown", () => {
+    // Null is "not answered yet", not "offers nothing" — shrinking the request
+    // on a pending catalog would hide metrics that do exist.
+    expect(filterCollectionToAvailable(collection, null)).toBe(collection);
+  });
+
+  it("can empty the collection when the catalog offers none of it", () => {
+    // The caller disables the query on an empty metric list; an empty
+    // `metrics: []` is itself a 400.
+    expect(filterCollectionToAvailable(collection, new Set()).metrics).toEqual([]);
   });
 });

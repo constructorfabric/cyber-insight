@@ -14,14 +14,30 @@ export type MetricResultViewKind =
   | "timeseries"
   | "peer"
   | "breakdown"
+  | "rollup"
   | "histogram";
 export type MetricBucket = "day" | "week" | "month";
-export type MetricComputation = "sum" | "ratio" | "median" | "distinct_count";
-export type MetricEntityType = "person";
+export type MetricComputation =
+  | "sum"
+  | "ratio"
+  | "median"
+  | "percentile"
+  | "stddev"
+  | "distinct_count";
+export type MetricEntityType = "person" | "tenant";
+export type MetricResultsEntity =
+  | { type: "person"; ids: string[] }
+  | { type: "tenant" };
 
 export interface MetricResultsRequest {
-  entity: { type: MetricEntityType; ids: string[] };
+  entity: MetricResultsEntity;
   period: { from: string; to: string };
+  /**
+   * A second window answered in the same response — what a delta is measured
+   * against. The `period` and `breakdown` views carry it; every other view
+   * answers over `period`.
+   */
+  compare_to?: { from: string; to: string };
   metrics: MetricRequest[];
 }
 
@@ -42,7 +58,7 @@ export interface MetricDrilldownCapability {
 
 export interface MetricCanonicalSelection {
   metric_key: string;
-  entity: { type: MetricEntityType; ids: string[] };
+  entity: MetricResultsEntity;
   period: { from: string; to: string };
   filters: MetricDimensionFilter[];
 }
@@ -66,18 +82,26 @@ export type MetricViewRequest =
       view: "breakdown";
       dimensions: string[];
     }
+  | {
+      view: "rollup";
+      dimensions: string[];
+      group_limit?: MetricGroupLimit;
+    }
   | { view: "histogram" };
 
 export interface MetricDimension {
   key: string;
   value: string;
   label?: string;
+  href?: string;
 }
 
 export type MetricResult =
   | SumMetricResult
   | RatioMetricResult
   | MedianMetricResult
+  | PercentileMetricResult
+  | StddevMetricResult
   | DistinctCountMetricResult;
 
 interface MetricResultBase {
@@ -108,6 +132,16 @@ export interface MedianMetricResult extends MetricResultBase {
   computation: "median";
 }
 
+export interface PercentileMetricResult extends MetricResultBase {
+  computation: "percentile";
+  /** The quantile as a probability, e.g. 0.75 — stored in the definition's scale. */
+  q: number;
+}
+
+export interface StddevMetricResult extends MetricResultBase {
+  computation: "stddev";
+}
+
 interface DistinctCountMetricResult extends MetricResultBase {
   computation: "distinct_count";
 }
@@ -117,11 +151,18 @@ export type MetricResultView =
   | TimeseriesView
   | PeerView
   | BreakdownView
-  | HistogramView;
+  | RollupView
+  | HistogramView
+  | MetricErrorView;
 
 export interface PeriodView {
   view: "period";
-  values: Array<{ entity_id: string; value: number | null }>;
+  values: Array<{
+    entity_id: string;
+    value: number | null;
+    /** The same reading over `compare_to`; absent when none was asked for. */
+    compare_to?: number | null;
+  }>;
 }
 
 export interface TimeseriesView {
@@ -134,7 +175,13 @@ export interface TimeseriesView {
     rank?: number;
     remainder?: boolean;
     label?: string;
-    points: Array<{ bucket_start: string; value: number | null }>;
+    points: Array<{
+    bucket_start: string;
+    value: number | null;
+    /** Both sides of a ratio, for the bucket. Ratio metrics only. */
+    numerator?: number | null;
+    denominator?: number | null;
+  }>;
   }>;
 }
 
@@ -152,6 +199,16 @@ export interface PeerView {
   }>;
 }
 
+export interface BreakdownComparisonValue {
+  value: number | null;
+  /**
+   * Whether a standalone request over the comparison window would have
+   * returned this group at all. Independent of `value`: a ratio over a group
+   * that IS in the window reads null whenever its denominator is zero.
+   */
+  present: boolean;
+}
+
 export interface BreakdownView {
   view: "breakdown";
   dimensions: string[];
@@ -159,6 +216,23 @@ export interface BreakdownView {
     entity_id: string;
     dimensions: MetricDimension[];
     value: number | null;
+    /** Whether the group has observations inside the primary period. */
+    present?: boolean;
+    /** This group's reading over `compare_to`. */
+    compare_to?: BreakdownComparisonValue;
+  }>;
+}
+
+export interface RollupView {
+  view: "rollup";
+  dimensions: string[];
+  values: Array<{
+    dimensions: MetricDimension[];
+    value: number | null;
+    contributing_entity_count: number;
+    rank?: number;
+    remainder?: boolean;
+    label?: string;
   }>;
 }
 
@@ -170,10 +244,33 @@ interface HistogramBin {
 
 export interface HistogramView {
   view: "histogram";
+  /** Set only on the pooled shape — the dimensions the request asked to bin by. */
+  dimensions?: string[];
   values: Array<{
-    entity_id: string;
+    /** Per-entity shape only; a pooled row is keyed by `dimensions` instead. */
+    entity_id?: string;
+    dimensions?: MetricDimension[];
     bins: HistogramBin[];
   }>;
+}
+
+export type MetricErrorCode =
+  | "SOURCE_RELATION_MISSING"
+  | "RESOURCE_EXHAUSTED"
+  | "QUERY_TIMEOUT"
+  | "RESULT_PARSE_FAILED"
+  | "QUERY_FAILED";
+
+/**
+ * A view whose computation failed. The request itself still answers 200:
+ * the failure arrives in the failed view's requested slot, and other views
+ * and metrics are unaffected. `message` is safe to render — admins get the
+ * underlying error text, everyone else a generic one.
+ */
+export interface MetricErrorView {
+  view: "error";
+  code: MetricErrorCode;
+  message: string;
 }
 
 export interface MetricResultsResponse {
@@ -181,13 +278,14 @@ export interface MetricResultsResponse {
 }
 
 export async function queryMetricResults(
-  body: MetricResultsRequest
+  body: MetricResultsRequest,
+  signal?: AbortSignal
 ): Promise<MetricResultsResponse> {
   // Refuse a request the backend is guaranteed to reject (400 invalid_argument,
   // "entity.ids must not be empty"). Callers are expected to keep the query
   // disabled until they have entities; failing here names the real cause
   // instead of surfacing a server validation error in the network log.
-  if (body.entity.ids.length === 0) {
+  if (body.entity.type === "person" && body.entity.ids.length === 0) {
     throw new Error(
       "metric-results: refusing to request an empty entity list — the caller should stay disabled until the roster resolves",
     );
@@ -196,6 +294,7 @@ export async function queryMetricResults(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);

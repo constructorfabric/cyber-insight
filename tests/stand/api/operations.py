@@ -2,10 +2,9 @@
 
 Read from the route tables in
 `src/backend/services/{analytics,identity-resolution}/src/api/`, not from the
-committed OpenAPI documents — the identity one is still the .NET contract and
-is stale in both directions (it declares `/v1/persons/{email}`, which identity
-answers 404 for and analytics actually serves; it omits both persons-sync
-operations; and every operation in it lists only `200`).
+committed OpenAPI documents: the catalogue must list what the gateway ROUTES,
+which includes the `/internal/*` S2S pair that is deliberately outside the
+generated document.
 
 Two consumers, and the reason this is one list rather than two:
 
@@ -32,6 +31,16 @@ from insight_stand import analytics_path, identity_path
 # resolved — they only have to be well-formed enough to route.
 SOME_ID: Final[str] = "01900000-0000-7000-8000-000000000000"
 
+#: Stand-in for a source-native `{account_id}` path segment — an arbitrary
+#: string, not a UUID, so it needs its own recognisable value.
+SOME_ACCOUNT_ID: Final[str] = "stand-in-account"
+
+#: Stand-in for `{connector}`, which is a hyphenated descriptor name. Hyphenated
+#: on purpose: the route's own parser accepts lowercase letters, digits and
+#: hyphens and refuses anything else, so a stand-in outside that shape would be
+#: refused before the gate under test was reached.
+SOME_CONNECTOR: Final[str] = "stand-in-connector"
+
 #: Stand-in for `{metric_key}`, which is a dotted `family.name` string rather
 #: than a UUID. Kept a DOTTED key on purpose: the literal `export`/`import`
 #: segments of the sibling routes must not collide with it, so the template
@@ -45,6 +54,8 @@ SOME_METRIC_KEY: Final[str] = "scratch.probe"
 _PARAMETERS: Final[dict[str, str]] = {
     SOME_ID: "{id}",
     SOME_METRIC_KEY: "{metric_key}",
+    SOME_ACCOUNT_ID: "{account_id}",
+    SOME_CONNECTOR: "{connector}",
 }
 
 
@@ -88,7 +99,7 @@ def _i(method: str, suffix: str) -> Operation:
     return Operation(method=method, path=identity_path(suffix), service="identity")
 
 
-#: analytics — 17 operations.
+#: analytics — 26 operations.
 ANALYTICS_OPERATIONS: Final[tuple[Operation, ...]] = (
     _a("GET", "/v1/queries"),
     _a("POST", "/v1/queries"),
@@ -98,6 +109,8 @@ ANALYTICS_OPERATIONS: Final[tuple[Operation, ...]] = (
     _a("POST", f"/v1/queries/{SOME_ID}/run"),
     _a("GET", "/v1/metric-definitions"),
     _a("POST", "/v1/metric-results"),
+    _a("POST", "/v1/reports/preview"),
+    _a("POST", "/v1/reports/export"),
     _a("POST", "/v1/metric-drilldown"),
     # The only operation here that does not answer JSON — it serves CSV or
     # XLSX. It is catalogued all the same: the edge refuses an anonymous caller
@@ -114,13 +127,48 @@ ANALYTICS_OPERATIONS: Final[tuple[Operation, ...]] = (
     _a("GET", f"/v1/metrics/{SOME_METRIC_KEY}"),
     _a("PUT", f"/v1/metrics/{SOME_METRIC_KEY}"),
     _a("DELETE", f"/v1/metrics/{SOME_METRIC_KEY}"),
+    # Usage monitoring. All three are `.authenticated()` at the edge; the
+    # summary's admin gate lives inside the handler, so it is invisible here and
+    # asserted in test_usage.py instead.
+    _a("POST", "/v1/usage/events"),
+    _a("GET", "/v1/usage/config"),
+    _a("GET", "/v1/usage/summary"),
+    # Ingestion intensity (ops). `.authenticated()` at the edge; the admin gate
+    # is inside the handler, so it is invisible here and asserted in
+    # test_ingestion.py.
+    _a("GET", "/v1/ingestion/intensity"),
+    # Product feedback. The listing's admin gate is inside the handler, so it is
+    # invisible here and asserted in test_feedback.py.
+    _a("POST", "/v1/feedback"),
+    _a("GET", "/v1/feedback"),
+    # Connector health. Both are `.authenticated()` at the edge with the
+    # operator gate inside the handler, so the refusal is invisible here and
+    # asserted in test_connector_health.py.
+    _a("GET", "/v1/connector-health"),
+    _a("GET", f"/v1/connector-health/{SOME_CONNECTOR}/syncs"),
 )
 
-#: identity-resolution — 17 operations. `/health` and `/healthz` are the host
+#: identity-resolution — 31 operations. `/health` and `/healthz` are the host
 #: router's, not the product API, and are deliberately absent: the real probes
 #: address the pod directly rather than passing the gateway.
 IDENTITY_OPERATIONS: Final[tuple[Operation, ...]] = (
     _i("POST", "/v1/profiles"),
+    _i("POST", "/v1/profiles/batch"),
+    _i("GET", "/v1/me"),
+    _i("GET", "/v1/people"),
+    _i("GET", f"/v1/people/{SOME_ID}"),
+    _i("GET", "/v1/persons"),
+    # The operator correction surface. `source` stays the literal `github` in
+    # the accounts read: it is a connector type, not an id, and the tests
+    # address the same literal — a stand-in would fold a segment nothing varies.
+    _i("GET", "/v1/resolution/attention"),
+    _i("GET", "/v1/resolution/accounts"),
+    _i("GET", f"/v1/resolution/accounts/github/{SOME_ID}/{SOME_ACCOUNT_ID}"),
+    _i("GET", f"/v1/resolution/persons/{SOME_ID}/accounts"),
+    _i("POST", "/v1/resolution/bind"),
+    _i("POST", "/v1/resolution/merge"),
+    _i("POST", "/v1/resolution/detach"),
+    _i("POST", "/v1/resolution/exclude"),
     _i("GET", "/v1/subchart"),
     _i("GET", f"/v1/subchart/{SOME_ID}"),
     _i("GET", "/v1/persons-seed"),
@@ -136,22 +184,47 @@ IDENTITY_OPERATIONS: Final[tuple[Operation, ...]] = (
     _i("GET", "/v1/visibility"),
     _i("POST", "/v1/visibility"),
     _i("DELETE", f"/v1/visibility/{SOME_ID}"),
-    # `.authenticated()`, not admin-gated — and the substring test below does not
-    # catch it, which is correct: `/visible-persons` is not `/visibility`.
+    # `.authenticated()`, not admin-gated — deliberately absent from
+    # `_ADMIN_GATED_SUFFIXES` below. The GET enumerates the same visible set the
+    # POST filters against, under the same rule.
+    _i("GET", "/v1/visible-persons"),
     _i("POST", "/v1/visible-persons"),
 )
 
 ALL_OPERATIONS: Final[tuple[Operation, ...]] = ANALYTICS_OPERATIONS + IDENTITY_OPERATIONS
 
-#: The 13 identity operations behind `require_admin`, which resolves the caller
+#: Suffixes of the identity operations behind `require_admin`, enumerated
+#: exactly — a substring rule would silently classify future routes (and
+#: `/visible-persons` is one hyphen away from a false match today).
+_ADMIN_GATED_SUFFIXES: Final[tuple[str, ...]] = (
+    "/v1/persons",
+    "/v1/resolution/attention",
+    "/v1/resolution/accounts",
+    f"/v1/resolution/accounts/github/{SOME_ID}/{SOME_ACCOUNT_ID}",
+    f"/v1/resolution/persons/{SOME_ID}/accounts",
+    "/v1/resolution/bind",
+    "/v1/resolution/merge",
+    "/v1/resolution/detach",
+    "/v1/resolution/exclude",
+    "/v1/persons-seed",
+    f"/v1/persons-seed/{SOME_ID}",
+    "/v1/persons-sync",
+    f"/v1/persons-sync/{SOME_ID}",
+    "/v1/roles",
+    f"/v1/roles/{SOME_ID}",
+    "/v1/person-roles",
+    f"/v1/person-roles/{SOME_ID}",
+    "/v1/visibility",
+    f"/v1/visibility/{SOME_ID}",
+)
+
+#: The 22 identity operations behind `require_admin`, which resolves the caller
 #: from the gateway JWT and requires an active `admin` row in `person_roles` —
-#: it never reads the `insight-admin` REALM role. The seed grants nobody that
-#: row, so every persona is refused; see out/endpoint-coverage-preconditions.md.
+#: it never reads the `insight-admin` REALM role. The seed grants that row to
+#: exactly one persona, the admin operator; every other persona is refused.
+#: See out/endpoint-coverage-preconditions.md.
 ADMIN_GATED: Final[frozenset[str]] = frozenset(
     op.label
     for op in IDENTITY_OPERATIONS
-    if any(
-        seg in op.path
-        for seg in ("/persons-seed", "/persons-sync", "/roles", "/person-roles", "/visibility")
-    )
+    if op.path in {identity_path(suffix) for suffix in _ADMIN_GATED_SUFFIXES}
 )

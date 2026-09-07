@@ -28,11 +28,7 @@ SELECT
     COALESCE(p.repo_slug, '') AS repo_slug,
     COALESCE(fc.commit_sha, '') AS commit_hash,
     COALESCE(fc.new_path, fc.old_path, '') AS file_path,
-    if(
-        length(splitByChar('.', COALESCE(fc.new_path, fc.old_path, ''))) > 1,
-        arrayElement(splitByChar('.', COALESCE(fc.new_path, fc.old_path, '')), -1),
-        ''
-    ) AS file_extension,
+    {{ git_file_extension("COALESCE(fc.new_path, fc.old_path, '')") }} AS file_extension,
     multiIf(
         fc.new_file = true, 'added',
         fc.deleted_file = true, 'deleted',
@@ -44,7 +40,12 @@ SELECT
     '' AS source_type,
     'insight_gitlab' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version,
-    fc._airbyte_extracted_at
+    fc._airbyte_extracted_at,
+    -- GitLab's diff API reports no object id for either side of a change; the
+    -- columns keep the union positional until the connector reads through the
+    -- git proxy.
+    CAST(NULL AS Nullable(String)) AS pre_image_oid,
+    CAST(NULL AS Nullable(String)) AS post_image_oid
 FROM {{ source('bronze_gitlab', 'commit_file_changes') }} AS fc
 LEFT JOIN proj AS p
     ON p.project_id = fc.project_id

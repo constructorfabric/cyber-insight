@@ -8,7 +8,10 @@ import {
   DollarSign,
   FileText,
   Filter,
+  Database,
   Fingerprint,
+  Gauge,
+  FlaskConical,
   GitPullRequest,
   LayoutGrid,
   Layers,
@@ -16,16 +19,25 @@ import {
   MessageSquare,
   Plus,
   Radar,
+  ScanEye,
   Server,
   Settings2,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Ticket,
   TrendingUp,
   User,
   Users,
   type LucideIcon,
 } from "lucide-react";
+
+import {
+  itemHidden,
+  itemPlanned,
+  navPolicy,
+  type InstanceNavPolicy,
+} from "./nav-policy";
 
 
 /**
@@ -41,32 +53,13 @@ import {
 
 export type ZoneKind = "person" | "directions" | "theme" | "manage" | "people";
 
-/**
- * Why a navigation entry has nothing behind it. Three genuinely different
- * causes that must not look alike to the reader:
- *
- * - **absent** (the default, no marker) — the surface is built and backed by
- *   data. If it still renders empty, that is a per-tenant data gap and the
- *   view says which source is missing. Always visible: the gap IS the signal.
- * - **`planned`** — the product does not model this yet (a metric family is
- *   not in the semantic layer). Identical for every tenant. Kept visible but
- *   demoted, because it tells a reader the domain exists in our model.
- * - **`unbuilt`** — WE have not built the screen yet, though the data path
- *   exists. This is our backlog, not roadmap communication: hidden unless the
- *   viewer opts into seeing planned work.
- *
- * Rendering a tenant data gap and our own unfinished UI the same way is what
- * makes both meaningless, which is why the distinction is in the model rather
- * than in prose.
- */
-export type Readiness = "planned" | "unbuilt";
+export type Readiness = "planned";
 
 export interface Zone {
   id: string;
   label: string;
   icon: LucideIcon;
   kind: ZoneKind;
-  readiness?: Readiness;
 }
 
 export const ZONES: readonly Zone[] = [
@@ -75,13 +68,23 @@ export const ZONES: readonly Zone[] = [
   { id: "person", label: "Person", icon: User, kind: "person" },
   { id: "people", label: "People", icon: Users, kind: "people" },
   { id: "aicost", label: "AI & Cost", icon: DollarSign, kind: "theme" },
-  // Pure scaffolds: no view, no data path. Our backlog, not a tenant gap.
-  { id: "scorecard", label: "Scorecard", icon: BarChart3, kind: "theme", readiness: "unbuilt" },
-  { id: "reports", label: "Reports", icon: FileText, kind: "theme", readiness: "unbuilt" },
+  { id: "scorecard", label: "Scorecard", icon: BarChart3, kind: "theme" },
+  { id: "reports", label: "Reports", icon: FileText, kind: "theme" },
   { id: "manage", label: "Manage", icon: Settings2, kind: "manage" },
 ];
 
 /** The zone a URL names, or undefined for an id no longer in the rail. */
+export function lensSlug(lens: string): string {
+  return lens
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function lensBySlug(direction: Direction, slug: string): string | undefined {
+  return direction.lenses.find((lens) => lensSlug(lens) === slug);
+}
+
 export function zoneById(id: string | null): Zone | undefined {
   if (!id) return undefined;
   return ZONES.find((z) => z.id === id);
@@ -112,6 +115,7 @@ export const DIRECTIONS: readonly Direction[] = [
       "Activity",
       "Flow",
       "Quality",
+      "CI",
       "Continuity",
       "Repositories",
       "Elements",
@@ -154,8 +158,18 @@ export interface PaneItem {
   label: string;
   icon: LucideIcon;
   badge?: { text: string; tone: "warn" | "new" | "error" };
-  /** See {@link Readiness}. Absent = built and data-backed. */
   readiness?: Readiness;
+  /**
+   * Rendered only for viewers holding the active `admin` identity role
+   * (`useIsAdmin`) — a UI courtesy over the server-side gate, which refuses
+   * regardless of what the frontend draws.
+   */
+  adminOnly?: boolean;
+  /**
+   * Rendered only when the previews gate passes (`usePreviewsGate`) — the
+   * same courtesy-over-server-gate doctrine as `adminOnly`.
+   */
+  previewsGated?: boolean;
 }
 
 export interface PaneGroup {
@@ -167,10 +181,10 @@ export interface PaneGroup {
 export const PLANNED_GROUP_LABEL = "Planned";
 
 /**
- * Split entries into what a reader should always see and what belongs under
- * the demoted "Planned" group. `unbuilt` entries drop out entirely unless the
- * viewer opted in — showing our own unfinished screens next to honest tenant
- * data gaps teaches people that empty means nothing in particular.
+ * Split entries into the views a reader can open and the marked ones that
+ * belong under the demoted "Planned" group. Nothing marked survives
+ * `showPlanned: false` — a reader who turned planned sections off is asking
+ * for navigation that only lists what renders.
  */
 export function partitionByReadiness<T extends { readiness?: Readiness }>(
   entries: readonly T[],
@@ -180,11 +194,32 @@ export function partitionByReadiness<T extends { readiness?: Readiness }>(
   const planned: T[] = [];
   for (const e of entries) {
     if (e.readiness == null) live.push(e);
-    // `planned` is roadmap the reader benefits from seeing; `unbuilt` is ours
-    // and only appears when the viewer asked for planned work.
-    else if (e.readiness === "planned" || showPlanned) planned.push(e);
+    else if (showPlanned) planned.push(e);
   }
   return { live, planned };
+}
+
+function withConfigReadiness(
+  zoneId: string,
+  item: PaneItem,
+  policy: InstanceNavPolicy,
+): PaneItem {
+  if (!itemPlanned(zoneId, item.id, policy)) return item;
+  return { ...item, readiness: "planned" };
+}
+
+export function zoneSections(
+  zoneId: string,
+  policy: InstanceNavPolicy = navPolicy(),
+): readonly PaneGroup[] {
+  return (ZONE_SECTIONS[zoneId] ?? [])
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter((item) => !itemHidden(zoneId, item.id, policy))
+        .map((item) => withConfigReadiness(zoneId, item, policy)),
+    }))
+    .filter((group) => group.items.length > 0);
 }
 
 export const ZONE_SECTIONS: Record<string, readonly PaneGroup[]> = {
@@ -196,18 +231,11 @@ export const ZONE_SECTIONS: Record<string, readonly PaneGroup[]> = {
         { id: "by-direction", label: "By direction", icon: Layers },
         { id: "trend", label: "Trend", icon: TrendingUp },
         { id: "attention", label: "Attention needed", icon: AlertTriangle },
-        { id: "health", label: "Health radar", icon: Radar },
+        { id: "health", label: "Data coverage", icon: ScanEye },
         { id: "contribution", label: "Contribution breakdown", icon: Users },
       ],
     },
   ],
-  // Lean, data-honest menu: Overview is the live dashboard (adoption + by-tool
-  // + cost-by-person in one scroll); the second group is capabilities that need
-  // data we don't ingest yet (kept visible as honest ComingSoon, not padded out
-  // into a dozen dead tabs).
-  // Full intended IA. Overview / Adoption funnel / By unit are backed by real
-  // data; the rest render an honest ComingSoon (see AiCostView.COMING_SOON) —
-  // the menu shows the roadmap, but nothing fabricates data it doesn't have.
   aicost: [
     {
       items: [{ id: "overview", label: "Overview", icon: LayoutGrid }],
@@ -217,24 +245,23 @@ export const ZONE_SECTIONS: Record<string, readonly PaneGroup[]> = {
       items: [
         { id: "adoption-funnel", label: "Adoption funnel", icon: Activity },
         { id: "by-unit-role", label: "By unit / role", icon: Layers },
-        { id: "per-tool", label: "Per-tool", icon: Sparkles, readiness: "unbuilt" },
-        { id: "autofix", label: "Autofix", icon: Activity, readiness: "planned" },
-        { id: "ai-audit", label: "AI Audit", icon: Radar, readiness: "planned" },
+        { id: "per-tool", label: "Per-tool", icon: Sparkles },
+        { id: "autofix", label: "Autofix", icon: Activity },
+        { id: "ai-audit", label: "AI Audit", icon: Radar },
       ],
     },
     {
       label: "Cost",
       items: [
-        { id: "spend-by-tool", label: "Spend by tool", icon: DollarSign, readiness: "unbuilt" },
-        { id: "cost-by-unit", label: "Cost by unit / user", icon: Users, readiness: "unbuilt" },
-        { id: "idle-seats", label: "Idle seats", icon: Clock, readiness: "planned" },
-        { id: "credits", label: "Credits burn-down", icon: TrendingUp, readiness: "planned" },
+        { id: "spend-by-tool", label: "Spend by tool", icon: DollarSign },
+        { id: "cost-by-unit", label: "Cost by unit / user", icon: Users },
+        { id: "idle-seats", label: "Idle seats", icon: Clock },
+        { id: "credits", label: "Credits burn-down", icon: TrendingUp },
         {
           id: "ai-pricing",
           label: "AI pricing",
           icon: DollarSign,
           badge: { text: "ai.cost", tone: "error" },
-          readiness: "planned",
         },
       ],
     },
@@ -242,26 +269,26 @@ export const ZONE_SECTIONS: Record<string, readonly PaneGroup[]> = {
   scorecard: [
     {
       items: [
-        { id: "fixed", label: "Fixed scorecard", icon: LayoutGrid, readiness: "unbuilt" },
-        { id: "detailed", label: "Detailed (drill)", icon: Layers, readiness: "unbuilt" },
-        { id: "quarterly", label: "Quarterly QoQ", icon: TrendingUp, readiness: "unbuilt" },
+        { id: "fixed", label: "Fixed scorecard", icon: LayoutGrid },
+        { id: "detailed", label: "Detailed breakdown", icon: Layers },
+        { id: "quarterly", label: "Quarter over quarter", icon: TrendingUp },
       ],
     },
   ],
   reports: [
     {
-      label: "Generated (diagnosis)",
+      label: "Generated reports",
       items: [
-        { id: "delivery-trend", label: "Delivery trend v3", icon: FileText, readiness: "unbuilt" },
-        { id: "ttm", label: "TTM report", icon: FileText, readiness: "unbuilt" },
+        { id: "delivery-trend", label: "Delivery trend", icon: FileText },
+        { id: "ttm", label: "Trailing twelve months", icon: FileText },
       ],
     },
     {
       label: "Custom",
       items: [
-        { id: "report-builder", label: "Report builder", icon: LayoutGrid, readiness: "unbuilt" },
-        { id: "dashboards", label: "Saved dashboards", icon: Layers, readiness: "unbuilt" },
-        { id: "new-report", label: "New report", icon: Plus, readiness: "unbuilt" },
+        { id: "report-builder", label: "Report builder", icon: LayoutGrid },
+        { id: "dashboards", label: "Saved dashboards", icon: Layers },
+        { id: "new-report", label: "New report", icon: Plus },
       ],
     },
   ],
@@ -273,23 +300,94 @@ export const ZONE_SECTIONS: Record<string, readonly PaneGroup[]> = {
 // zone (reached by drilling into any name); listing it again would duplicate it.
 export const PEOPLE_ITEMS: readonly PaneItem[] = [
   { id: "roster", label: "People (roster)", icon: Users },
-  { id: "median-by-role", label: "Median by Role", icon: BarChart3, readiness: "planned" },
+  { id: "median-by-role", label: "Median by Role", icon: BarChart3 },
   { id: "employees", label: "Employees", icon: Fingerprint },
 ];
 
+/**
+ * The same two views under names a flat organisation can use: there is no
+ * employees-versus-roster distinction to draw, and no job titles to cut a
+ * median by, so that entry is absent rather than empty.
+ *
+ * INVARIANT: the ids match {@link PEOPLE_ITEMS} — the pane routes on them, so a
+ * new People view has to be named for both shapes rather than one.
+ */
+const FLAT_PEOPLE_ITEMS: readonly PaneItem[] = [
+  { id: "roster", label: "Overview", icon: LayoutGrid },
+  { id: "employees", label: "Roster", icon: Users },
+];
+
+export function peopleItemsFor(
+  isFlat: boolean,
+  policy: InstanceNavPolicy = navPolicy(),
+): readonly PaneItem[] {
+  const items = isFlat ? FLAT_PEOPLE_ITEMS : PEOPLE_ITEMS;
+  return items
+    .filter((item) => !itemHidden("people", item.id, policy))
+    .map((item) => withConfigReadiness("people", item, policy));
+}
+
 /* ── Manage zone ─────────────────────────────────────────────────────── */
+
+/** The viewer facts that decide which gated Manage surfaces exist for them. */
+export interface ManageGates {
+  isAdmin: boolean;
+  canManagePreviews: boolean;
+}
+
+/** The Manage pane for one viewer: gated surfaces drop for everyone else. */
+export function manageItemsFor(
+  gates: ManageGates,
+  policy: InstanceNavPolicy = navPolicy(),
+): readonly PaneItem[] {
+  return MANAGE_ITEMS.filter(
+    (item) =>
+      (!item.adminOnly || gates.isAdmin) &&
+      (!item.previewsGated || gates.canManagePreviews) &&
+      !itemHidden("manage", item.id, policy),
+  ).map((item) => withConfigReadiness("manage", item, policy));
+}
 
 export const MANAGE_ITEMS: readonly PaneItem[] = [
   { id: "metric-catalog", label: "Metric catalog", icon: LayoutGrid },
-  { id: "identities", label: "Identities", icon: Fingerprint, readiness: "unbuilt" },
-  { id: "taxonomy", label: "Roles & taxonomy", icon: Boxes, readiness: "unbuilt" },
-  { id: "exclusions", label: "Data exclusions", icon: Filter, readiness: "unbuilt" },
-  { id: "snapshots", label: "Org snapshots", icon: Clock, readiness: "unbuilt" },
-  { id: "group-mgmt", label: "Group management", icon: Users, readiness: "unbuilt" },
-  { id: "scorecard-mgmt", label: "Scorecard management", icon: BarChart3, readiness: "unbuilt" },
-  { id: "data-health", label: "Data health", icon: ShieldCheck },
-  { id: "platform-usage", label: "Platform usage", icon: Activity, readiness: "unbuilt" },
-  { id: "mcp", label: "MCP servers", icon: Server, readiness: "unbuilt" },
-  { id: "config", label: "Config & setup", icon: Settings2, readiness: "unbuilt" },
-  { id: "whats-new", label: "What's new", icon: Megaphone, readiness: "unbuilt" },
+  { id: "custom-metrics", label: "Custom metrics", icon: Gauge },
+  { id: "query-console", label: "Query console", icon: Terminal },
+  { id: "identities", label: "Identities", icon: Fingerprint, adminOnly: true },
+  { id: "taxonomy", label: "Roles & taxonomy", icon: Boxes },
+  { id: "exclusions", label: "Data exclusions", icon: Filter },
+  { id: "snapshots", label: "Org snapshots", icon: Clock },
+  { id: "group-mgmt", label: "Group management", icon: Users },
+  { id: "scorecard-mgmt", label: "Scorecard management", icon: BarChart3 },
+  { id: "connector-health", label: "Connector health", icon: ShieldCheck, adminOnly: true },
+  { id: "platform-usage", label: "Platform usage", icon: Activity, adminOnly: true },
+  { id: "ingestion", label: "Ingestion", icon: Database, adminOnly: true },
+  { id: "previews", label: "Previews", icon: FlaskConical, previewsGated: true },
+  { id: "mcp", label: "MCP servers", icon: Server },
+  { id: "config", label: "Config & setup", icon: Settings2 },
+  { id: "ai-assistant", label: "AI assistant", icon: Sparkles },
+  { id: "whats-new", label: "What's new", icon: Megaphone },
 ];
+
+/* ── Zone item resolution ────────────────────────────────────────────── */
+
+export function zoneItems(zoneId: string): readonly PaneItem[] {
+  if (zoneId === "people") return PEOPLE_ITEMS;
+  if (zoneId === "manage") return MANAGE_ITEMS;
+  return (ZONE_SECTIONS[zoneId] ?? []).flatMap((g) => g.items);
+}
+
+export function defaultZoneItem(zoneId: string): string | null {
+  return zoneItems(zoneId)[0]?.id ?? null;
+}
+
+export function resolveZoneItem(
+  zoneId: string,
+  item: string | null,
+  policy: InstanceNavPolicy = navPolicy(),
+): string | null {
+  const shown = (i: PaneItem) => !itemHidden(zoneId, i.id, policy);
+  const live = (i: PaneItem) => !itemPlanned(zoneId, i.id, policy);
+  const items = zoneItems(zoneId);
+  if (item && items.some((i) => i.id === item && shown(i))) return item;
+  return items.find((i) => live(i) && shown(i))?.id ?? null;
+}

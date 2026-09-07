@@ -37,16 +37,18 @@ pub(crate) const HISTOGRAM_BINS: usize = 10;
 /// `entity_type + entity_id` is the one polymorphic contract, and a person's
 /// ids are UUIDs — a variant carries its own id shape instead of a generic
 /// type string sitting next to person-only fields. A first non-person entity
-/// type adds a variant here AND its own authorization rule in the gate.
+/// type has its own variant and authorization rule in the gate.
 #[derive(Debug, Clone)]
 pub enum ValidatedEntitySelection {
     Person { ids: Vec<Uuid> },
+    Tenant { id: Uuid },
 }
 
 impl ValidatedEntitySelection {
     pub fn entity_type(&self) -> &'static str {
         match self {
             Self::Person { .. } => "person",
+            Self::Tenant { .. } => "tenant",
         }
     }
 
@@ -55,20 +57,45 @@ impl ValidatedEntitySelection {
     pub fn entity_ids(&self) -> Vec<String> {
         match self {
             Self::Person { ids } => ids.iter().map(Uuid::to_string).collect(),
+            Self::Tenant { id } => vec![id.to_string()],
         }
     }
 
-    pub fn person_ids(&self) -> &[Uuid] {
+    pub fn person_ids(&self) -> Option<&[Uuid]> {
         match self {
-            Self::Person { ids } => ids,
+            Self::Person { ids } => Some(ids),
+            Self::Tenant { .. } => None,
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
             Self::Person { ids } => ids.len(),
+            Self::Tenant { .. } => 1,
         }
     }
+
+    pub fn is_tenant(&self) -> bool {
+        match self {
+            Self::Person { .. } => false,
+            Self::Tenant { .. } => true,
+        }
+    }
+
+    pub fn canonicalize_entity_id(&self, observed: String) -> String {
+        match self {
+            Self::Person { .. } => observed,
+            Self::Tenant { id } => id.to_string(),
+        }
+    }
+}
+
+/// One closed day range. `from <= to` holds for every value the validator
+/// admits, so the compiler binds a window without re-checking it.
+#[derive(Debug, Clone, Copy)]
+pub struct DateWindow {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
 }
 
 #[derive(Debug)]
@@ -77,6 +104,10 @@ pub struct ValidatedMetricResultsRequest {
     pub entity: ValidatedEntitySelection,
     pub from: NaiveDate,
     pub to: NaiveDate,
+    /// The comparison window the `period` and `breakdown` views carry alongside
+    /// `from..to`. `None` for a single-window request, and the compiler emits
+    /// byte-identical SQL in that case.
+    pub compare_to: Option<DateWindow>,
     pub metrics: Vec<ValidatedMetricRequest>,
     /// Whether the compiler injects the per-tenant observation filter (#1967).
     /// Set from the `metric_catalog.enforce_tenant_scope` config key by the handler; the
@@ -118,13 +149,22 @@ pub enum ValidatedMetricView {
     Breakdown {
         dimensions: Vec<String>,
     },
-    Histogram,
+    Rollup {
+        dimensions: Vec<String>,
+        group_limit: Option<ValidatedGroupLimit>,
+    },
+    Histogram {
+        /// Empty: per-entity bins. Non-empty: bins pooled per dimension tuple
+        /// over all selected entities' events (no entity grain), like rollup.
+        dimensions: Vec<String>,
+    },
 }
 
 struct RequestShape {
     entity: ValidatedEntitySelection,
     from: NaiveDate,
     to: NaiveDate,
+    compare_to: Option<DateWindow>,
     metric_keys: Vec<String>,
 }
 
@@ -133,26 +173,30 @@ pub async fn validate_request(
     tenant_id: Uuid,
     req: MetricResultsRequest,
 ) -> Result<ValidatedMetricResultsRequest, CanonicalError> {
-    let shape = validate_request_shape(&req)?;
+    let shape = validate_request_shape(&req, tenant_id)?;
     let RequestShape {
         entity,
         from,
         to,
+        compare_to,
         metric_keys,
     } = shape;
 
     let mut definition_keys = metric_keys.clone();
     for metric in &req.metrics {
         for view in &metric.views {
-            if let MetricViewRequest::Timeseries {
-                group_limit:
-                    Some(MetricGroupLimitRequest {
-                        rank_by_metric: Some(rank_by_metric),
-                        ..
-                    }),
-                ..
-            } = view
-            {
+            let rank_by_metric = match view {
+                MetricViewRequest::Timeseries {
+                    group_limit: Some(limit),
+                    ..
+                }
+                | MetricViewRequest::Rollup {
+                    group_limit: Some(limit),
+                    ..
+                } => limit.rank_by_metric.as_deref(),
+                _ => None,
+            };
+            if let Some(rank_by_metric) = rank_by_metric {
                 definition_keys.push(normalize_metric_key(
                     "metrics.views.group_limit.rank_by_metric",
                     rank_by_metric,
@@ -219,6 +263,7 @@ pub async fn validate_request(
         entity,
         from,
         to,
+        compare_to,
         metrics,
         // Off unless the handler turns it on from config; the ingest tenant is
         // not yet aligned to the JWT tenant (#1829), so enforcing here empties
@@ -229,7 +274,10 @@ pub async fn validate_request(
     Ok(validated)
 }
 
-fn validate_request_shape(req: &MetricResultsRequest) -> Result<RequestShape, CanonicalError> {
+fn validate_request_shape(
+    req: &MetricResultsRequest,
+    tenant_id: Uuid,
+) -> Result<RequestShape, CanonicalError> {
     if req.metrics.is_empty() {
         return invalid("metrics", "metrics must not be empty");
     }
@@ -240,23 +288,34 @@ fn validate_request_shape(req: &MetricResultsRequest) -> Result<RequestShape, Ca
         );
     }
 
-    let entity_type = normalize_entity_type(&req.entity.r#type)?;
-    if entity_type != "person" {
-        return invalid("entity.type", "only person entities are supported");
-    }
-    // The cap counts SUBMITTED ids, and is checked before parsing them: the
-    // parsed count is smaller (blanks are skipped, duplicates collapse), so
-    // capping it would let a caller pad a request past the bound and pay for
-    // the parse of every entry first.
-    if req.entity.ids.len() > MAX_PERSON_IDS {
-        return invalid(
-            "entity.ids",
-            format!("at most {MAX_PERSON_IDS} entity ids per request"),
-        );
-    }
-    let entity = ValidatedEntitySelection::Person {
-        ids: parse_person_ids(&req.entity.ids)?,
+    let entity = match &req.entity {
+        super::dto::MetricResultsEntity::Person { ids } => {
+            if ids.len() > MAX_PERSON_IDS {
+                return invalid(
+                    "entity.ids",
+                    format!("at most {MAX_PERSON_IDS} entity ids per request"),
+                );
+            }
+            ValidatedEntitySelection::Person {
+                ids: parse_person_ids(ids)?,
+            }
+        }
+        super::dto::MetricResultsEntity::Tenant {} => {
+            ValidatedEntitySelection::Tenant { id: tenant_id }
+        }
+        super::dto::MetricResultsEntity::Unknown => {
+            return invalid("entity.type", "unsupported entity type");
+        }
     };
+    if entity.is_tenant()
+        && req
+            .metrics
+            .iter()
+            .flat_map(|metric| &metric.views)
+            .any(|view| matches!(view, MetricViewRequest::Peer { .. }))
+    {
+        return invalid("metrics.views", "tenant metrics do not support peer views");
+    }
     let from = parse_date("period.from", &req.period.from)?;
     let to = parse_date("period.to", &req.period.to)?;
     if from > to {
@@ -268,6 +327,27 @@ fn validate_request_shape(req: &MetricResultsRequest) -> Result<RequestShape, Ca
             format!("period must not exceed {MAX_PERIOD_DAYS} days"),
         );
     }
+
+    let compare_to = match &req.compare_to {
+        None => None,
+        Some(window) => {
+            let from = parse_date("compare_to.from", &window.from)?;
+            let to = parse_date("compare_to.to", &window.to)?;
+            if from > to {
+                return invalid(
+                    "compare_to",
+                    "compare_to.from must be before or equal to compare_to.to",
+                );
+            }
+            if (to - from).num_days() >= MAX_PERIOD_DAYS {
+                return invalid(
+                    "compare_to",
+                    format!("compare_to must not exceed {MAX_PERIOD_DAYS} days"),
+                );
+            }
+            Some(DateWindow { from, to })
+        }
+    };
 
     let mut seen_metric_keys = BTreeSet::new();
     let mut metric_keys = Vec::with_capacity(req.metrics.len());
@@ -289,6 +369,7 @@ fn validate_request_shape(req: &MetricResultsRequest) -> Result<RequestShape, Ca
         entity,
         from,
         to,
+        compare_to,
         metric_keys,
     })
 }
@@ -375,19 +456,45 @@ fn validate_view_with_context(
                 dimensions: validate_dimensions(def, "metrics.views.dimensions", dimensions)?,
             })
         }
-        MetricViewRequest::Histogram => {
-            // Histograms bin per-event observation values; only median
-            // metrics have event-grain observations to bin.
-            if !matches!(def.spec, ComputationSpec::Median { .. }) {
+        MetricViewRequest::Rollup {
+            dimensions,
+            group_limit,
+        } => {
+            if dimensions.is_empty() {
+                return invalid(
+                    "metrics.views.dimensions",
+                    format!("metric {} rollup dimensions must not be empty", def.key()),
+                );
+            }
+            let dimensions = validate_dimensions(def, "metrics.views.dimensions", dimensions)?;
+            let group_limit = group_limit
+                .map(|limit| validate_group_limit(def, definitions, filters, &dimensions, limit))
+                .transpose()?;
+            Ok(ValidatedMetricView::Rollup {
+                dimensions,
+                group_limit,
+            })
+        }
+        MetricViewRequest::Histogram { dimensions } => {
+            // Histograms bin per-event observation values; only the
+            // event-grain computations (median family) have observations to bin.
+            if !matches!(
+                def.spec,
+                ComputationSpec::Median { .. }
+                    | ComputationSpec::Percentile { .. }
+                    | ComputationSpec::Stddev { .. }
+            ) {
                 return invalid(
                     "metrics.views",
                     format!(
-                        "metric {} does not support the histogram view; it requires a median computation",
+                        "metric {} does not support the histogram view; it requires an event-grain computation (median, percentile, or stddev)",
                         def.key()
                     ),
                 );
             }
-            Ok(ValidatedMetricView::Histogram)
+            Ok(ValidatedMetricView::Histogram {
+                dimensions: validate_dimensions(def, "metrics.views.dimensions", dimensions)?,
+            })
         }
     }
 }
@@ -555,18 +662,9 @@ fn validate_filters(
     Ok(out)
 }
 
-pub(crate) fn normalize_entity_type(entity_type: &str) -> Result<String, CanonicalError> {
-    normalize_key("entity.type", entity_type)
-}
-
 // Person ids are UUIDs since the identity cutover (the pre-cutover key was
 // the lowercased email); `Uuid::parse_str` accepts any casing and hyphenless
 // forms, and re-rendering canonicalizes — no bespoke normalization left.
-//
-// INVARIANT: ids are parsed as person UUIDs for EVERY entity type, which holds
-// only while every registry entity type is `person`. The other half of the
-// invariant lives in the visibility gate, pinned by
-// `an_entity_type_with_no_authorization_rule_fails_closed`.
 fn parse_person_ids(ids: &[String]) -> Result<Vec<Uuid>, CanonicalError> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(ids.len());
@@ -643,8 +741,19 @@ fn validate_projected_view_limits(
                         .saturating_mul(groups)
                         .saturating_mul(enumerate_buckets(req.from, req.to, *bucket).len() + 1)
                 }
-                ValidatedMetricView::Histogram => req.entity.len().saturating_mul(HISTOGRAM_BINS),
-                ValidatedMetricView::Breakdown { .. } => 0,
+                ValidatedMetricView::Histogram { dimensions } if dimensions.is_empty() => {
+                    req.entity.len().saturating_mul(HISTOGRAM_BINS)
+                }
+                // A pooled histogram's groups are data-dependent, like an
+                // uncapped rollup's and a breakdown's: not projectable here,
+                // capped by the query's row limit and the post-hoc view row
+                // limit instead.
+                ValidatedMetricView::Histogram { .. } | ValidatedMetricView::Breakdown { .. } => 0,
+                ValidatedMetricView::Rollup { group_limit, .. } => {
+                    group_limit.as_ref().map_or(0, |limit| {
+                        limit.count + usize::from(limit.include_remainder)
+                    })
+                }
             };
             if projected > ROW_LIMIT {
                 return Err(metric_result_too_large(format!(
@@ -693,8 +802,9 @@ mod tests {
     use super::super::dto::MetricResultsEntity;
     use super::*;
     use crate::domain::metric_definitions::definition::{
-        ComputationSpec, MetricBase, MetricDefinition, MetricDirection, MetricFormat, MetricInput,
-        MetricInputRole, ObservationRelation, ObservationSource,
+        AliasCollapse, ComputationSpec, MetricBase, MetricDefinition, MetricDirection,
+        MetricFormat, MetricInput, MetricInputRole, ObservationRelation, ObservationSource,
+        RatioDenominatorAggregation,
     };
 
     fn shape_request(
@@ -704,14 +814,14 @@ mod tests {
         metric_keys: Vec<&str>,
     ) -> MetricResultsRequest {
         MetricResultsRequest {
-            entity: MetricResultsEntity {
-                r#type: "person".to_owned(),
+            entity: MetricResultsEntity::Person {
                 ids: person_ids.into_iter().map(str::to_owned).collect(),
             },
             period: super::super::dto::MetricResultsPeriod {
                 from: from.to_owned(),
                 to: to.to_owned(),
             },
+            compare_to: None,
             metrics: metric_keys
                 .into_iter()
                 .map(|key| super::super::dto::MetricRequest {
@@ -748,6 +858,7 @@ mod tests {
                     ),
                     source_key: "ai_usage".to_owned(),
                     measure_key: "accepted_lines".to_owned(),
+                    alias_collapse: AliasCollapse::Sum,
                 },
             },
         }
@@ -762,6 +873,7 @@ mod tests {
             ),
             source_key: "ai_usage".to_owned(),
             measure_key: measure_key.to_owned(),
+            alias_collapse: AliasCollapse::Sum,
         }
     }
 
@@ -771,6 +883,7 @@ mod tests {
             numerator: fixture_input("accepted_edit_actions", MetricInputRole::Numerator),
             denominator: fixture_input("tool_use_offered", MetricInputRole::Denominator),
             scale: 100.0,
+            denominator_aggregation: RatioDenominatorAggregation::Sum,
         };
         def
     }
@@ -779,6 +892,15 @@ mod tests {
         let mut def = sum_definition(vec![]);
         def.spec = ComputationSpec::Median {
             value: fixture_input("pr_cycle_hours", MetricInputRole::Value),
+        };
+        def
+    }
+
+    fn percentile_definition() -> MetricDefinition {
+        let mut def = sum_definition(vec![]);
+        def.spec = ComputationSpec::Percentile {
+            value: fixture_input("pr_cycle_hours", MetricInputRole::Value),
+            q: 0.75,
         };
         def
     }
@@ -792,20 +914,39 @@ mod tests {
 
     #[test]
     fn shape_accepts_valid_request() {
-        let Ok(shape) = validate_request_shape(&shape_request(
-            vec![" 019E27BC-DEC0-7626-81A9-C5524662A6A9 "],
-            "2026-01-01",
-            "2026-01-31",
-            vec!["ai.x"],
-        )) else {
+        let Ok(shape) = validate_request_shape(
+            &shape_request(
+                vec![" 019E27BC-DEC0-7626-81A9-C5524662A6A9 "],
+                "2026-01-01",
+                "2026-01-31",
+                vec!["ai.x"],
+            ),
+            Uuid::nil(),
+        ) else {
             panic!("expected valid shape");
         };
         assert_eq!(shape.entity.entity_type(), "person");
         assert_eq!(
             shape.entity.person_ids(),
-            [Uuid::from_u128(0x019e_27bc_dec0_7626_81a9_c552_4662_a6a9)]
+            Some([Uuid::from_u128(0x019e_27bc_dec0_7626_81a9_c552_4662_a6a9)].as_slice())
         );
         assert_eq!(shape.metric_keys, vec!["ai.x".to_owned()]);
+    }
+
+    #[test]
+    fn tenant_shape_uses_session_tenant_and_rejects_peer_views() {
+        let tenant_id = Uuid::now_v7();
+        let mut req = shape_request(vec!["ignored"], "2026-01-01", "2026-01-31", vec!["ci.runs"]);
+        req.entity = MetricResultsEntity::Tenant {};
+
+        let Ok(shape) = validate_request_shape(&req, tenant_id) else {
+            panic!("tenant period request must be valid");
+        };
+        assert_eq!(shape.entity.entity_type(), "tenant");
+        assert_eq!(shape.entity.entity_ids(), vec![tenant_id.to_string()]);
+
+        req.metrics[0].views = vec![MetricViewRequest::Peer { cohort_key: None }];
+        assert!(validate_request_shape(&req, tenant_id).is_err());
     }
 
     #[test]
@@ -817,7 +958,7 @@ mod tests {
             "2026-01-31",
             keys.iter().map(String::as_str).collect(),
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -831,7 +972,7 @@ mod tests {
             "2026-01-31",
             vec!["ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -846,7 +987,7 @@ mod tests {
             "2026-01-31",
             vec!["ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -859,7 +1000,7 @@ mod tests {
             "2026-01-31",
             vec!["ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -870,7 +1011,7 @@ mod tests {
             "9999-12-31",
             vec!["ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -881,7 +1022,61 @@ mod tests {
             "2026-01-01",
             vec!["ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
+    }
+
+    fn window(from: &str, to: &str) -> super::super::dto::MetricResultsPeriod {
+        super::super::dto::MetricResultsPeriod {
+            from: from.to_owned(),
+            to: to.to_owned(),
+        }
+    }
+
+    #[test]
+    fn shape_carries_the_comparison_window() {
+        let mut req = shape_request(
+            vec!["019e27bc-dec0-7626-81a9-c5524662a6a9"],
+            "2026-02-01",
+            "2026-02-28",
+            vec!["ai.x"],
+        );
+        req.compare_to = Some(window("2026-01-01", "2026-01-31"));
+
+        let Ok(shape) = validate_request_shape(&req, Uuid::nil()) else {
+            panic!("expected the shape to validate");
+        };
+
+        let Some(compare_to) = shape.compare_to else {
+            panic!("expected a comparison window");
+        };
+        assert_eq!(compare_to.from, day("2026-01-01"));
+        assert_eq!(compare_to.to, day("2026-01-31"));
+    }
+
+    #[test]
+    fn shape_rejects_a_reversed_comparison_window() {
+        let mut req = shape_request(
+            vec!["019e27bc-dec0-7626-81a9-c5524662a6a9"],
+            "2026-02-01",
+            "2026-02-28",
+            vec!["ai.x"],
+        );
+        req.compare_to = Some(window("2026-01-31", "2026-01-01"));
+
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
+    }
+
+    #[test]
+    fn shape_rejects_an_oversized_comparison_window() {
+        let mut req = shape_request(
+            vec!["019e27bc-dec0-7626-81a9-c5524662a6a9"],
+            "2026-02-01",
+            "2026-02-28",
+            vec!["ai.x"],
+        );
+        req.compare_to = Some(window("2020-01-01", "2026-01-31"));
+
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -892,13 +1087,13 @@ mod tests {
             "2026-01-31",
             vec!["ai.x", "ai.x"],
         );
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
     fn shape_rejects_all_blank_person_ids() {
         let req = shape_request(vec![" ", ""], "2026-01-01", "2026-01-31", vec!["ai.x"]);
-        assert!(validate_request_shape(&req).is_err());
+        assert!(validate_request_shape(&req, Uuid::nil()).is_err());
     }
 
     #[test]
@@ -959,6 +1154,37 @@ mod tests {
         let view = MetricViewRequest::Breakdown {
             dimensions: vec!["surface".to_owned()],
         };
+        assert!(validate_view(&def, view).is_err());
+    }
+
+    #[test]
+    fn validate_view_accepts_dimension_only_rollup() {
+        let def = sum_definition(vec!["repository"]);
+        let view = MetricViewRequest::Rollup {
+            dimensions: vec!["repository".to_owned()],
+            group_limit: None,
+        };
+
+        match validate_view(&def, view) {
+            Ok(ValidatedMetricView::Rollup {
+                dimensions,
+                group_limit,
+            }) => {
+                assert_eq!(dimensions, vec!["repository"]);
+                assert!(group_limit.is_none());
+            }
+            other => panic!("expected rollup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_view_rejects_rollup_without_dimensions() {
+        let def = sum_definition(vec!["repository"]);
+        let view = MetricViewRequest::Rollup {
+            dimensions: vec![],
+            group_limit: None,
+        };
+
         assert!(validate_view(&def, view).is_err());
     }
 
@@ -1194,15 +1420,62 @@ mod tests {
     }
 
     #[test]
-    fn validate_view_gates_histogram_on_median_computation() {
+    fn validate_view_gates_histogram_on_event_grain_computations() {
         // Histograms bin per-event values; sum/ratio observations are
         // day-aggregated, so binning them would present aggregates as events.
-        assert!(validate_view(&sum_definition(vec![]), MetricViewRequest::Histogram).is_err());
-        assert!(validate_view(&ratio_definition(), MetricViewRequest::Histogram).is_err());
+        // Median and percentile share the per-event observation shape.
+        let histogram = || MetricViewRequest::Histogram { dimensions: vec![] };
+        assert!(validate_view(&sum_definition(vec![]), histogram()).is_err());
+        assert!(validate_view(&ratio_definition(), histogram()).is_err());
         assert!(matches!(
-            validate_view(&median_definition(), MetricViewRequest::Histogram),
-            Ok(ValidatedMetricView::Histogram)
+            validate_view(&median_definition(), histogram()),
+            Ok(ValidatedMetricView::Histogram { dimensions }) if dimensions.is_empty()
         ));
+        assert!(matches!(
+            validate_view(&percentile_definition(), histogram()),
+            Ok(ValidatedMetricView::Histogram { dimensions }) if dimensions.is_empty()
+        ));
+    }
+
+    #[test]
+    fn validate_view_pools_histogram_only_over_declared_dimensions() {
+        // The pooled shape reuses the breakdown/rollup dimension rule: every
+        // requested dimension must be declared on the metric.
+        let mut def = median_definition();
+        def.base.allowed_dimensions = vec!["repository".to_owned()];
+
+        match validate_view(
+            &def,
+            MetricViewRequest::Histogram {
+                dimensions: vec![" Repository ".to_owned()],
+            },
+        ) {
+            Ok(ValidatedMetricView::Histogram { dimensions }) => {
+                assert_eq!(dimensions, vec!["repository"]);
+            }
+            other => panic!("expected pooled histogram, got {other:?}"),
+        }
+
+        assert!(
+            validate_view(
+                &def,
+                MetricViewRequest::Histogram {
+                    dimensions: vec!["surface".to_owned()],
+                },
+            )
+            .is_err()
+        );
+
+        // The computation gate still holds for the pooled shape.
+        assert!(
+            validate_view(
+                &sum_definition(vec!["repository"]),
+                MetricViewRequest::Histogram {
+                    dimensions: vec!["repository".to_owned()],
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1242,6 +1515,7 @@ mod tests {
             },
             from: day("2026-01-01"),
             to: day("2026-03-31"),
+            compare_to: None,
             metrics: vec![ValidatedMetricRequest {
                 def,
                 filters: vec![],
@@ -1275,6 +1549,7 @@ mod tests {
             },
             from: day("2025-07-21"),
             to: day("2026-07-20"),
+            compare_to: None,
             metrics: (0..4)
                 .map(|_| ValidatedMetricRequest {
                     def: def.clone(),
@@ -1308,14 +1583,23 @@ mod tests {
             },
             from: day("2026-01-01"),
             to: day("2026-01-31"),
+            compare_to: None,
             metrics: vec![ValidatedMetricRequest {
                 def: median_definition(),
                 filters: vec![],
-                views: vec![ValidatedMetricView::Histogram],
+                views: vec![ValidatedMetricView::Histogram { dimensions: vec![] }],
             }],
             enforce_tenant_scope: false,
         };
         assert!(validate_projected_view_limits(&validated).is_err());
+
+        // The pooled shape carries no entity grain, so entity count does not
+        // project rows for it — group cardinality is capped at query time.
+        let mut pooled = validated;
+        pooled.metrics[0].views = vec![ValidatedMetricView::Histogram {
+            dimensions: vec!["repository".to_owned()],
+        }];
+        assert!(validate_projected_view_limits(&pooled).is_ok());
     }
 
     #[test]
@@ -1328,6 +1612,7 @@ mod tests {
             },
             from: day("2026-01-01"),
             to: day("2026-01-31"),
+            compare_to: None,
             metrics: vec![ValidatedMetricRequest {
                 def,
                 filters: vec![],

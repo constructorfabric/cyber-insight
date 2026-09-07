@@ -36,6 +36,11 @@ logging:
 gears:
   api-gateway:
     config:
+      # INVARIANT: the service router's insight-http-metrics is the single
+      # writer of http.server.request.duration — the host's copy stays renamed
+      # or two bucket layouts collide in one series.
+      metrics:
+        prefix: "host"
       # analytics is addressed directly (the platform gateway proxies
       # `/analytics` → here), so no prefix_path is set.
       bind_addr: "0.0.0.0:8081"
@@ -139,8 +144,10 @@ gears:
       clickhouse_database: "insight"
       # clickhouse_user / clickhouse_password: omit for no-auth ClickHouse.
       identity_url: ""
+      visibility_policy: "org_chart"
       redis_url: ""
       metric_catalog:
+        tenant_metrics_enabled: false
         # Per-tenant observation filter on metric reads. Off until the ingest
         # tenant is aligned with the session tenant.
         enforce_tenant_scope: false

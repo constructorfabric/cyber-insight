@@ -1,6 +1,6 @@
 name: Semgrep SAST
 
-# SAST, report-only (#2020). `--config auto` plus p/rust and p/csharp, which auto covers thinly.
+# SAST, report-only (#2020). `--config auto` plus p/rust, which auto covers thinly.
 # Secrets are excluded here — trufflehog.yml owns them.
 
 on:
@@ -42,6 +42,7 @@ jobs:
       - name: Semgrep scan (full tree — owns the SARIF upload, never blocks)
         # `docker run` rather than a `container:` job so the JS actions keep the runner's Node.
         # `--config auto` needs metrics on to select rules, so `--metrics off` is omitted.
+        if: github.event_name != 'pull_request'
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
@@ -50,7 +51,6 @@ jobs:
             semgrep scan \
               --config auto \
               --config p/rust \
-              --config p/csharp \
               --exclude-rule generic.secrets.security.detected-generic-secret \
               --sarif --output semgrep.sarif
 
@@ -69,13 +69,12 @@ jobs:
             semgrep scan \
               --config auto \
               --config p/rust \
-              --config p/csharp \
               --exclude-rule generic.secrets.security.detected-generic-secret \
               --error \
               --baseline-commit "$BASE_SHA"
 
       - name: Summarize findings in the job summary
-        if: always()
+        if: ${{ always() && github.event_name != 'pull_request' }}
         run: |
           [ -f semgrep.sarif ] || exit 0
           [ -n "${GITHUB_STEP_SUMMARY:-}" ] || exit 0
@@ -97,7 +96,7 @@ jobs:
           rules = collections.Counter(x.get("ruleId", "?").split(".")[-1] for x in res)
           w = out.write
           w("## Semgrep SAST (report-only)\n\n")
-          w(f"**{total}** finding(s) from `auto` + `p/rust`/`p/csharp` (secrets excluded — TruffleHog owns those). "
+          w(f"**{total}** finding(s) from `auto` + `p/rust` (secrets excluded — TruffleHog owns those). "
             f"This check does **not** block; full details in [Security -> Code scanning]({cs_url}).\n\n")
           if total:
               w("| Severity | Count |\n|---|---:|\n")
@@ -112,9 +111,8 @@ jobs:
           PY
 
       - name: Upload SARIF to GitHub Code Scanning
-        # Fork PRs get a read-only token and cannot upload.
-        if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4.32.6
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('semgrep.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           sarif_file: semgrep.sarif
           category: semgrep

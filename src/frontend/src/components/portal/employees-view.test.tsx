@@ -12,11 +12,19 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PeopleListItem } from "@/api/identity-client";
 import { identityPerson, pid } from "@/test/identity";
 import type { IdentityPerson } from "@/types/insight";
 
 const mocks = vi.hoisted(() => ({
   personId: null as string | null,
+  isFlat: false,
+  roster: {
+    roster: [] as PeopleListItem[],
+    isPending: false,
+    isError: false,
+    retry: vi.fn(),
+  },
   ic: {
     data: undefined as IdentityPerson | undefined,
     isPending: false,
@@ -29,6 +37,16 @@ vi.mock("@/auth", () => ({
   useViewer: () => ({ email: "boss@x", personId: mocks.personId }),
 }));
 vi.mock("@/queries/ic-dashboard", () => ({ useIcPerson: () => mocks.ic }));
+vi.mock("@/queries/identity-me", () => ({
+  useVisibilityPolicy: () => ({
+    policy: mocks.isFlat ? "flat" : "org_chart",
+    isFlat: mocks.isFlat,
+    isPending: false,
+  }),
+}));
+vi.mock("@/queries/visible-roster", () => ({
+  useVisibleRoster: () => mocks.roster,
+}));
 
 import { EmployeesView } from "./employees-view";
 
@@ -38,9 +56,37 @@ const person = (
   subs: IdentityPerson[] = [],
 ): IdentityPerson => identityPerson(label, over, subs);
 
+function rosterPerson(
+  label: string,
+  managerPersonId: string | null = null,
+  attributes: Record<string, string> = {},
+): PeopleListItem {
+  return {
+    person_id: pid(label),
+    display_name: `${label[0]!.toUpperCase()}${label.slice(1)}`,
+    first_name: null,
+    last_name: null,
+    username: null,
+    email: `${label}@example.com`,
+    attributes,
+    manager_person_id: managerPersonId,
+  };
+}
+
 beforeEach(() => {
   mocks.ic.refetch.mockClear();
   mocks.personId = pid("boss");
+  mocks.isFlat = false;
+  mocks.roster.roster = [
+    rosterPerson("boss", null, { job_title: "Director" }),
+    rosterPerson("zoe", pid("boss"), {
+      job_title: "QA Engineer",
+      department: "Quality",
+    }),
+    rosterPerson("adam", pid("boss"), { job_title: "Backend Dev" }),
+  ];
+  mocks.roster.isPending = false;
+  mocks.roster.isError = false;
   mocks.ic.isPending = false;
   mocks.ic.isError = false;
   mocks.ic.data = person("boss", { display_name: "Boss", job_title: "Director" }, [
@@ -76,10 +122,75 @@ describe("EmployeesView", () => {
   });
 
   it("surfaces an identity failure as a retryable error", async () => {
-    mocks.ic.data = undefined;
-    mocks.ic.isError = true;
+    mocks.roster.roster = [];
+    mocks.roster.isError = true;
     render(<EmployeesView />);
     await userEvent.click(screen.getByRole("button", { name: /retry/i }));
-    expect(mocks.ic.refetch).toHaveBeenCalledOnce();
+    expect(mocks.roster.retry).toHaveBeenCalledOnce();
+  });
+});
+
+describe("EmployeesView on an organisation with no reporting lines", () => {
+  beforeEach(() => {
+    mocks.isFlat = true;
+    // The tree answers with the viewer alone — the case that used to leave this
+    // directory with a single row.
+    mocks.ic.data = person("boss");
+    mocks.roster.roster = [
+      { ...rosterPerson("boss"), display_name: "Boss Person" },
+      { ...rosterPerson("ann"), display_name: "Ann Dev" },
+      {
+        ...rosterPerson("bob"),
+        display_name: null,
+        username: "bobby",
+      },
+    ];
+  });
+
+  it("is headed as a roster, not as employees", () => {
+    render(<EmployeesView />);
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Roster" }),
+    ).toBeInTheDocument();
+  });
+
+  it("lists the roster rather than the tree", () => {
+    render(<EmployeesView />);
+
+    expect(screen.getByText("Ann Dev")).toBeInTheDocument();
+    expect(screen.getByText("Boss Person")).toBeInTheDocument();
+  });
+
+  it("shows a person the journal knows only by a handle under that handle", () => {
+    render(<EmployeesView />);
+
+    expect(screen.getByText("bobby")).toBeInTheDocument();
+  });
+
+  it("drops the columns a flat organisation cannot fill", () => {
+    render(<EmployeesView />);
+
+    expect(screen.queryByRole("columnheader", { name: "Manager" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Department" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+  });
+
+  it("filters the roster by the term typed", async () => {
+    render(<EmployeesView />);
+
+    await userEvent.type(screen.getByPlaceholderText(/Search/), "ann");
+
+    expect(screen.getByText("Ann Dev")).toBeInTheDocument();
+    expect(screen.queryByText("Boss Person")).toBeNull();
+  });
+
+  it("offers a retry when the roster read fails, rather than an empty directory", () => {
+    mocks.roster.roster = [];
+    mocks.roster.isError = true;
+
+    render(<EmployeesView />);
+
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 });

@@ -1,4 +1,9 @@
+pub mod ai;
+pub(crate) mod connector_health;
 pub mod contract_version;
+pub(crate) mod date_window;
+pub mod external_links;
+pub(crate) mod metric_access;
 pub mod metric_crud;
 pub mod metric_definitions;
 pub mod metric_drilldown;
@@ -6,4 +11,6 @@ pub mod metric_key;
 pub mod metric_results;
 pub(crate) mod person_visibility;
 pub mod query_gate;
+pub mod reports;
 pub mod saved_query;
+pub(crate) mod spreadsheet;

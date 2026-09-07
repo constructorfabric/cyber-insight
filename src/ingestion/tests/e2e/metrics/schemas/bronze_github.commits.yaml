@@ -11,17 +11,18 @@ schemas:
       tenant_id: {type: string}
       source_id: {type: string}
       unique_key: {type: string}
-      repo_owner: {type: string}
-      repo_name: {type: string}
+      repository: {type: string}
       sha: {type: string}
-      branch_name: {type: string}
       author_name: {type: string}
       author_email: {type: string}
       committer_name: {type: string}
       committer_email: {type: string}
       message: {type: string}
+      authored_date: {type: [string, "null"]}
       committed_date: {type: string}
-      changed_files: {type: integer}
-      additions: {type: integer}
-      deletions: {type: integer}
-      parent_hashes: {type: string}
+      changed_files: {type: [integer, "null"]}
+      additions: {type: [integer, "null"]}
+      deletions: {type: [integer, "null"]}
+      is_merge: {type: boolean}
+      is_in_default_branch: {type: [boolean, "null"]}
+      patch_id: {type: [string, "null"]}

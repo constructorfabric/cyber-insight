@@ -1,16 +1,32 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileSpreadsheet, FileText } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Search,
+} from "lucide-react";
 
 import {
   downloadMetricDrilldown,
   queryMetricDrilldown,
+  servesOrderedRows,
+  type MetricEvidenceSort,
 } from "@/api/metric-drilldown-client";
 import { AnalyticsApiError } from "@/api/analytics-client";
 import { sessionAuthorizationScope } from "@/auth/session-scope";
 import { useAuth } from "@/auth/use-auth";
-import type { EvidenceDialogState } from "@/components/metric-evidence-context";
+import type {
+  EvidenceDialogState,
+  EvidenceDialogTarget,
+} from "@/components/metric-evidence-context";
+import { MetricEvidencePeople } from "@/components/metric-evidence-people";
 import { MetricEvidenceTable } from "@/components/metric-evidence-table";
+import { withTypeDimension } from "@/lib/metrics/provider-links";
+import { useDeclaredMetricDimensions } from "@/queries/metric-definitions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,6 +40,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { formatMetricNumber } from "@/lib/format";
 import {
   Select,
   SelectContent,
@@ -32,6 +50,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { nextSort } from "@/lib/metrics/evidence-rows";
+import { sameEvidenceSubject } from "@/lib/metrics/evidence-placeholder";
+import { SEARCH_DEBOUNCE_MS } from "@/queries/identity-resolution";
+
+/** A records read taken out of a people list, and whose records they are. */
+interface DrillStep {
+  target: EvidenceDialogTarget;
+  personId: string | null;
+}
 
 export function MetricEvidenceDialog({
   state,
@@ -47,33 +75,105 @@ export function MetricEvidenceDialog({
   const exportController = useRef<AbortController | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportFailure, setExportFailure] = useState<string | null>(null);
-  const activeTarget =
-    state?.targets.find(
-      (target) => target.selection.metric_key === state.activeMetricKey
-    ) ??
-    state?.targets[0] ??
-    null;
-  const selection = activeTarget?.selection ?? null;
+  const records = state?.kind === "records" ? state : null;
+  const people = state?.kind === "people" ? state.view : null;
+  /** The records step taken out of a people list, and whose they are. */
+  const [drilled, setDrilled] = useState<DrillStep | null>(null);
+  const [peopleSearch, setPeopleSearch] = useState("");
+  // A new opening is a new question: the step out of the previous list, and the
+  // search that narrowed it, must not survive into it.
+  const [openedState, setOpenedState] = useState(state);
+  if (openedState !== state) {
+    setOpenedState(state);
+    setDrilled(null);
+    setPeopleSearch("");
+  }
+  const activeTarget = people
+    ? drilled?.target ?? null
+    : records?.targets.find(
+        (target) => target.selection.metric_key === records.activeMetricKey
+      ) ??
+      records?.targets[0] ??
+      null;
+  /** The list itself is on screen only until a row is taken further. */
+  const showPeople = people != null && drilled == null;
+  const allRecords = people?.allRecords ?? null;
+  const headerTitle = drilled
+    ? drilled.target.label
+    : (people?.title ?? records?.title ?? activeTarget?.label ?? "");
+  // INVARIANT: the catalog decides which dimensions may be asked for, so the
+  // read waits for it — resolving later would change the selection mid-dialog
+  // and refetch every row.
+  const declaredDimensions = useDeclaredMetricDimensions();
+  const declared = activeTarget
+    ? declaredDimensions.byMetricKey?.get(activeTarget.selection.metric_key)
+    : null;
+  const selection = activeTarget
+    ? withTypeDimension(activeTarget.selection, declared)
+    : null;
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<MetricEvidenceSort | null>(null);
+  const activeMetricKey = selection?.metric_key ?? null;
+  const [scopedTo, setScopedTo] = useState(activeMetricKey);
+  if (scopedTo !== activeMetricKey) {
+    setScopedTo(activeMetricKey);
+    setSearch("");
+    setSort(null);
+  }
+  // INVARIANT: the needle the server was asked for, not the one being typed —
+  // it is part of the query key, and a key per keystroke is a request per
+  // keystroke. Emptying the box takes effect at once: the debounce exists to
+  // delay ASKING, and a cleared search — including the one a metric change
+  // performs above — must not leave the previous needle in flight.
+  const typed = search.trim();
+  const debounced = useDebouncedValue(typed, SEARCH_DEBOUNCE_MS);
+  const needle = typed === "" ? "" : debounced;
+  const view = useMemo(
+    () => ({
+      ...(sort ? { sort } : {}),
+      ...(needle === "" ? {} : { search: needle }),
+    }),
+    [sort, needle]
+  );
+
+  const queryKey = ["metric-drilldown", sessionScope, selection, view];
   const query = useInfiniteQuery({
-    queryKey: ["metric-drilldown", sessionScope, selection],
+    queryKey,
     queryFn: ({ pageParam, signal }) => {
       if (!selection) throw new Error("Metric evidence selection is missing");
       return queryMetricDrilldown(
-        { ...selection, cursor: pageParam, limit: 100 },
+        { ...selection, ...view, cursor: pageParam, limit: 100 },
         signal
       );
     },
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    enabled: sessionScope != null && selection != null,
+    // A new order or a new needle is a new query key. Without this the table —
+    // and the search box in the header above it — is replaced by a spinner on
+    // every header click and every pause in typing, which loses the caret
+    // mid-word. A new SUBJECT gets the spinner: rows held over from the metric
+    // the reader just closed would sit under the new one's title as its answer.
+    placeholderData: (previous, previousQuery) =>
+      sameEvidenceSubject(previousQuery?.queryKey, queryKey)
+        ? previous
+        : undefined,
+    enabled:
+      sessionScope != null &&
+      selection != null &&
+      !declaredDimensions.isPending,
     retry: (failureCount, error) =>
       failureCount < 1 &&
       (!(error instanceof AnalyticsApiError) || error.status >= 500),
   });
-  const rows = query.data?.pages.flatMap((page) => page.rows) ?? [];
+  const pages = query.data?.pages;
+  const rows = useMemo(
+    () => pages?.flatMap((page) => page.rows) ?? [],
+    [pages]
+  );
   const columns = useMemo(() => {
     const columns = query.data?.pages[0]?.columns ?? [];
     const order = new Map([
+      ["person", -1],
       ["ref", 0],
       ["title", 1],
       ["repository", 2],
@@ -91,6 +191,32 @@ export function MetricEvidenceDialog({
   }, [query.data?.pages]);
   const { fetchNextPage, hasNextPage, isFetchingNextPage } = query;
   const pageLimitReached = (query.data?.pages.length ?? 0) >= 50 && hasNextPage;
+  // The server orders and narrows the rows. Until the first page says it does,
+  // the controls that ask it to are inert rather than misleading.
+  const narrowsRows =
+    query.data == null || servesOrderedRows(query.data.pages[0]);
+  // What the headers announce: the order of the rows ON SCREEN, read off the
+  // page that produced them. Never the order just asked for — those rows are
+  // still the previous answer, and an arrow that moved ahead of them would
+  // describe a table nobody is looking at. `sort` stays the client's own, and
+  // only decides where the next click goes.
+  const shownSort = query.data?.pages[0]?.selection?.sort ?? null;
+
+  const visiblePeople = useMemo(() => {
+    const needle = peopleSearch.trim().toLowerCase();
+    const rows = people?.rows ?? [];
+    return needle === ""
+      ? rows
+      : rows.filter((row) => row.name.toLowerCase().includes(needle));
+  }, [people, peopleSearch]);
+
+  const headingRef = useRef<HTMLSpanElement>(null);
+  const focusedStep = useRef(drilled);
+  useEffect(() => {
+    if (focusedStep.current === drilled) return;
+    focusedStep.current = drilled;
+    headingRef.current?.focus();
+  }, [drilled]);
 
   useEffect(
     () => () => {
@@ -99,23 +225,45 @@ export function MetricEvidenceDialog({
     []
   );
 
-  function closeDialog(): void {
+  /** Whatever the export controls were doing belongs to the table being left. */
+  function resetExport(): void {
     exportController.current?.abort();
     exportController.current = null;
     setExporting(false);
     setExportFailure(null);
+  }
+
+  function closeDialog(): void {
+    resetExport();
     onClose();
   }
 
+  /**
+   * Move between the people list and one row's records. An export left running
+   * over the table being left would resolve onto the next one — a file for a
+   * person the reader is no longer looking at, or an error under a body that
+   * has no export control at all.
+   */
+  function goToStep(step: DrillStep | null): void {
+    resetExport();
+    setDrilled(step);
+  }
+
   async function exportRows(format: "csv" | "xlsx") {
-    if (!selection) return;
+    // INVARIANT: the file holds the columns the screen holds. `source` rides
+    // along only so a row can be linked and is hidden from the table, so it is
+    // dropped here; `type` is a column the reader can see, so it is kept.
+    const exported = activeTarget
+      ? withTypeDimension(activeTarget.selection, declared)
+      : null;
+    if (!exported) return;
     exportController.current?.abort();
     const controller = new AbortController();
     exportController.current = controller;
     setExporting(true);
     setExportFailure(null);
     try {
-      await downloadMetricDrilldown(selection, format, controller.signal);
+      await downloadMetricDrilldown(exported, format, view, controller.signal);
     } catch (error) {
       if (!controller.signal.aborted) {
         setExportFailure(
@@ -135,33 +283,48 @@ export function MetricEvidenceDialog({
       open={state != null}
       onOpenChange={(open) => !open && closeDialog()}
     >
-      {state && activeTarget ? (
+      {state && (activeTarget || showPeople) ? (
         <DialogContent className="flex h-[calc(100dvh-2rem)] max-h-[52rem] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:h-[calc(100dvh-4rem)] sm:w-[calc(100vw-4rem)] sm:max-w-[90rem] [&_[data-slot=dialog-close]]:top-5">
           <DialogHeader className="shrink-0 border-b p-5 pr-14">
+            {people && drilled ? (
+              <div className="flex">
+                <button
+                  type="button"
+                  onClick={() => goToStep(null)}
+                  aria-label={`Back to ${people.title}`}
+                  className="-ms-1 flex cursor-pointer items-center gap-1 rounded-sm px-1 text-xs text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  <ArrowLeft className="size-3.5" aria-hidden />
+                  {people.title}
+                </button>
+              </div>
+            ) : null}
             <div className="flex items-center justify-between gap-4">
-              {state.targets.length > 1 ? (
+              {records && records.targets.length > 1 && activeTarget ? (
                 <>
+                  {/* INVARIANT: the dialog is named for what it shows — a
+                      caller that names the whole set wins, otherwise the
+                      metric on screen. */}
                   <DialogTitle className="sr-only">
-                    {state.title ?? "Metric evidence"}
+                    {records.title ?? activeTarget.label}
                   </DialogTitle>
                   <Select
                     value={activeTarget.selection.metric_key}
                     onValueChange={(metricKey) => {
                       if (!metricKey) return;
-                      exportController.current?.abort();
-                      setExportFailure(null);
+                      resetExport();
                       onMetricChange(metricKey);
                     }}
                   >
                     <SelectTrigger
                       size="sm"
                       aria-label="Metric"
-                      className="border-transparent bg-transparent px-0 text-base font-semibold shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
+                      className="border-transparent bg-transparent px-0 text-sm font-semibold shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
                     >
                       <SelectValue>{activeTarget.label}</SelectValue>
                     </SelectTrigger>
                     <SelectContent align="start">
-                      {state.targets.map((target) => (
+                      {records.targets.map((target) => (
                         <SelectItem
                           key={target.selection.metric_key}
                           value={target.selection.metric_key}
@@ -173,8 +336,35 @@ export function MetricEvidenceDialog({
                   </Select>
                 </>
               ) : (
-                <DialogTitle>{activeTarget.label}</DialogTitle>
+                // Same invariant with one target: a caller that scoped the
+                // table to a subset of people named it, and the metric label
+                // alone would read as every record of that metric.
+                <DialogTitle>
+                  {/* Focus lands here on a body swap: the control that was
+                      clicked is gone, and the new heading is what says where
+                      the reader now is. */}
+                  <span ref={headingRef} tabIndex={-1} className="outline-none">
+                    {headerTitle}
+                  </span>
+                </DialogTitle>
               )}
+              <div className="flex shrink-0 items-center gap-3">
+                {/* Where the records came from, once the dialog is showing one
+                    person's — the one exit out of the drill. */}
+                {drilled?.personId ? (
+                  <Link
+                    to="/ic/$person/personal"
+                    params={{ person: drilled.personId }}
+                    onClick={closeDialog}
+                    className="flex items-center gap-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Person page
+                    <ArrowUpRight className="size-3.5" aria-hidden />
+                  </Link>
+                ) : null}
+                {/* Export serves the record table; a people list is a read of
+                    values this session already had. */}
+                {showPeople ? null : (
               <DropdownMenu>
                 <DropdownMenuTrigger
                   disabled={
@@ -200,14 +390,102 @@ export function MetricEvidenceDialog({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+                )}
+              </div>
             </div>
             {exportFailure ? (
               <p role="alert" className="text-sm text-destructive">
                 {exportFailure}
               </p>
             ) : null}
+            {showPeople && people ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="search"
+                    value={peopleSearch}
+                    onChange={(event) => setPeopleSearch(event.target.value)}
+                    placeholder="Search people"
+                    aria-label="Search people"
+                    className="h-8 ps-8"
+                  />
+                </div>
+                <p
+                  aria-live="polite"
+                  className="text-sm text-muted-foreground tabular-nums"
+                >
+                  {peopleCount(visiblePeople.length, people.rows.length)}
+                </p>
+                {allRecords ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ms-auto"
+                    onClick={() =>
+                      goToStep({ target: allRecords, personId: null })
+                    }
+                  >
+                    All records
+                  </Button>
+                ) : null}
+              </div>
+            ) : query.isPending || (query.isError && !query.data) ? null : (
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search records"
+                    aria-label="Search records"
+                    disabled={!narrowsRows}
+                    title={
+                      narrowsRows
+                        ? undefined
+                        : "Searching records needs a newer server"
+                    }
+                    className="h-8 ps-8"
+                  />
+                </div>
+                <p
+                  aria-live="polite"
+                  className="text-sm text-muted-foreground tabular-nums"
+                >
+                  {recordCount({
+                    loaded: rows.length,
+                    filtered: needle !== "",
+                    // At the paging cap there are still matches nobody read,
+                    // so the count is least complete exactly where dropping
+                    // the qualifier would claim it was whole.
+                    partial: hasNextPage || query.isFetchNextPageError,
+                  })}
+                </p>
+              </div>
+            )}
           </DialogHeader>
-          {query.isPending ? (
+          {showPeople ? (
+            visiblePeople.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3">
+                <p className="text-sm text-muted-foreground">
+                  No people match this search
+                </p>
+                <Button variant="outline" onClick={() => setPeopleSearch("")}>
+                  Clear search
+                </Button>
+              </div>
+            ) : (
+              <MetricEvidencePeople
+                rows={visiblePeople}
+                valueLabel={people.valueLabel}
+                onDrill={(row) =>
+                  row.target &&
+                  goToStep({ target: row.target, personId: row.personId })
+                }
+              />
+            )
+          ) : query.isPending ? (
             <div className="flex flex-1 items-center justify-center">
               <Spinner className="size-10" />
             </div>
@@ -221,16 +499,36 @@ export function MetricEvidenceDialog({
               </Button>
             </div>
           ) : rows.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-              No supporting data for this selection
-            </div>
+            needle === "" ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                No supporting data for this selection
+              </div>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3">
+                <p className="text-sm text-muted-foreground">
+                  No records match this search
+                </p>
+                <Button variant="outline" onClick={() => setSearch("")}>
+                  Clear search
+                </Button>
+              </div>
+            )
           ) : (
             <MetricEvidenceTable
+              // INVARIANT: remounts per metric — expansion state is the
+              // table's and must not carry across.
+              key={activeMetricKey}
+              metricKey={activeMetricKey}
               rows={rows}
               columns={columns}
+              sort={shownSort}
+              onSortChange={(key) =>
+                setSort((current) => nextSort(current, key))
+              }
               fetchNextPage={fetchNextPage}
               hasNextPage={hasNextPage && !pageLimitReached}
               isFetchingNextPage={isFetchingNextPage}
+              reordering={query.isFetching && !isFetchingNextPage}
               nextPageError={query.isFetchNextPageError}
               pageLimitReached={pageLimitReached}
             />
@@ -239,6 +537,35 @@ export function MetricEvidenceDialog({
       ) : null}
     </Dialog>
   );
+}
+
+/**
+ * How much of the answer is on screen. The server narrows and orders the rows,
+ * so what is loaded IS what matched — but only as far as paging has reached,
+ * which is what "so far" says.
+ */
+function recordCount({
+  loaded,
+  filtered,
+  partial,
+}: {
+  loaded: number;
+  filtered: boolean;
+  partial: boolean;
+}): string {
+  const noun = loaded === 1 ? "record" : "records";
+  const matching = filtered ? " matching" : "";
+  return `${formatMetricNumber(loaded, "integer")}${matching} ${noun}${partial ? " so far" : ""}`;
+}
+
+/** "5 people", or "2 of 5 people" once a search has narrowed the list. */
+function peopleCount(visible: number, total: number): string {
+  const noun = visible === 1 && visible === total ? "person" : "people";
+  const count =
+    visible === total
+      ? formatMetricNumber(visible, "integer")
+      : `${formatMetricNumber(visible, "integer")} of ${formatMetricNumber(total, "integer")}`;
+  return `${count} ${noun}`;
 }
 
 function errorMessage(error: unknown, fallback: string): string {

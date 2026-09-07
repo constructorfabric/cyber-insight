@@ -48,6 +48,18 @@ multiIf(
 )
 {% endmacro %}
 
+{# Display label for the git `branch_scope` dimension. `default` is work that
+   reached the repository's default branch, `non_default` is work that has not
+   — so a commit moves from one to the other when its branch merges, and a
+   past period's split shifts as branches land. #}
+{% macro git_branch_scope_label(scope_expr) %}
+multiIf(
+    {{ scope_expr }} = 'default', 'Default branch',
+    {{ scope_expr }} = 'non_default', 'Other branches',
+    {{ scope_expr }}
+)
+{% endmacro %}
+
 {# Display label for the git `source` dimension. Static product vocabulary
    (same rationale as the category labels), centralized so the gold view
    carries no inline vendor mapping. #}
@@ -57,5 +69,20 @@ multiIf(
     {{ source_expr }} = 'gitlab', 'GitLab',
     {{ source_expr }} = 'bitbucket_cloud', 'Bitbucket Cloud',
     {{ source_expr }}
+)
+{% endmacro %}
+
+{# The two-hour block a timestamp falls in, as the value a dimension carries.
+   Shared with the CI evidence model so one heatmap component reads both. #}
+{% macro hour_block_value(ts_expr) %}
+leftPad(toString(intDiv(toHour({{ ts_expr }}), 2) * 2), 2, '0')
+{% endmacro %}
+
+{# The same block, as the reader sees it: "08–10". #}
+{% macro hour_block_label(ts_expr) %}
+concat(
+    leftPad(toString(intDiv(toHour({{ ts_expr }}), 2) * 2), 2, '0'),
+    '–',
+    leftPad(toString(intDiv(toHour({{ ts_expr }}), 2) * 2 + 2), 2, '0')
 )
 {% endmacro %}

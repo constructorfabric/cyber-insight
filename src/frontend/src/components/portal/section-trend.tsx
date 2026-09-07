@@ -27,7 +27,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 export type SectionTrendSeries = {
   key: string;
   label: string;
-  type?: "line" | "area" | "stacked-area";
+  /** "step" reads as "held at", not "drifted to" — for slow-moving medians. */
+  type?: "line" | "step" | "area" | "stacked-area";
   yAxisId?: "left" | "right";
 };
 
@@ -56,6 +57,12 @@ export interface SectionTrendProps {
   isPending?: boolean;
   isError?: boolean;
   onRetry?: () => void;
+  /**
+   * The bucket a reader clicked, by its own label — what the axis shows and
+   * what the trend rows are keyed by. A card that also opens as a whole must
+   * stop this event, or one click answers two questions at once.
+   */
+  onBucketClick?: (bucket: string) => void;
 }
 
 const DEFAULT_CHART_KEYS = ["chart-1", "chart-2", "chart-3", "chart-4", "chart-5"];
@@ -72,6 +79,7 @@ export function SectionTrend({
   isPending,
   isError,
   onRetry,
+  onBucketClick,
 }: SectionTrendProps) {
   if (isPending) {
     return <Skeleton className="h-48 w-full rounded-lg" />;
@@ -124,7 +132,7 @@ export function SectionTrend({
   );
 
   return (
-    <Card>
+    <Card className="relative">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-semibold">{title}</CardTitle>
         {description ? (
@@ -137,7 +145,25 @@ export function SectionTrend({
           className="w-full"
           style={{ height }}
         >
-          <ComposedChart data={safeData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={safeData}
+            margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+            className={onBucketClick ? "cursor-pointer" : undefined}
+            onClick={
+              onBucketClick
+                ? (next, event) => {
+                    const bucket = next?.activeLabel;
+                    if (typeof bucket !== "string") return;
+                    // The card around this chart opens the whole period; a
+                    // point is a narrower question, so it must not also fire.
+                    (
+                      event as { stopPropagation?: () => void }
+                    )?.stopPropagation?.();
+                    onBucketClick(bucket);
+                  }
+                : undefined
+            }
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis
               dataKey="date"
@@ -202,6 +228,7 @@ export function SectionTrend({
                   yAxisId={yAxisId}
                   dataKey={s.key}
                   name={s.label}
+                  type={s.type === "step" ? "stepAfter" : "linear"}
                   stroke={color}
                   strokeWidth={2}
                 />

@@ -2,5 +2,14 @@
 # This applies to all dependencies, including transitive ones.
 minimumReleaseAge: 10080
 
+# Constructor's own packages; the quarantine only delays our own releases.
+minimumReleaseAgeExclude:
+  - '@gears-frontx/*'
+
 # Save exact versions when installing dependencies.
 saveExact: true
+
+engineStrict: true
+
+# Transitive pins for advisories with no fixed release from the direct dependency
+# yet. exceljs 4.4.0 still asks for the vulnerable ranges.

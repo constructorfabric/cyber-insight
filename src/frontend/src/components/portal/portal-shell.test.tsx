@@ -28,6 +28,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/auth", () => ({
   useViewer: () => ({ email: "boss@x", personId: mocks.personId }),
 }));
+vi.mock("@/queries/identity-me", () => ({
+  useIsAdmin: () => ({ isAdmin: false, isPending: false }),
+  useVisibilityPolicy: () => ({
+    policy: "org_chart",
+    isFlat: false,
+    isPending: false,
+  }),
+}));
 vi.mock("@/lib/portal/use-viewer-is-manager", () => ({
   useViewerIsManager: () => ({ isManager: mocks.isManager, isPending: mocks.isPending }),
 }));
@@ -88,6 +96,7 @@ import {
   usePortalSlice,
   usePortalZone,
 } from "@/lib/portal/portal-nav";
+import { setPortalShowPlanned } from "@/lib/portal/portal-store";
 import { renderHook } from "@testing-library/react";
 
 import { DirectionView } from "./direction-view";
@@ -122,6 +131,7 @@ beforeEach(() => {
     portalRouter.set({ lens: "Delivery" });
     portalRouter.set({ slice: undefined });
     portalRouter.set({ scope: undefined, direct: false });
+    setPortalShowPlanned(true);
   });
 });
 
@@ -154,9 +164,16 @@ describe("DirectionView", () => {
     expect(screen.getByTestId("domain-lens")).toBeInTheDocument();
   });
 
-  it("renders the roadmap note for a ComingSoon lens", () => {
+  it("routes the Repositories lens to DomainLensView", () => {
     render(<DirectionView dir="dev" lens="Repositories" />);
-    expect(screen.getByTestId("pending").textContent).toMatch(/Repository-level rollups/);
+    expect(screen.getByTestId("domain-lens")).toBeInTheDocument();
+  });
+
+  it("renders the roadmap note for a ComingSoon lens", () => {
+    render(<DirectionView dir="dev" lens="Elements" />);
+    expect(screen.getByTestId("pending").textContent).toMatch(
+      /Element-level \(file\/module\) analytics/,
+    );
   });
 
   it("names the direction in the unknown-lens note", () => {
@@ -215,7 +232,7 @@ describe("PeopleView", () => {
     rerender(<PeopleView person={pid("p1")} item="employees" />);
     expect(screen.getByTestId("employees")).toBeInTheDocument();
     rerender(<PeopleView person={pid("p1")} item="median-by-role" />);
-    expect(screen.getByText(/Cohort role medians/)).toBeInTheDocument();
+    expect(screen.getByText(/Medians by role/)).toBeInTheDocument();
   });
 
   it("syncs the route person into the org scope ONCE, then defers to the user", () => {
@@ -267,11 +284,11 @@ describe("SliceSelect", () => {
     const slice = renderHook(() => usePortalSlice());
     render(<SliceSelect dims={[{ key: "division", label: "Division" }]} />);
     // "Slice:" is a separate, md-only span now, so match the value itself.
-    expect(screen.getByRole("combobox", { name: "Slice by" })).toHaveTextContent(
+    expect(screen.getByRole("combobox", { name: "Cohort" })).toHaveTextContent(
       "Team (all)",
     );
 
-    await userEvent.click(screen.getByRole("combobox", { name: "Slice by" }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Cohort" }));
     await userEvent.click(await screen.findByRole("option", { name: "Division" }));
     expect(slice.result.current).toBe("division");
   });
@@ -280,7 +297,7 @@ describe("SliceSelect", () => {
     act(() => portalRouter.set({ slice: "division" }));
     render(<SliceSelect dims={[{ key: "division", label: "Division" }]} />);
     const slice = renderHook(() => usePortalSlice());
-    await userEvent.click(screen.getByRole("combobox", { name: "Slice by" }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Cohort" }));
     await userEvent.click(await screen.findByRole("option", { name: "Team (all)" }));
     expect(slice.result.current).toBe("");
   });

@@ -35,6 +35,21 @@ COMPONENTS = [
         "package": "insight-clickhouse",
         "paths": ["src/backend/libs/insight-clickhouse"],
     },
+    # cover=False (mirrors identity-resolution): the crate is an I/O shell over
+    # a `MariaDB` session — connect, `GET_LOCK`, the ledger read, the schema
+    # probes — exercised by the env-gated live tests in the two services that
+    # depend on it, which skip cleanly in CI, so only a handful of pure-logic
+    # lines would count and the crate would gate far below the 80% line. fmt +
+    # clippy + tests still run and gate the pipeline. Re-enable coverage when
+    # the crate carries its own MariaDB-backed suite.
+    {
+        "name": "insight-migration",
+        "lang": "rust",
+        "root": "src/backend",
+        "package": "insight-migration",
+        "cover": False,
+        "paths": ["src/backend/libs/insight-migration"],
+    },
     {
         "name": "analytics",
         "lang": "rust",
@@ -42,9 +57,11 @@ COMPONENTS = [
         "package": "analytics",
         # DB-backed integration tests: the CI rust job provisions a MariaDB
         # service, runs `analytics migrate` once up front, then runs the
-        # `#[ignore]`d live_tests (INTEGRATION_TESTS_MARIADB_URL). ClickHouse
-        # tests skip (no INTEGRATION_TESTS_CLICKHOUSE_URL — see cf/insight#1564).
+        # `#[ignore]`d live_tests (INTEGRATION_TESTS_MARIADB_URL). live_ch
+        # additionally provisions a ClickHouse for the CH-gated live tests
+        # (INTEGRATION_TESTS_CLICKHOUSE_URL — see cf/insight#1564).
         "live_db": True,
+        "live_ch": True,
         # llvm-cov reports every instrumented file, including path-dependency
         # crates (insight-clickhouse) compiled into this binary. Those crates are
         # their OWN components with their own coverage jobs — counting them here
@@ -52,13 +69,12 @@ COMPONENTS = [
         # service happens to exercise. Scope the report to this service's code.
         "cover_ignore_regex": "src/backend/libs/",
         "paths": ["src/backend/services/analytics"],
+        "triggered_by": ["insight-migration"],
     },
-    # cover=False (mirrors authenticator): the crate's business logic
-    # is exercised by env-gated live tests (IDENTITY_TEST_* against a dev
-    # MariaDB/ClickHouse) that skip cleanly in CI, so only the pure-logic unit
-    # tests would count — gating the crate far below the 80% line. fmt + clippy
-    # + tests still run and gate the pipeline. Re-enable coverage when the
-    # HTTP+MariaDB integration suite lands (#1753).
+    # cover=False: the api/ and repository layers are still thin on tests, so the
+    # 80% gate would block every change to this crate rather than the ones that
+    # deserve blocking. fmt + clippy + tests run and gate the pipeline meanwhile.
+    # Revisit once those layers carry suites of their own (#1753).
     {
         "name": "identity-resolution",
         "lang": "rust",
@@ -78,18 +94,30 @@ COMPONENTS = [
         # must re-run this crate's tests too. A shared path in `paths` would
         # NOT do that (component_for() picks a single owner — always the lib's
         # own component); `triggered_by` is the registry's co-trigger for this.
-        "triggered_by": ["insight-clickhouse"],
+        "triggered_by": ["insight-clickhouse", "insight-migration"],
     },
-    # fakeidp is a dev/e2e test double (see cf/NGINX_BFF.md §10 G6), not shipped
-    # code — but it has real integration tests, so it is covered + gated like any
-    # other crate. Its only cross-crate files are none (standalone deps), so no
-    # cover_ignore_regex is needed.
+    # cover=False (mirrors identity-resolution): the crate is a thin HTTP
+    # shell over the Kubernetes API — the pure domain (object builders,
+    # slug/tag validation, TTL/status rules) is unit-tested, but the kube I/O
+    # and host wiring need a cluster, so coverage would gate far below the 80%
+    # line. fmt + clippy + tests still run and gate the pipeline.
     {
-        "name": "fakeidp",
+        "name": "previews",
         "lang": "rust",
         "root": "src/backend",
-        "package": "fakeidp",
-        "paths": ["src/backend/services/fakeidp"],
+        "package": "previews",
+        "cover": False,
+        "paths": ["src/backend/services/previews"],
+    },
+    # git-cli-proxy shells out to the git CLI; its integration tests build
+    # fixture repos with `git init` + file:// origins in tempdirs (hermetic —
+    # the CI runner's git suffices, no service container).
+    {
+        "name": "git-cli-proxy",
+        "lang": "rust",
+        "root": "src/backend",
+        "package": "git-cli-proxy",
+        "paths": ["src/backend/services/git-cli-proxy"],
     },
     # routegen is the build-time gateway config compiler (gateway DESIGN
     # DD-GW-02); fmt + clippy + coverage run here. Golden + rejection tests cover
@@ -156,20 +184,6 @@ COMPONENTS = [
         "paths": ["src/ingestion/connectors/git/gitlab"],
     },
     {
-        "name": "github-v2",
-        "lang": "python",
-        "root": "src/ingestion/connectors/git/github-v2",
-        "cov_package": "source_github_v2",
-        "paths": ["src/ingestion/connectors/git/github-v2"],
-    },
-    {
-        "name": "bitbucket-cloud",
-        "lang": "python",
-        "root": "src/ingestion/connectors/git/bitbucket-cloud",
-        "cov_package": "source_bitbucket_cloud",
-        "paths": ["src/ingestion/connectors/git/bitbucket-cloud"],
-    },
-    {
         "name": "hubspot",
         "lang": "python",
         "root": "src/ingestion/connectors/crm/hubspot",
@@ -177,18 +191,18 @@ COMPONENTS = [
         "paths": ["src/ingestion/connectors/crm/hubspot"],
     },
     {
-        "name": "salesforce",
+        "name": "bamboohr",
         "lang": "python",
-        "root": "src/ingestion/connectors/crm/salesforce",
-        "cov_package": "source_salesforce",
-        "paths": ["src/ingestion/connectors/crm/salesforce"],
+        "root": "src/ingestion/connectors/hr-directory/bamboohr",
+        "cov_package": "source_bamboohr",
+        "paths": ["src/ingestion/connectors/hr-directory/bamboohr"],
     },
     {
-        "name": "github-copilot",
+        "name": "claude-team-invoices",
         "lang": "python",
-        "root": "src/ingestion/connectors/ai/github-copilot",
-        "cov_package": "source_github_copilot",
-        "paths": ["src/ingestion/connectors/ai/github-copilot"],
+        "root": "src/ingestion/connectors/ai/claude-team-invoices",
+        "cov_package": "source_claude_team_invoices",
+        "paths": ["src/ingestion/connectors/ai/claude-team-invoices"],
     },
     # Deploy-time ClickHouse schema tooling (the migration Job's Python half:
     # reconcile_bronze_schema, which heals warm-cluster bronze drift — #1991).
@@ -236,16 +250,22 @@ COMPONENTS = [
         "pytest_args": "--suites-only",
         "cover": False,
         "triggered_by": ["connector-tests-harness"],
-        "paths": ["src/ingestion/connectors/task-tracking/jira", "src/ingestion/connectors/ai/claude-admin"],
+        # Every nocode connector that ships a tests/ suite belongs here, or a
+        # change to that connector does not re-run its own mock tests. CDK
+        # connectors with suites (hubspot, gitlab, bamboohr, …) are covered by
+        # their own components instead.
+        "paths": [
+            "src/ingestion/connectors/task-tracking/jira",
+            "src/ingestion/connectors/git/github",
+            "src/ingestion/connectors/git/bitbucket-cloud",
+            "src/ingestion/connectors/git/github-directory",
+            "src/ingestion/connectors/collaboration/zoom",
+            "src/ingestion/connectors/dev-portal/compass",
+        ],
     },
     # `src/frontend/helm` falls under this path but has no measured lines, so it
     # never moves the number.
-    {
-        "name": "frontend",
-        "lang": "js",
-        "root": "src/frontend",
-        "paths": ["src/frontend"],
-    },
+    {"name": "frontend", "lang": "js", "root": "src/frontend", "paths": ["src/frontend"]},
 ]
 
 

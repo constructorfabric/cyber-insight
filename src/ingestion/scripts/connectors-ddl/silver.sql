@@ -1,32 +1,5 @@
 CREATE DATABASE IF NOT EXISTS `silver`;
 
-CREATE TABLE IF NOT EXISTS silver.class_ai_api_usage
-(
-    `insight_tenant_id` Nullable(String),
-    `source_id` Nullable(String),
-    `unique_key` String,
-    `email` Nullable(String),
-    `api_key_id` Nullable(String),
-    `workspace_id` Nullable(String),
-    `day` Nullable(Date),
-    `provider` String,
-    `channel` String,
-    `input_tokens` UInt64,
-    `output_tokens` UInt64,
-    `cache_read_tokens` UInt64,
-    `cache_creation_tokens` UInt64,
-    `cost_amount` Nullable(Decimal(18, 4)),
-    `cost_currency` Nullable(String),
-    `source` String,
-    `data_source` String,
-    `collected_at` Nullable(DateTime64(3)),
-    `_version` Int64
-)
-ENGINE = ReplacingMergeTree(_version)
-ORDER BY unique_key
-SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
-;
-
 CREATE TABLE IF NOT EXISTS silver.class_ai_assistant_usage
 (
     `insight_tenant_id` Nullable(String),
@@ -89,6 +62,38 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_dev_usage
     `source` String,
     `data_source` Nullable(String),
     `collected_at` Nullable(DateTime64(3)),
+    `_version` Int64,
+    `seat_status` Nullable(String)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_ai_invoice
+(
+    `insight_tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `invoice_id` Nullable(String),
+    `line_id` Nullable(String),
+    `tool` String,
+    `invoice_status` Nullable(String),
+    `chain_status` Nullable(String),
+    `category` Nullable(String),
+    `tier_label` Nullable(String),
+    `tier_ref` Nullable(String),
+    `is_proration` UInt8,
+    `currency` String,
+    `period_month` Date,
+    `amount_cents` Nullable(Int64),
+    `seat_unit_cents` Nullable(Int64),
+    `seat_quantity` Nullable(Int64),
+    `invoice_net_cents` Nullable(Int64),
+    `invoice_metrics_json` String,
+    `source` String,
+    `data_source` Nullable(String),
+    `collected_at` Nullable(DateTime64(3)),
     `_version` Int64
 )
 ENGINE = ReplacingMergeTree(_version)
@@ -113,6 +118,30 @@ CREATE TABLE IF NOT EXISTS silver.class_ai_overage
     `is_over_limit` Nullable(UInt8),
     `is_enabled` Nullable(UInt8),
     `overage_metrics_json` String,
+    `source` String,
+    `data_source` Nullable(String),
+    `collected_at` Nullable(DateTime64(3)),
+    `_version` Int64
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_ai_overage_daily
+(
+    `insight_tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` String,
+    `email` Nullable(String),
+    `account_id` Nullable(String),
+    `snapshot_date` Date,
+    `period_month` Date,
+    `tool` String,
+    `seat_tier` Nullable(String),
+    `currency` String,
+    `credit_limit_cents` Nullable(UInt32),
+    `used_amount_cents` UInt32,
     `source` String,
     `data_source` Nullable(String),
     `collected_at` Nullable(DateTime64(3)),
@@ -265,7 +294,7 @@ CREATE TABLE IF NOT EXISTS silver.class_crm_activities
     `contact_id` Nullable(String),
     `deal_id` Nullable(String),
     `account_id` Nullable(String),
-    `timestamp` Nullable(DateTime64(3)),
+    `timestamp` DateTime64(3),
     `duration_seconds` Nullable(Int64),
     `outcome` Nullable(String),
     `metadata` String,
@@ -378,6 +407,38 @@ ORDER BY unique_key
 SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
 ;
 
+CREATE TABLE IF NOT EXISTS silver.class_git_ci_runs
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `repo_full_name` String,
+    `pipeline_key` String,
+    `pipeline_name` String,
+    `run_id` Int64,
+    `run_number` Int64,
+    `attempt` Int64,
+    `is_retry` UInt8,
+    `trigger_category` String,
+    `trigger_raw` String,
+    `outcome` Nullable(String),
+    `is_gate` UInt8,
+    `branch` String,
+    `commit_sha` String,
+    `actor_login` String,
+    `created_at` Nullable(DateTime),
+    `started_at` Nullable(DateTime),
+    `finished_at` Nullable(DateTime),
+    `duration_s` Nullable(Int64),
+    `data_source` String,
+    `_version` Int64,
+    `_airbyte_extracted_at` DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
 CREATE TABLE IF NOT EXISTS silver.class_git_commits
 (
     `tenant_id` Nullable(String),
@@ -387,6 +448,7 @@ CREATE TABLE IF NOT EXISTS silver.class_git_commits
     `repo_slug` String,
     `commit_hash` String,
     `branch` String,
+    `is_default_branch` Nullable(UInt8),
     `author_name` String,
     `author_email` String,
     `committer_name` String,
@@ -397,6 +459,53 @@ CREATE TABLE IF NOT EXISTS silver.class_git_commits
     `lines_added` Nullable(Int64),
     `lines_removed` Nullable(Int64),
     `is_merge_commit` UInt8,
+    `data_source` String,
+    `_version` Int64,
+    `_airbyte_extracted_at` DateTime64(3),
+    `patch_id` Nullable(String),
+    `committer_date` Nullable(DateTime)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_git_deployment_events
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `repo_full_name` String,
+    `deployment_id` String,
+    `event_id` Int64,
+    `state` String,
+    `environment` String,
+    `creator_login` String,
+    `created_at` Nullable(DateTime),
+    `data_source` String,
+    `_version` Int64,
+    `_airbyte_extracted_at` DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_git_deployments
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `repo_full_name` String,
+    `deployment_id` String,
+    `environment` String,
+    `is_production` UInt8,
+    `is_transient` UInt8,
+    `ref` String,
+    `commit_sha` String,
+    `task` String,
+    `creator_login` String,
+    `created_at` Nullable(DateTime),
     `data_source` String,
     `_version` Int64,
     `_airbyte_extracted_at` DateTime64(3)
@@ -422,6 +531,60 @@ CREATE TABLE IF NOT EXISTS silver.class_git_file_changes
     `source_type` String,
     `data_source` String,
     `_version` Int64,
+    `_airbyte_extracted_at` DateTime64(3),
+    `pre_image_oid` Nullable(String),
+    `post_image_oid` Nullable(String)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_git_item_events
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `project_key` String,
+    `repo_slug` String,
+    `item_type` String,
+    `item_number` Int64,
+    `event_id` String,
+    `event_at` Nullable(DateTime),
+    `actor_name` String,
+    `field_id` String,
+    `delta_action` String,
+    `delta_value_id` String,
+    `delta_value_display` String,
+    `prev_value_id` Nullable(String),
+    `prev_value_display` Nullable(String),
+    `data_source` String,
+    `_version` Int64,
+    `_airbyte_extracted_at` DateTime64(3)
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_git_pr_review_events
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `unique_key` Nullable(String),
+    `project_key` String,
+    `repo_slug` String,
+    `pr_id` Int64,
+    `pr_number` Int64,
+    `event_kind` String,
+    `review_state` String,
+    `actor_login` String,
+    `actor_name` String,
+    `actor_account_id` String,
+    `actor_email` String,
+    `created_at` Nullable(DateTime),
+    `data_source` String,
+    `_version` Int64,
     `_airbyte_extracted_at` DateTime64(3)
 )
 ENGINE = ReplacingMergeTree(_version)
@@ -443,6 +606,7 @@ CREATE TABLE IF NOT EXISTS silver.class_git_pull_requests
     `state` String,
     `author_name` String,
     `author_email` String,
+    `author_account_id` String,
     `source_branch` String,
     `destination_branch` String,
     `created_on` Nullable(DateTime),
@@ -549,7 +713,8 @@ CREATE TABLE IF NOT EXISTS silver.class_git_repositories
     `metadata` String,
     `data_source` String,
     `_version` Int64,
-    `_airbyte_extracted_at` DateTime64(3)
+    `_airbyte_extracted_at` DateTime64(3),
+    `default_branch` Nullable(String)
 )
 ENGINE = ReplacingMergeTree(_version)
 ORDER BY unique_key
@@ -723,18 +888,16 @@ CREATE TABLE IF NOT EXISTS silver.class_task_field_history
     `data_source` String,
     `issue_id` String,
     `id_readable` String,
+    `title` Nullable(String),
     `event_id` String,
     `event_at` DateTime64(3),
-    `event_kind` Enum8('changelog' = 1, 'synthetic_initial' = 2),
+    `event_kind` Enum8('changelog' = 1, 'synthetic_initial' = 2, 'availability' = 3, 'lifecycle' = 4),
     `_seq` UInt32,
     `author_id` Nullable(String),
-    `author_display` Nullable(String),
     `field_id` String,
     `field_name` String,
     `field_cardinality` Enum8('single' = 1, 'multi' = 2),
     `delta_action` Enum8('set' = 1, 'add' = 2, 'remove' = 3),
-    `delta_value_id` Nullable(String),
-    `delta_value_display` Nullable(String),
     `value_ids` Array(String),
     `value_displays` Array(String),
     `value_id_type` Enum8('opaque_id' = 1, 'account_id' = 2, 'string_literal' = 3, 'path' = 4, 'none' = 5),
@@ -749,14 +912,14 @@ SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_gr
 CREATE TABLE IF NOT EXISTS silver.class_task_field_metadata
 (
     `unique_key` Nullable(String),
-    `insight_source_id` Nullable(String),
+    `insight_source_id` String,
     `data_source` String,
     `project_key` Nullable(String),
-    `field_id` Nullable(String),
-    `field_name` Nullable(String),
-    `is_multi` Nullable(UInt8),
-    `field_type` Nullable(String),
-    `has_id` Nullable(UInt8),
+    `field_id` String,
+    `field_name` String,
+    `is_multi` UInt8,
+    `field_type` String,
+    `has_id` UInt8,
     `observed_at` DateTime64(3),
     `_version` Int64
 )
@@ -776,6 +939,31 @@ CREATE TABLE IF NOT EXISTS silver.class_task_issuetypes
     `issue_kind` String,
     `collected_at` DateTime64(3),
     `_version` Int64
+)
+ENGINE = ReplacingMergeTree(_version)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS silver.class_task_links
+(
+    `unique_key` String,
+    `insight_source_id` String,
+    `data_source` String,
+    `id_readable` String,
+    `link_type` String,
+    `target_type` Enum8('issue' = 1, 'pull_request' = 2),
+    `target_readable` String,
+    `is_cross_repository` Bool,
+    `valid_from` DateTime64(3),
+    `valid_from_known` UInt8,
+    `valid_to` Nullable(DateTime64(3)),
+    `added_by` Nullable(String),
+    `removed_by` Nullable(String),
+    `evidence` Enum8('event' = 1, 'observation' = 2),
+    `origin_event_id` Nullable(String),
+    `collected_at` DateTime64(3),
+    `_version` UInt64
 )
 ENGINE = ReplacingMergeTree(_version)
 ORDER BY unique_key
@@ -874,6 +1062,7 @@ CREATE TABLE IF NOT EXISTS silver.class_task_worklogs
     `duration_seconds` Nullable(Float64),
     `description` Nullable(String),
     `collected_at` Nullable(DateTime64(3)),
+    `is_deleted` Nullable(UInt8),
     `_version` Int64
 )
 ENGINE = ReplacingMergeTree(_version)
@@ -1151,51 +1340,6 @@ CREATE TABLE IF NOT EXISTS silver.mtr_git_person_weekly
 ENGINE = ReplacingMergeTree
 ORDER BY unique_key
 SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
-;
-
-CREATE TABLE IF NOT EXISTS silver.to_ai_cost
-(
-    `tenant_id` Nullable(String),
-    `insight_source_id` Nullable(String),
-    `unique_id` Nullable(String),
-    `report_date` Date,
-    `line_item` Nullable(String),
-    `project_id` Nullable(String),
-    `amount_value` Nullable(Decimal(38, 9)),
-    `amount_currency` Nullable(String),
-    `provider` String,
-    `data_source` String
-)
-ENGINE = MergeTree
-ORDER BY tuple()
-SETTINGS replicated_deduplication_window = '0', index_granularity = 8192
-;
-
-CREATE TABLE IF NOT EXISTS silver.to_ai_tool_usage
-(
-    `tenant_id` Nullable(String),
-    `insight_source_id` Nullable(String),
-    `unique_id` Nullable(String),
-    `report_date` Date,
-    `user_id` Nullable(String),
-    `project_id` Nullable(String),
-    `model` Nullable(String),
-    `input_tokens` Nullable(Decimal(38, 9)),
-    `output_tokens` Nullable(Decimal(38, 9)),
-    `input_cached_tokens` Nullable(Decimal(38, 9)),
-    `input_audio_tokens` Nullable(Decimal(38, 9)),
-    `output_audio_tokens` Nullable(Decimal(38, 9)),
-    `num_model_requests` Nullable(Decimal(38, 9)),
-    `is_batch` Bool,
-    `service_tier` Nullable(String),
-    `person_id` Nullable(String),
-    `provider` String,
-    `client` String,
-    `data_source` String
-)
-ENGINE = MergeTree
-ORDER BY tuple()
-SETTINGS replicated_deduplication_window = '0', index_granularity = 8192
 ;
 
 CREATE TABLE IF NOT EXISTS silver.zendesk__support_event

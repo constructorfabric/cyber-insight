@@ -46,6 +46,13 @@ PROVISION_SCRIPT = BOOTSTRAP_DIR / "provision-presentation-access.sh"
 # The read-only contract databases the role grants SELECT on.
 CONTRACT_DBS = ("silver", "person", "identity", "insight")
 
+# Append-only: SELECT + INSERT, but no CREATE — its DDL comes from migrations.
+USAGE_DB = "product_usage"
+
+# Read-only: SELECT and nothing else. Its writer is the reconcile loop, which
+# authenticates as the ingestion admin, so the query path never needs INSERT.
+HISTORY_DB = "ingestion_history"
+
 PROBE_USER = "pres_role_probe"
 PROBE_PASSWORD = "probe"
 
@@ -97,7 +104,7 @@ def _apply(path: Path) -> None:
 def probe():
     """Provision the contract + presentation objects and a probe user carrying
     only the presentation_ro role. Torn down afterwards."""
-    for db in (*CONTRACT_DBS, "presentation"):
+    for db in (*CONTRACT_DBS, "presentation", USAGE_DB, HISTORY_DB):
         assert _admin(f"CREATE DATABASE IF NOT EXISTS {db}")[0]
     for db in CONTRACT_DBS:
         assert _admin(f"CREATE TABLE IF NOT EXISTS {db}.probe (x UInt8) ENGINE=MergeTree ORDER BY x")[0]
@@ -114,6 +121,8 @@ def probe():
         yield _probe
     finally:
         _admin("DROP TABLE IF EXISTS presentation.scratch")
+        _admin(f"DROP TABLE IF EXISTS {USAGE_DB}.probe")
+        _admin(f"DROP TABLE IF EXISTS {HISTORY_DB}.probe")
         for db in CONTRACT_DBS:
             _admin(f"DROP TABLE IF EXISTS {db}.probe")
         _admin(f"DROP USER IF EXISTS {PROBE_USER}")
@@ -151,6 +160,55 @@ def test_presentation_is_create_insert_only(probe) -> None:
         assert "ACCESS_DENIED" in resp, resp
 
 
+def test_usage_is_append_only(probe) -> None:
+    """INSERT/SELECT allowed in product_usage; CREATE denied along with the rest.
+
+    The distinction from `presentation`: this database's DDL is owned by
+    `scripts/migrations/`, so the service that writes adoption events cannot
+    define a table anywhere. A regression that granted CREATE back would let the
+    schema drift away from the migration silently.
+    """
+    assert _admin(
+        f"CREATE TABLE IF NOT EXISTS {USAGE_DB}.probe (x UInt8) ENGINE=MergeTree ORDER BY x"
+    )[0]
+    assert probe(f"INSERT INTO {USAGE_DB}.probe VALUES (7)")[0], "usage INSERT must be allowed"
+    assert probe(f"SELECT sum(x) FROM {USAGE_DB}.probe")[0], "usage SELECT must be allowed"
+    for sql in (
+        f"CREATE TABLE {USAGE_DB}.made_up (x UInt8) ENGINE=MergeTree ORDER BY x",
+        f"DROP TABLE {USAGE_DB}.probe",
+        f"TRUNCATE TABLE {USAGE_DB}.probe",
+        f"ALTER TABLE {USAGE_DB}.probe ADD COLUMN y UInt8",
+    ):
+        ok, resp = probe(sql)
+        assert not ok, f"{USAGE_DB} must reject: {sql!r}"
+        assert "ACCESS_DENIED" in resp, resp
+
+
+def test_sync_history_is_read_only(probe) -> None:
+    """SELECT allowed in ingestion_history; INSERT denied along with the rest.
+
+    The distinction from `product_usage`: adoption events are written by the
+    same service that serves them, so that database needs INSERT. Sync history
+    is written by the reconcile loop under different credentials entirely, so a
+    grant letting the query path write here would be a grant nothing uses — and
+    the surface reporting on ingestion could edit its own evidence.
+    """
+    assert _admin(
+        f"CREATE TABLE IF NOT EXISTS {HISTORY_DB}.probe (x UInt8) ENGINE=MergeTree ORDER BY x"
+    )[0]
+    assert probe(f"SELECT sum(x) FROM {HISTORY_DB}.probe")[0], "history SELECT must be allowed"
+    for sql in (
+        f"INSERT INTO {HISTORY_DB}.probe VALUES (7)",
+        f"CREATE TABLE {HISTORY_DB}.made_up (x UInt8) ENGINE=MergeTree ORDER BY x",
+        f"DROP TABLE {HISTORY_DB}.probe",
+        f"TRUNCATE TABLE {HISTORY_DB}.probe",
+        f"ALTER TABLE {HISTORY_DB}.probe ADD COLUMN y UInt8",
+    ):
+        ok, resp = probe(sql)
+        assert not ok, f"{HISTORY_DB} must reject: {sql!r}"
+        assert "ACCESS_DENIED" in resp, resp
+
+
 # ── #1964: the persistent grant-less `presentation` user, provisioned by the
 #    real provision-presentation-access.sh (not a throwaway probe) ──
 
@@ -164,7 +222,7 @@ def presentation_user():
     if not (shutil.which("bash") and shutil.which("curl")):
         pytest.skip("provision-presentation-access.sh needs bash + curl")
 
-    for db in (*CONTRACT_DBS, "presentation"):
+    for db in (*CONTRACT_DBS, "presentation", USAGE_DB, HISTORY_DB):
         assert _admin(f"CREATE DATABASE IF NOT EXISTS {db}")[0]
     for db in CONTRACT_DBS:
         assert _admin(f"CREATE TABLE IF NOT EXISTS {db}.probe (x UInt8) ENGINE=MergeTree ORDER BY x")[0]

@@ -29,6 +29,16 @@ export function rankableCount(counts: RankCounts): number {
 }
 
 /**
+ * Whether a rank carries a comparison at all — the same set `rankCounts`
+ * tallies as ranked. A metric present in the response but unmeasured for this
+ * person, or measured against a pool too thin to disclose, ranks `neutral`: it
+ * is not a weak reading, it is no reading.
+ */
+export function isRankable(rank: PeerStatusWithNeutral | null): boolean {
+  return rank === "top" || rank === "in_pack" || rank === "bottom"
+}
+
+/**
  * Fraction of the rankable set a rank must clear to count as a section-wide
  * pattern rather than quartile noise. A quartile hands ~25% of any healthy
  * cohort to the bottom by construction, so a lone weak metric is expected, not
@@ -60,11 +70,19 @@ export function gradeSectionStanding(counts: RankCounts): Status {
  * (from `gradeSectionStanding`) carries the judgment. "Behind" wins over
  * "ahead" on mixed profiles: the badge is a triage signal, and a strength
  * never prompts opening a card.
+ *
+ * The count says "N of M" because it covers the whole SECTION while the card
+ * below it shows a few rows. Left as a bare "5 behind peers" it read as a
+ * claim about those rows and contradicted them: a card could say "4 ahead of
+ * peers" over four rows with no green mark on any of them, and there was no
+ * way for the reader to tell the badge was counting further than they could
+ * see.
  */
 export function sectionStandingPhrase(counts: RankCounts): string {
-  if (rankableCount(counts) === 0) return "no peer data"
-  if (counts.bottom > 0) return `${counts.bottom} behind peers`
-  if (counts.top > 0) return `${counts.top} ahead of peers`
-  return "on par with peers"
+  const rankable = rankableCount(counts)
+  if (rankable === 0) return "no comparison"
+  if (counts.bottom > 0) return `${counts.bottom} of ${rankable} behind peers`
+  if (counts.top > 0) return `${counts.top} of ${rankable} ahead of peers`
+  return "near the median"
 }
 

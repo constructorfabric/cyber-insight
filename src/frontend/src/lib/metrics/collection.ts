@@ -6,7 +6,7 @@ import type {
   MetricComputation,
   MetricDirection,
   MetricDimensionFilter,
-  MetricEntityType,
+  MetricErrorView,
   MetricFormat,
   MetricGroupLimit,
   MetricResult,
@@ -15,6 +15,7 @@ import type {
   MetricViewRequest,
   PeerView,
   PeriodView,
+  RollupView,
   TimeseriesView,
 } from "@/api/metric-results-client";
 
@@ -39,6 +40,11 @@ type MetricCollectionViewConfig =
       view: "breakdown";
       dimensions: string[];
     }
+  | {
+      view: "rollup";
+      dimensions: string[];
+      groupLimit?: MetricGroupLimit;
+    }
   | { view: "histogram" };
 
 interface MetricCollectionMetricConfig {
@@ -51,10 +57,81 @@ export interface MetricCollectionConfig {
   metrics: MetricCollectionMetricConfig[];
 }
 
-export interface MetricCollectionEntity {
-  type: MetricEntityType;
-  ids: string[];
+/**
+ * Drop metrics this installation's catalog does not offer.
+ *
+ * The backend resolves a request ALL-or-NOTHING: one key it cannot serve and
+ * the whole `/v1/metric-results` call is rejected with 400 UNAVAILABLE
+ * (`metric_definitions/repository.rs` — `return Err(unavailable(key))`), so a
+ * single missing metric blanks an entire screen rather than its own tile.
+ *
+ * The frontend's metric keys are compiled in, but the catalog is per
+ * installation: it is seeded from a registry that moves, and a tenant running
+ * an older backend, or a different connector set, simply has fewer keys. Asking
+ * only for what the catalog lists turns "the screen is broken" into "that one
+ * metric has no data here", which every section already renders honestly.
+ *
+ * `available === null` means the catalog has not answered yet (or failed) —
+ * then nothing is dropped, because a not-yet-known catalog must not silently
+ * shrink a request. The config object is returned unchanged when no key is
+ * dropped, so query keys stay stable.
+ */
+export function filterCollectionToAvailable(
+  collection: MetricCollectionConfig,
+  available: ReadonlySet<string> | null,
+): MetricCollectionConfig {
+  if (!available) return collection;
+  return filterCollectionByKey(collection, (key) => available.has(key));
 }
+
+/**
+ * Drop every metric the predicate rejects, keeping the config object identical
+ * when nothing is dropped so query keys stay stable.
+ */
+export function filterCollectionByKey(
+  collection: MetricCollectionConfig,
+  keep: (metricKey: string) => boolean,
+): MetricCollectionConfig {
+  const kept = collection.metrics.filter((m) => keep(m.key));
+  return kept.length === collection.metrics.length ? collection : { metrics: kept };
+}
+
+/**
+ * Drop metrics whose request narrows by a dimension they do not declare.
+ *
+ * The backend rejects the WHOLE request over one such filter — "metric
+ * tasks.closed does not support dimension repository" — so a screen that
+ * scopes a whole direction to one repository would blank itself over the
+ * metrics that have nothing to do with repositories.
+ *
+ * Dropping, not un-filtering: an unfiltered tile on a scoped screen would show
+ * a figure for the whole roster under a heading that names one repository,
+ * which is worse than an absent tile. `declared === null` means the catalog has
+ * not answered, and then nothing is dropped — the caller holds the request
+ * instead, the same rule `filterCollectionToAvailable` follows.
+ */
+export function filterCollectionToDeclaredDimensions(
+  collection: MetricCollectionConfig,
+  declared: ReadonlyMap<string, ReadonlySet<string>> | null,
+): MetricCollectionConfig {
+  if (!declared) return collection;
+  // Judged per ENTRY, not per key: two entries may name the same metric under
+  // different filters, and looking the key up would decide the second one by
+  // the first one's filters.
+  const kept = collection.metrics.filter((metric) => {
+    const asked = metric.filters ?? [];
+    if (!asked.length) return true;
+    const supported = declared.get(metric.key);
+    return asked.every((filter) => supported?.has(filter.dimension) ?? false);
+  });
+  return kept.length === collection.metrics.length ? collection : { metrics: kept };
+}
+
+export type MetricCollectionEntity =
+  // The tenant variant carries no ids: the backend derives the organization
+  // from the session, and a client-supplied identifier is rejected outright.
+  | { type: "person"; ids: string[] }
+  | { type: "tenant" };
 
 export type NormalizedMetricResult = {
   metric_key: string;
@@ -72,7 +149,10 @@ export type NormalizedMetricResult = {
   timeseries?: TimeseriesView;
   peer?: PeerView;
   breakdown?: BreakdownView;
+  rollup?: RollupView;
   histogram?: HistogramView;
+  /** Set when a view's computation failed server-side (first error wins). */
+  error?: Pick<MetricErrorView, "code" | "message">;
   drilldown?: MetricResult["drilldown"];
   selection?: MetricResult["selection"];
 };
@@ -97,11 +177,16 @@ function exhaustive(value: never): never {
 export function buildMetricCollectionRequest(
   collection: MetricCollectionConfig,
   entity: MetricCollectionEntity,
-  period: DateRange
+  period: DateRange,
+  compareTo?: DateRange
 ): MetricResultsRequest {
   return {
-    entity: { type: entity.type, ids: entity.ids },
+    entity:
+      entity.type === "person"
+        ? { type: "person", ids: entity.ids }
+        : { type: "tenant" },
     period,
+    ...(compareTo ? { compare_to: { ...compareTo } } : {}),
     metrics: collection.metrics.map((metric) => ({
       metric_key: metric.key,
       ...(metric.filters?.length ? { filters: metric.filters } : {}),
@@ -165,8 +250,17 @@ export function normalizeMetricResult(
       case "breakdown":
         normalized.breakdown = view;
         break;
+      case "rollup":
+        normalized.rollup = view;
+        break;
       case "histogram":
         normalized.histogram = view;
+        break;
+      case "error":
+        // A failed view arrives in its requested slot; the slot's field stays
+        // unset and downstream reads are optional-chained already. First
+        // error wins — one message per metric is enough to render.
+        normalized.error ??= { code: view.code, message: view.message };
         break;
       default:
         // Forward-compat: the server may ship new view kinds before this
@@ -180,6 +274,88 @@ export function normalizeMetricResult(
   }
 
   return normalized;
+}
+
+/**
+ * The comparison window read as if it had been its own request: its value takes
+ * the place of `value`, and the views that never carry a window (`peer`,
+ * `timeseries`, `histogram`, `rollup`) are dropped rather than repeated —
+ * reading them here would silently answer over the primary period. This is what
+ * lets the window feed the same selectors a separate request did.
+ *
+ * A compared breakdown groups over both windows at once, so its row set is the
+ * union of them; `present` says which rows the window actually had, and a row
+ * it never had is dropped here. Presence cannot be read off the value: a ratio
+ * over a group that IS in the window is null whenever its denominator is zero,
+ * and dropping that row would lose one a standalone request returns.
+ */
+export function projectComparison(
+  results: Map<string, NormalizedMetricResult>
+): Map<string, NormalizedMetricResult> {
+  const out = new Map<string, NormalizedMetricResult>();
+  for (const [key, result] of results) {
+    const projected: NormalizedMetricResult = {
+      ...result,
+      period: undefined,
+      timeseries: undefined,
+      peer: undefined,
+      breakdown: undefined,
+      rollup: undefined,
+      histogram: undefined,
+    };
+    if (result.period) {
+      projected.period = {
+        ...result.period,
+        values: result.period.values.map((value) => ({
+          entity_id: value.entity_id,
+          value: value.compare_to ?? null,
+        })),
+      };
+    }
+    if (result.breakdown) {
+      projected.breakdown = {
+        ...result.breakdown,
+        values: result.breakdown.values.flatMap((row) => {
+          const window = row.compare_to;
+          if (!window?.present) return [];
+          return [
+            { ...row, value: window.value, present: undefined, compare_to: undefined },
+          ];
+        }),
+      };
+    }
+    out.set(key, projected);
+  }
+  return out;
+}
+
+/**
+ * The primary period of a compared response, read the same way: its breakdown
+ * row set is the union of both windows too, so the groups the primary period
+ * never had are dropped. An uncompared response is returned untouched.
+ */
+export function projectPrimary(
+  results: Map<string, NormalizedMetricResult>
+): Map<string, NormalizedMetricResult> {
+  const out = new Map<string, NormalizedMetricResult>();
+  for (const [key, result] of results) {
+    if (!result.breakdown?.values.some((row) => row.present !== undefined)) {
+      out.set(key, result);
+      continue;
+    }
+    out.set(key, {
+      ...result,
+      breakdown: {
+        ...result.breakdown,
+        values: result.breakdown.values.flatMap((row) =>
+          row.present === false
+            ? []
+            : [{ ...row, present: undefined, compare_to: undefined }]
+        ),
+      },
+    });
+  }
+  return out;
 }
 
 export function normalizeMetricResults(
@@ -231,6 +407,9 @@ export const MAX_PROJECTED_ROWS = 4500;
  * count per entity but is a drilldown-only single-entity view — all three are
  * for single-entity surfaces and roster surfaces strip them via
  * `projectViews(["period", "peer"])`, so none should ride a chunked request.
+ * Rollup is not chunkable either, and for a harder reason: its rows carry no
+ * entity grain, so per-chunk results cannot be merged (a median or a distinct
+ * person count over half the roster is not half the answer).
  */
 export function entityChunkSize(
   collection: MetricCollectionConfig
@@ -241,6 +420,7 @@ export function entityChunkSize(
       if (
         view.view === "timeseries" ||
         view.view === "breakdown" ||
+        view.view === "rollup" ||
         view.view === "histogram"
       ) {
         return null;
@@ -299,6 +479,7 @@ export function mergeNormalizedResults(
       } else if (result.peer) {
         existing.peer = { ...result.peer, values: [...result.peer.values] };
       }
+      existing.error ??= result.error;
     }
   }
   return out;
@@ -339,6 +520,12 @@ function toRequestView(
       };
     case "breakdown":
       return { view: "breakdown", dimensions: view.dimensions };
+    case "rollup":
+      return {
+        view: "rollup",
+        dimensions: view.dimensions,
+        group_limit: view.groupLimit,
+      };
     case "histogram":
       return { view: "histogram" };
     default:

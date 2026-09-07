@@ -1,6 +1,6 @@
 //! Shared admin gate for the mutating / admin identity-resolution endpoints.
 //!
-//! Ported from the .NET `CallerAdminCheck`: the caller is the gateway-JWT
+//! The caller is the gateway-JWT
 //! subject (`SecurityContext::subject_id`, verified by the host authn pipeline —
 //! `NGINX_BFF` R1), which must hold an active `admin` role in the tenant. Reused
 //! by the persons-seed, roles, person-roles, and visibility endpoints.
@@ -30,7 +30,7 @@ pub(crate) fn require_caller(ctx: &SecurityContext) -> Result<Uuid, CanonicalErr
     // A nil tenant reaches here only from a misconfigured token (the gateway JWT
     // should always carry a real tenant). Surface it as an explicit 400 instead
     // of silently flowing a nil tenant into every query (→ empty/404), which is
-    // hard to diagnose. Rough parity with the .NET `tenant_unresolved` 400.
+    // hard to diagnose.
     if ctx.subject_tenant_id().is_nil() {
         return Err(AccessError::failed_precondition()
             .with_precondition_violation(
@@ -56,12 +56,17 @@ pub(crate) async fn require_admin(
     ctx: &SecurityContext,
 ) -> Result<Uuid, CanonicalError> {
     let caller = require_caller(ctx)?;
-    let is_admin = roles_repo::has_active_admin(db, ctx.subject_tenant_id(), caller)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "admin role check failed");
-            CanonicalError::internal("failed to verify caller permissions").create()
-        })?;
+    let is_admin = roles_repo::has_active_role(
+        db,
+        ctx.subject_tenant_id(),
+        caller,
+        roles_repo::ADMIN_ROLE_ID,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "admin role check failed");
+        CanonicalError::internal("failed to verify caller permissions").create()
+    })?;
     if !is_admin {
         tracing::warn!(
             caller = %caller,

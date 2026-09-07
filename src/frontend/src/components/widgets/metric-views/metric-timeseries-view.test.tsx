@@ -1,8 +1,15 @@
+const usageMocks = vi.hoisted(() => ({ recordUsageEvent: vi.fn() }));
+
+import { useEffect } from "react";
+
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EvidenceDialogContext } from "@/components/metric-evidence-context";
+import {
+  EvidenceDialogContext,
+  type EvidenceDialogTarget,
+} from "@/components/metric-evidence-context";
 import { MetricTimeseriesView } from "@/components/widgets/metric-views/metric-timeseries-view";
 import {
   ENTITY_ID,
@@ -17,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   csv: vi.fn(),
   xlsx: vi.fn(),
   evidenceColumn: "total",
+  tableOverflows: false,
 }));
 
 vi.mock("@/queries/metric-results", () => ({
@@ -30,7 +38,7 @@ vi.mock("@/components/widgets/metric-views/metric-timeseries-chart", () => ({
   }: {
     onEvidence?: (
       metricKey: string,
-      columnKey: string,
+      columnKey: string | null,
       bucketStart: string | null
     ) => void;
   }) => (
@@ -44,13 +52,34 @@ vi.mock("@/components/widgets/metric-views/metric-timeseries-chart", () => ({
       >
         drill point
       </button>
+      <button
+        type="button"
+        onClick={() => onEvidence?.("git.commits", null, "2026-04-20")}
+      >
+        drill bucket
+      </button>
     </div>
   ),
 }));
 
 vi.mock("@/components/widgets/metric-views/metric-timeseries-table", () => ({
-  MetricTimeseriesTable: () => <div>table presentation</div>,
+  MetricTimeseriesTable: ({
+    onVerticalOverflow,
+  }: {
+    onVerticalOverflow?: (overflows: boolean) => void;
+  }) => {
+    // The real table measures and reports; jsdom cannot, so the test says.
+    useEffect(() => {
+      onVerticalOverflow?.(mocks.tableOverflows);
+    }, [onVerticalOverflow]);
+    return <div>table presentation</div>;
+  },
 }));
+
+vi.mock("@/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@/telemetry")>("@/telemetry");
+  return { ...actual, recordUsageEvent: usageMocks.recordUsageEvent };
+});
 
 vi.mock("@/components/widgets/metric-views/metric-timeseries-csv", () => ({
   downloadMetricTimeseriesCsv: mocks.csv,
@@ -76,6 +105,7 @@ describe("MetricTimeseriesView", () => {
     mocks.collectionSet.mockReturnValue(new Map());
     mocks.csv.mockReset();
     mocks.xlsx.mockReset().mockResolvedValue(undefined);
+    mocks.tableOverflows = false;
   });
 
   it("switches presentations and persists presentation per card", async () => {
@@ -249,6 +279,33 @@ describe("MetricTimeseriesView", () => {
     expect(mocks.csv.mock.calls[0]?.[0]).toBe("exp");
   });
 
+  it("reports which format a reader took the data out in", async () => {
+    const user = userEvent.setup();
+    usageMocks.recordUsageEvent.mockClear();
+    render(
+      <MetricTimeseriesView
+        id="exp"
+        entityId={ENTITY_ID}
+        range={RANGE}
+        metricKeys={["git.commits"]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    await user.click(await screen.findByText("Excel (.xlsx)"));
+    expect(usageMocks.recordUsageEvent).toHaveBeenCalledWith(
+      "export",
+      "timeseries:xlsx",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    await user.click(await screen.findByText("CSV (.csv)"));
+    expect(usageMocks.recordUsageEvent).toHaveBeenCalledWith(
+      "export",
+      "timeseries:csv",
+    );
+  });
+
   it("switches the charted metric through the metric select", async () => {
     const user = userEvent.setup();
     render(
@@ -284,6 +341,90 @@ describe("MetricTimeseriesView", () => {
 
     expect(screen.queryByLabelText("Metric")).not.toBeInTheDocument();
     expect(screen.getByText("Commits & Lines added")).toBeInTheDocument();
+  });
+
+  it("lets the reader drop the height ceiling, and puts it back on the way out", async () => {
+    mocks.tableOverflows = true;
+    const user = userEvent.setup();
+    const { container } = render(
+      <MetricTimeseriesView
+        id="expandable"
+        entityId={ENTITY_ID}
+        range={RANGE}
+        metricKeys={["git.commits", "git.lines_added"]}
+        groupBy={{ default: "repository" }}
+      />
+    );
+    const body = () => container.querySelector('[data-slot="card-content"]')!;
+    await user.click(screen.getByRole("button", { name: "Table view" }));
+    expect(body().className).toContain("max-h-96");
+
+    await user.click(screen.getByRole("button", { name: "Show every row" }));
+    expect(body().className).not.toContain("max-h-96");
+    expect(
+      screen.getByRole("button", { name: "Scroll the table" })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // Round trip through the chart: the ceiling comes back rather than the
+    // next table opening uncapped.
+    await user.click(screen.getByRole("button", { name: "Chart view" }));
+    await user.click(screen.getByRole("button", { name: "Table view" }));
+    expect(body().className).toContain("max-h-96");
+  });
+
+  it("lets a table size itself while holding a chart to a fixed box", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <MetricTimeseriesView
+        id="sized"
+        entityId={ENTITY_ID}
+        range={RANGE}
+        metricKeys={["git.commits", "git.lines_added"]}
+        groupBy={{ default: "repository" }}
+      />
+    );
+    const body = () => container.querySelector('[data-slot="card-content"]')!;
+    expect(body().className).toContain("h-96");
+    expect(body().className).not.toContain("max-h-96");
+
+    await user.click(screen.getByRole("button", { name: "Table view" }));
+    expect(body().className).toContain("max-h-96");
+  });
+
+  it("names a grouped table by its grouping, with how many groups there are", async () => {
+    const user = userEvent.setup();
+    render(
+      <MetricTimeseriesView
+        id="by-repo"
+        entityId={ENTITY_ID}
+        range={RANGE}
+        metricKeys={["git.commits", "git.lines_added"]}
+        groupBy={{ default: "repository" }}
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "Table view" }));
+    const heading = screen.getByRole("heading", { name: /By repository/ });
+    expect(heading).toHaveTextContent("By repository");
+    expect(heading).toHaveTextContent("2");
+    expect(screen.queryByLabelText("Metric")).not.toBeInTheDocument();
+  });
+
+  it("heads a grouped table with the grouping's curated wording, not its key", async () => {
+    const user = userEvent.setup();
+    render(
+      <MetricTimeseriesView
+        id="by-scope"
+        entityId={ENTITY_ID}
+        range={RANGE}
+        metricKeys={["git.commits", "git.lines_added"]}
+        groupBy={{ default: "branch_scope" }}
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "Table view" }));
+    const heading = screen.getByRole("heading", {
+      name: /Default branch vs other/,
+    });
+    expect(heading).not.toHaveTextContent("branch_scope");
   });
 
   it("uses visible group controls and supports selecting multiple filters", async () => {
@@ -380,9 +521,10 @@ describe("MetricTimeseriesView", () => {
     mocks.evidenceColumn = "total";
     const openEvidence = vi.fn();
     const openEvidenceTargets = vi.fn();
+    const openEvidencePeople = vi.fn();
     render(
       <EvidenceDialogContext.Provider
-        value={{ openEvidence, openEvidenceTargets }}
+        value={{ openEvidence, openEvidenceTargets, openEvidencePeople }}
       >
         <MetricTimeseriesView
           id="evidence"
@@ -412,12 +554,11 @@ describe("MetricTimeseriesView", () => {
           }),
         }),
       ]),
-      "Commits & Lines added"
+      { title: "Commits & Lines added" }
     );
   });
 
-  it("opens a grouped point with its exact period and dimensions", async () => {
-    const user = userEvent.setup();
+  function renderDrillableGroupedChart(id: string): ReturnType<typeof vi.fn> {
     const byKey = timeseriesByKey();
     const metric = byKey.get("git.commits");
     if (!metric) throw new Error("missing fixture metric");
@@ -430,13 +571,18 @@ describe("MetricTimeseriesView", () => {
     };
     mocks.collection.mockReturnValue({ ...ready, byKey });
     mocks.evidenceColumn = groupedTimeseriesModel().columns[0]?.key ?? "";
-    const openEvidence = vi.fn();
+
+    const openEvidenceTargets = vi.fn();
     render(
       <EvidenceDialogContext.Provider
-        value={{ openEvidence, openEvidenceTargets: vi.fn() }}
+        value={{
+        openEvidence: vi.fn(),
+        openEvidenceTargets,
+        openEvidencePeople: vi.fn(),
+      }}
       >
         <MetricTimeseriesView
-          id="point-evidence"
+          id={id}
           entityId={ENTITY_ID}
           range={RANGE}
           metricKeys={["git.commits"]}
@@ -444,21 +590,101 @@ describe("MetricTimeseriesView", () => {
         />
       </EvidenceDialogContext.Provider>
     );
+    return openEvidenceTargets;
+  }
+
+  it("holds every combined target to the clicked bucket", async () => {
+    const user = userEvent.setup();
+    const byKey = timeseriesByKey();
+    for (const metric of byKey.values()) {
+      metric.drilldown = { granularity: ["event"] };
+      metric.selection = {
+        metric_key: metric.metric_key,
+        entity: { type: "person", ids: [ENTITY_ID] },
+        period: RANGE,
+        filters: [],
+      };
+    }
+    mocks.collection.mockReturnValue({ ...ready, byKey });
+    const openEvidenceTargets = vi.fn();
+    render(
+      <EvidenceDialogContext.Provider
+        value={{
+        openEvidence: vi.fn(),
+        openEvidenceTargets,
+        openEvidencePeople: vi.fn(),
+      }}
+      >
+        <MetricTimeseriesView
+          id="combined-bucket"
+          entityId={ENTITY_ID}
+          range={RANGE}
+          metricKeys={["git.commits", "git.lines_added"]}
+          chart={{ multiMetric: "combined" }}
+        />
+      </EvidenceDialogContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "drill bucket" }));
+    const [targets, options] = openEvidenceTargets.mock.calls.at(-1) ?? [];
+    expect(
+      targets.map((target: EvidenceDialogTarget) => target.selection.metric_key)
+    ).toEqual(["git.commits", "git.lines_added"]);
+    // Picking the other metric in the dialog must not widen the period back
+    // out to the widget's own range.
+    for (const target of targets as EvidenceDialogTarget[]) {
+      expect(target.selection.period).toEqual({
+        from: "2026-04-20",
+        to: "2026-04-26",
+      });
+    }
+    expect(options).toEqual({ activeMetricKey: "git.commits" });
+  });
+
+  it("opens a grouped point with its exact period and dimensions", async () => {
+    const user = userEvent.setup();
+    const openEvidenceTargets = renderDrillableGroupedChart("point-evidence");
 
     await user.click(screen.getByRole("button", { name: "drill point" }));
-    expect(openEvidence).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric_key: "git.commits",
-        period: { from: "2026-04-20", to: "2026-04-26" },
-        filters: [
-          {
-            dimension: "repository",
-            values: ["org/repo-a"],
-          },
-        ],
-        display_dimensions: ["repository"],
-      }),
-      "Commits"
+    expect(openEvidenceTargets).toHaveBeenCalledWith(
+      [
+        {
+          selection: expect.objectContaining({
+            metric_key: "git.commits",
+            period: { from: "2026-04-20", to: "2026-04-26" },
+            filters: [
+              {
+                dimension: "repository",
+                values: ["org/repo-a"],
+              },
+            ],
+            display_dimensions: ["repository"],
+          }),
+          label: "Commits",
+        },
+      ],
+      { activeMetricKey: "git.commits" }
+    );
+  });
+
+  it("opens a whole bucket with no dimension narrowing", async () => {
+    const user = userEvent.setup();
+    const openEvidenceTargets = renderDrillableGroupedChart("bucket-evidence");
+
+    await user.click(screen.getByRole("button", { name: "drill bucket" }));
+    expect(openEvidenceTargets).toHaveBeenCalledWith(
+      [
+        {
+          selection: expect.objectContaining({
+            metric_key: "git.commits",
+            period: { from: "2026-04-20", to: "2026-04-26" },
+            filters: [],
+            display_dimensions: ["repository"],
+          }),
+          label: "Commits",
+        },
+      ],
+      { activeMetricKey: "git.commits" }
     );
   });
 });

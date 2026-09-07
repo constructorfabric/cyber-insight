@@ -2,16 +2,21 @@ use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::domain::metric_definitions::definition::{
-    MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole, ObservationRelation,
-    ObservationSource,
+    AliasCollapse, MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole,
+    ObservationRelation, ObservationSource,
 };
-use crate::domain::metric_definitions::{ComputationSpec, EvidenceRelation, MetricDefinition};
+use crate::domain::metric_definitions::{
+    ComputationSpec, EvidenceColumnType, EvidenceDetailColumn, EvidencePresentation,
+    EvidenceRelation, MetricDefinition,
+};
 
 use super::cursor::selection_fingerprint;
 use super::dto::{
     EvidenceInput, EvidencePlan, EvidenceQueryRow, MetricDrilldownEntity, MetricDrilldownFilter,
     MetricDrilldownPeriod, MetricDrilldownSelection, ValidatedMetricDrilldown,
 };
+use super::presentation::presentation_columns;
+use super::sort::MetricDrilldownSort;
 
 pub(super) fn input(role: MetricInputRole, measure_key: &str) -> MetricInput {
     MetricInput {
@@ -22,6 +27,47 @@ pub(super) fn input(role: MetricInputRole, measure_key: &str) -> MetricInput {
         ),
         source_key: "git".to_owned(),
         measure_key: measure_key.to_owned(),
+        alias_collapse: AliasCollapse::Sum,
+    }
+}
+
+fn detail_column(key: &str, label: &str, r#type: EvidenceColumnType) -> EvidenceDetailColumn {
+    EvidenceDetailColumn {
+        key: key.to_owned(),
+        label: label.to_owned(),
+        r#type,
+    }
+}
+
+/// The declaration a commit measure carries in the registry.
+pub(super) fn commit_presentation() -> EvidencePresentation {
+    EvidencePresentation {
+        detail_columns: vec![
+            detail_column("ref", "Ref", EvidenceColumnType::String),
+            detail_column("title", "Title", EvidenceColumnType::String),
+            detail_column("repository", "Repository", EvidenceColumnType::String),
+            detail_column("author", "Author", EvidenceColumnType::String),
+            detail_column("lines_added", "Lines added", EvidenceColumnType::Number),
+            detail_column("lines_removed", "Lines removed", EvidenceColumnType::Number),
+        ],
+        show_value: false,
+    }
+}
+
+pub(super) fn commit_input(role: MetricInputRole, measure_key: &str) -> EvidenceInput {
+    collapsing_commit_input(role, measure_key, AliasCollapse::Sum)
+}
+
+pub(super) fn collapsing_commit_input(
+    role: MetricInputRole,
+    measure_key: &str,
+    alias_collapse: AliasCollapse,
+) -> EvidenceInput {
+    EvidenceInput {
+        role,
+        measure_key: measure_key.to_owned(),
+        alias_collapse,
+        presentation: commit_presentation(),
     }
 }
 
@@ -57,6 +103,10 @@ pub(super) fn plan(spec: ComputationSpec, inputs: Vec<EvidenceInput>) -> Evidenc
 
 pub(super) fn row() -> EvidenceQueryRow {
     EvidenceQueryRow {
+            entity_id: "person@example.com".to_owned(),
+            person_id: String::new(),
+            sort_flag: 0,
+            sort_value: "2026-07-01".to_owned(),
             role: "value".to_owned(),
             metric_date: "2026-07-01".to_owned(),
             observed_at: "2026-07-01 10:00:00".to_owned(),
@@ -86,8 +136,7 @@ pub(super) const TEST_TENANT: Uuid = Uuid::from_u128(0x019e_2830_0000_7000_8000_
 pub(super) fn validated(plan: EvidencePlan) -> ValidatedMetricDrilldown {
     let selection = MetricDrilldownSelection {
         metric_key: plan.definition.key().to_owned(),
-        entity: MetricDrilldownEntity {
-            r#type: "person".to_owned(),
+        entity: MetricDrilldownEntity::Person {
             id: TEST_PERSON.to_string(),
         },
         period: MetricDrilldownPeriod {
@@ -99,19 +148,30 @@ pub(super) fn validated(plan: EvidencePlan) -> ValidatedMetricDrilldown {
             values: vec!["org/repo".to_owned()],
         }],
         display_dimensions: vec!["category".to_owned()],
+        sort: MetricDrilldownSort::newest_first(),
+        search: None,
     };
     ValidatedMetricDrilldown {
-        person_id: TEST_PERSON,
         tenant_id: TEST_TENANT,
         enforce_tenant_scope: true,
-        fingerprint: selection_fingerprint(Uuid::nil(), &selection)
-            .unwrap_or_else(|error| panic!("selection fingerprint must build: {error}")),
+        fingerprint: selection_fingerprint(
+            Uuid::nil(),
+            &selection,
+            &presentation_columns(
+                &plan,
+                &selection.filters,
+                &selection.display_dimensions,
+                &selection.entity,
+            ),
+        )
+        .unwrap_or_else(|error| panic!("selection fingerprint must build: {error}")),
         selection,
         from: NaiveDate::from_ymd_opt(2026, 7, 1)
             .unwrap_or_else(|| panic!("valid test start date")),
         to: NaiveDate::from_ymd_opt(2026, 7, 31).unwrap_or_else(|| panic!("valid test end date")),
         limit: 1,
         cursor: None,
+        search_person_ids: Vec::new(),
         plan,
         snapshot_id: "snapshot".to_owned(),
     }

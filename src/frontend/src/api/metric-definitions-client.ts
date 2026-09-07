@@ -13,6 +13,7 @@ import { fetchWithAuth } from "@/api/fetch-with-auth";
 import type {
   MetricDrilldownCapability,
   MetricDirection,
+  MetricEntityType,
   MetricFormat,
 } from "@/api/metric-results-client";
 
@@ -21,8 +22,11 @@ const BASE =
 
 export type MetricDefinitionSchemaStatus = "ok" | "error" | "unchecked";
 
+export type MetricDefinitionOrigin = "builtin" | "custom";
+
 export interface MetricDefinition {
   metric_key: string;
+  entity_type: MetricEntityType;
   label: string;
   short_label: string | null;
   description: string | null;
@@ -32,11 +36,25 @@ export interface MetricDefinition {
   direction: MetricDirection;
   dimensions: string[];
   is_enabled: boolean;
+  /**
+   * `builtin` reads managed observation relations; `custom` executes inline
+   * SQL at query time. The validator stamps `schema_status` and
+   * `last_observed_date` from materialized relations only, so for `custom`
+   * they stay "unchecked" / absent however much data the metric serves —
+   * reading their absence as "never measured" is wrong for those.
+   */
+  origin: MetricDefinitionOrigin;
   schema_status: MetricDefinitionSchemaStatus;
   /** Why schema_status is "error"; null otherwise. */
   schema_error_code: MetricSchemaErrorCode | null;
   /** ISO date of the newest observation ever seen; null = no data yet. */
   last_observed_date: string | null;
+  /**
+   * How many days back from `last_observed_date` the suppliers may still
+   * revise. Absent where nothing revises — never read absence as "revised
+   * forever".
+   */
+  revision_window_days?: number | null;
   drilldown?: MetricDrilldownCapability;
 }
 

@@ -133,7 +133,6 @@ App services are mandatory umbrella components — no deploy flag.
 {{- define "insight.analytics.host"           -}}{{- printf "%s-analytics"            .Release.Name -}}{{- end -}}
 {{- define "insight.identityResolution.host"  -}}{{- printf "%s-identity-resolution"  .Release.Name -}}{{- end -}}
 {{- define "insight.frontend.host"            -}}{{- printf "%s-frontend"             .Release.Name -}}{{- end -}}
-{{- define "insight.fakeidp.host"             -}}{{- printf "%s-fakeidp"              .Release.Name -}}{{- end -}}
 
 {{/*
 ==============================================================================
@@ -173,17 +172,7 @@ Invoked from NOTES.txt so they fire on every install.
   {{- $auth := default dict .Values.authenticator -}}
   {{- $aoidc := default dict $auth.oidc -}}
   {{- if or (not $aoidc.issuerUrl) (not $aoidc.redirectUri) -}}
-    {{- fail "authenticator.oidc: issuerUrl (the IdP) and redirectUri (the browser callback) are REQUIRED — auth is always on (no auth_disabled). For local, point issuerUrl at the fakeidp Service FQDN and set fakeidp.deploy=true." -}}
-  {{- end -}}
-
-  {{- /* fakeidp is dev/e2e only. Refuse to arm it as a real IdP: if
-         fakeidp.deploy=true, the authenticator MUST point at it (issuerUrl ==
-         fakeidp.issuer), and a real environment must never set deploy=true. */ -}}
-  {{- $fake := default dict .Values.fakeidp -}}
-  {{- if $fake.deploy -}}
-    {{- if ne (toString $aoidc.issuerUrl) (toString $fake.issuer) -}}
-      {{- fail (printf "fakeidp.deploy=true but authenticator.oidc.issuerUrl (%q) != fakeidp.issuer (%q) — they must be identical (the authenticator validates the id_token `iss` against its configured IdP)." $aoidc.issuerUrl $fake.issuer) -}}
-    {{- end -}}
+    {{- fail "authenticator.oidc: issuerUrl (the IdP) and redirectUri (the browser callback) are REQUIRED — auth is always on (no auth_disabled). For local, point issuerUrl at the in-stack Keycloak realm URL and set keycloak.deploy=true." -}}
   {{- end -}}
 
   {{- /* The authenticator's login-bootstrap resolve
@@ -194,8 +183,27 @@ Invoked from NOTES.txt so they fire on every install.
   {{- if not (default dict .Values.identityResolution).deploy -}}
     {{- fail "identityResolution.deploy must be true — the authenticator's login-bootstrap resolve only exists on identity-resolution (constructorfabric/insight#1960)." -}}
   {{- end -}}
-  {{- if not $aoidc.sourceType -}}
-    {{- fail "authenticator.oidc.sourceType is required — the identity-resolution source_type (e.g. \"ms-entra\") the login-bootstrap resolve is scoped to." -}}
+  {{- /* sourceType scopes the external-id resolve, so it is required only in
+         that mode. The email mode resolves against the roster instead and
+         reads neither knob — demanding one there would make an install name a
+         source_type its login never asks about. */ -}}
+  {{- $resolveBy := $aoidc.resolveBy | default "external_id" -}}
+  {{- if not (has $resolveBy (list "external_id" "email")) -}}
+    {{- fail (printf "authenticator.oidc.resolveBy must be \"external_id\" or \"email\", got %q" $resolveBy) -}}
+  {{- end -}}
+  {{- if and (eq $resolveBy "external_id") (not $aoidc.sourceType) -}}
+    {{- fail "authenticator.oidc.sourceType is required — the identity-resolution source_type (e.g. \"ms-entra\") the login-bootstrap resolve is scoped to. Set authenticator.oidc.resolveBy=email instead if this IdP has no connector of its own and logins should resolve against the roster's addresses." -}}
+  {{- end -}}
+  {{- if eq $resolveBy "email" -}}
+    {{- if not (default dict .Values.identityResolution).rosterSourceType -}}
+      {{- fail "authenticator.oidc.resolveBy=email requires identityResolution.rosterSourceType — the email lookup is confined to the roster, and identity refuses it with no roster declared rather than matching an address any source happened to state. Every sign-in would be denied." -}}
+    {{- end -}}
+    {{- /* Minting needs the source-native id the roster observed, and an
+           address is not one: no login provisions in this mode. The gear
+           refuses the pair at boot; say so at render, where it is cheap. */ -}}
+    {{- if $aoidc.provisionOnLogin -}}
+      {{- fail "authenticator.oidc.provisionOnLogin cannot be used with resolveBy=email — minting needs the source-native id the roster observed, so no login provisions in this mode. Leave it false, or resolve by external_id." -}}
+    {{- end -}}
   {{- end -}}
 
   {{- /* External hosts (L2 infra is out-of-chart → consumer must supply

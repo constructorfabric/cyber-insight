@@ -1,0 +1,126 @@
+version: 2
+
+sources:
+  - name: bronze_github
+    # Source freshness (TAF #1322): the newest Airbyte row must be recent,
+    # else the sync silently stopped and dashboards go stale with no error.
+    freshness:
+      warn_after: {count: 36, period: hour}
+      error_after: {count: 72, period: hour}
+    loaded_at_field: _airbyte_extracted_at
+    schema: bronze_github
+    tables:
+      - name: repositories
+      - name: branches
+      - name: commits
+      - name: file_changes
+      - name: pull_requests
+      - name: pull_request_reviews
+      - name: pull_request_comments
+      - name: pull_request_review_comments
+      - name: pull_request_commits
+      - name: pull_request_diff_stats
+      - name: issues
+      - name: projects_v2
+      - name: issue_fields
+      - name: issue_links
+      - name: project_fields
+      - name: project_items
+      - name: issue_types
+      - name: workflow_runs
+      - name: deployments
+      - name: deployment_statuses
+      - name: pull_request_timeline_events
+      - name: issue_timeline_events
+      - name: commit_authors
+
+models:
+  - name: github__bronze_promoted
+    description: "Promotes every GitHub bronze table to ReplacingMergeTree keyed on unique_key"
+
+  - name: github__item_events
+    description: "GitHub issue and pull-request lifecycle events -> staging, feeds class_git_item_events"
+
+  - name: github__repositories
+    description: "GitHub repositories -> staging, feeds class_git_repositories"
+
+  - name: github__ci_runs
+    description: "GitHub Actions workflow runs -> staging, feeds class_git_ci_runs (one row per run attempt; gate + duration semantics live here)"
+
+  - name: github__deployments
+    description: "GitHub deployments -> staging, feeds class_git_deployments (no outcome — that is the events class)"
+
+  - name: github__deployment_events
+    description: "GitHub deployment statuses -> staging, feeds class_git_deployment_events"
+
+
+  - name: github__repository_branches
+    description: "GitHub branches -> staging, feeds class_git_repository_branches"
+
+  - name: github__commits
+    description: "GitHub commits -> staging, feeds class_git_commits"
+
+  - name: github__file_changes
+    description: "GitHub file changes (PR + direct push) -> staging, feeds class_git_file_changes"
+
+  - name: github__pull_requests
+    description: "GitHub pull requests -> staging, feeds class_git_pull_requests"
+
+  - name: github__pull_requests_reviewers
+    description: "GitHub PR reviews -> staging, feeds class_git_pull_requests_reviewers"
+
+  - name: github__pull_requests_comments
+    description: "GitHub PR comments -> staging, feeds class_git_pull_requests_comments"
+
+  - name: github__pull_requests_commits
+    description: "GitHub PR commits -> staging, feeds class_git_pull_requests_commits"
+
+  - name: github__pr_review_events
+    description: "GitHub review verdicts and PR comments as one event stream -> staging, feeds class_git_pr_review_events"
+
+  - name: github__account_emails
+    description: "Every (GitHub account, e-mail) pair the connector observed, one row per pair"
+    columns:
+      - name: account_id
+        description: "GitHub's immutable numeric account id the e-mail was observed under, stringified (ADR-0002 binding key)"
+        data_tests:
+          - not_null
+      - name: email
+        description: "Lowercased e-mail address the account committed under or published"
+        data_tests:
+          - not_null
+      - name: observed_in
+        description: "Bronze field that first named this pair, carried onto the claim as provenance"
+      - name: observed_at
+        description: "Earliest time the pair was observed"
+
+  - name: github__unowned_commit_emails
+    description: "Commit author e-mails no GitHub account claims, with the name their commits carry"
+    columns:
+      - name: email
+        description: "Lowercased commit author e-mail, and the account id it is published under"
+        data_tests:
+          - not_null
+          - unique
+      - name: author_name
+        description: "Name from the author's most recent commit, so an operator can recognise them"
+      - name: last_committed_at
+        description: "Most recent commit authored under this address"
+
+  - name: github__identity_inputs
+    description: "E-mail claims against GitHub accounts -> staging, feeds silver.identity_inputs"
+    columns:
+      - name: unique_key
+        description: "One claim per (tenant, source, account, value_type, operation, value)"
+        data_tests:
+          - not_null
+          - unique
+      - name: insight_source_type
+        description: "`github` for an id-keyed account, `github-commit-email` for an unowned e-mail"
+        data_tests:
+          - accepted_values:
+              values: ["github", "github-commit-email"]
+      - name: source_account_id
+        description: "The account's numeric GitHub id as a string, or the e-mail itself when no account claims it"
+      - name: value
+        description: "The claimed e-mail address, or the git author name for a display_name row"

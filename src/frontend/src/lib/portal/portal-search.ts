@@ -24,9 +24,37 @@ export interface PortalSearch {
   zone?: string;
   /** Selected item within a zone (an Overview view, a Manage surface). */
   item?: string;
+  /** Selected account inside the Identities surface (an opaque account key). */
+  acct?: string;
+  /** Which Identities mode is open (the review queue, a person). */
+  mode?: string;
+  /** Person under inspection in the Identities person mode. */
+  person?: string;
+  /**
+   * What was typed into the Identities person roster.
+   *
+   * In the URL rather than in the field's own state so the terms survive
+   * leaving the mode and coming back: an operator comparing two people should
+   * not have to find the same list twice.
+   */
+  find?: string;
   /** Expanded direction + its active lens, within the Directions zone. */
   dir?: string;
   lens?: string;
+  /**
+   * Connector under inspection in the Ingestion surface, as a bronze slug
+   * without the `bronze_` prefix (e.g. `bamboohr`).
+   *
+   * In the URL because the drill-down IS the view: a reload and a shared link
+   * must both land on the same connector's streams.
+   */
+  conn?: string;
+  /**
+   * One repository under inspection, by its dimension VALUE (`<source>:<owner>/<repo>`).
+   * The value and not the label, because two repositories can share a display
+   * name and a link has to reproduce the one that was opened.
+   */
+  repo?: string;
   /** Org-scope root: a manager's person id. Absent = the viewer's own subtree. */
   scope?: string;
   /** Narrow the scope to direct reports only. */
@@ -40,6 +68,9 @@ export interface PortalSearch {
 }
 
 const PERIODS = new Set<string>(["week", "month", "quarter", "year"]);
+/** A bronze connector slug: what the endpoint's `scope` validator accepts,
+ *  minus the `bronze_` prefix the URL does not need to carry. */
+const CONNECTOR_SLUG = /^[a-z0-9_]{1,120}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function str(v: unknown): string | undefined {
@@ -70,8 +101,16 @@ export function validatePortalSearch(raw: Record<string, unknown>): PortalSearch
   return {
     zone: str(raw.zone),
     item: str(raw.item),
+    acct: str(raw.acct),
+    mode: str(raw.mode),
+    person: str(raw.person)?.toLowerCase(),
+    find: str(raw.find),
     dir: str(raw.dir),
     lens: str(raw.lens),
+    // Validated to the same slug shape the endpoint accepts as a `scope`, so a
+    // hand-edited value degrades to the overview instead of a 400.
+    conn: CONNECTOR_SLUG.test(str(raw.conn) ?? "") ? str(raw.conn) : undefined,
+    repo: str(raw.repo),
     // Lower-cased to match `normalizePersonId`: the same id reaches us from a
     // link, an identity record or a hand-edited URL, and the resolver compares
     // it as a string. An id outside the viewer's subtree (or a pre-cutover
@@ -92,14 +131,20 @@ export function validatePortalSearch(raw: Record<string, unknown>): PortalSearch
 export const PORTAL_SEARCH_KEYS = [
   "zone",
   "item",
+  "acct",
+  "mode",
+  "person",
+  "find",
   "dir",
   "lens",
+  "repo",
   "scope",
   "direct",
   "slice",
   "period",
   "from",
   "to",
+  "conn",
 ] satisfies Array<keyof PortalSearch>;
 
 /** The validated portal params for the current route. */
@@ -117,6 +162,26 @@ export function usePortalSearch(): PortalSearch {
 export type PortalSearchPatch =
   | Partial<PortalSearch>
   | ((prev: PortalSearch) => Partial<PortalSearch>);
+
+/**
+ * Merge a patch into the current search, clearing a key by setting it to
+ * `undefined` rather than removing it.
+ *
+ * The distinction is load-bearing. `retainSearchParams` restores any listed key
+ * that is ABSENT from the result — its test is `key in copy` — so a deleted key
+ * comes straight back with its old value. Present-but-undefined passes through
+ * untouched, and both the serialiser and `validatePortalSearch` omit it.
+ */
+export function applySearchPatch(
+  prev: Record<string, unknown>,
+  patch: Partial<PortalSearch>,
+): Record<string, unknown> {
+  const next = { ...prev };
+  for (const [key, value] of Object.entries(patch)) {
+    next[key] = value === "" || value === false ? undefined : value;
+  }
+  return next;
+}
 
 /**
  * `replace` exists because not every write is a navigation the reader made.
@@ -139,12 +204,7 @@ export function useSetPortalSearch(): (
         search: (prev: Record<string, unknown>) => {
           const resolved =
             typeof patch === "function" ? patch(prev as PortalSearch) : patch;
-          const next = { ...prev };
-          for (const [k, v] of Object.entries(resolved)) {
-            if (v === undefined || v === "" || v === false) delete next[k];
-            else next[k] = v;
-          }
-          return next;
+          return applySearchPatch(prev, resolved);
         },
         replace: opts?.replace ?? false,
       });

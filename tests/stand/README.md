@@ -2,7 +2,8 @@
 
 Deployed-stand tests for Insight: a real Keycloak login, browser journeys
 against the SPA, and an API-contract suite — all run against a local
-`docker-compose` stand seeded deterministically for tests (`deploy/seed`).
+`docker-compose` stand seeded deterministically for tests
+(`src/ingestion/tools/seed`).
 
 This suite assumes an **already-running, already-seeded** stand. It never
 starts compose, applies migrations, or spawns service processes itself —
@@ -49,21 +50,63 @@ uv run --project tests playwright install chromium   # first time only, for ui/
 uv run --project tests pytest tests/stand
 ```
 
-To run the suite the way CI does — inside the published `ui-tests` image,
-against the gateway's own network namespace — pass `--image`:
+This host-side run is also exactly what CI's `ui-journeys` lane does. The
+verb still accepts `--image <ref>` to run a suite baked into a container
+joined to the gateway's network namespace, but no such image is published
+anymore — the lane ran from a published `ui-tests` image once, and the mode
+remains only as a mechanism. See `dev-compose.sh`'s
+`cmd_test_stand_help` for the full verb reference.
+
+## Running it against a deployed stand
+
+The verb is compose-only: it reads `.env.compose.test-stand` and refuses
+unless a gateway answers on `http://localhost:<GATEWAY_PORT>/`. Aiming at a
+deployed stand means calling pytest directly with the three values that
+locate one — where it is, what it was seeded with, and the credential its
+personas share:
 
 ```bash
-./dev-compose.sh test-stand test --image ghcr.io/constructorfabric/insight-ui-tests:latest
+export INSIGHT_STAND_BASE_URL=https://<stand host>
+export INSIGHT_STAND_PERSONA_PASSWORD=<the realm's persona password>
+uv run --project tests --frozen pytest tests/stand -ra \
+  --stand-manifest /path/to/stand-manifest.json
 ```
 
-That mode never builds the image; pull it first. See `dev-compose.sh`'s
-`cmd_test_stand_help` for the full verb reference, including
-`--auth`/`--base-url`/`--stand-manifest` overrides for pointing the suite at
-a stand other than the one it just brought up.
+The manifest is the seed's own record of what it wrote. A completed
+`--step all` publishes it to a ConfigMap that outlives the seed Job, so read it
+from there:
+
+```bash
+kubectl -n <namespace> get configmap seed-stand-manifest \
+  -o 'go-template={{index .data "manifest"}}' > stand-manifest.json
+```
+
+On a stand seeded before that existed, recover it from the Job log instead —
+only while the Job survives its one-hour TTL:
+
+```bash
+kubectl -n <namespace> logs job/<the seed job> --tail=-1 \
+  | src/ingestion/tools/seed/manifest-from-log.sh \
+  | cut -d' ' -f2- > stand-manifest.json
+```
+
+It names personas and in-cluster addresses, so it stays on the machine that
+read it. Browser journeys need `playwright install chromium` as above; they
+work against any `https://` origin, which is trustworthy enough to store the
+session cookie.
+
+## CI required gate
+
+`.github/workflows/e2e-stand.yml` starts on every pull request so its stable
+`Stand E2E` context always reports. Its cheap `changes` job decides whether
+the diff can affect this suite: relevant changes run both `api-smoke` and
+`ui-journeys`, and the umbrella fails unless both succeed; irrelevant changes
+skip both lanes and the umbrella reports success. Branch protection should
+therefore require `Stand E2E`, not either conditional lane directly.
 
 ## Reading PROFILE.md before writing a test
 
-[`deploy/seed/PROFILE.md`](../../deploy/seed/PROFILE.md) is generated from
+[`src/ingestion/tools/seed/PROFILE.md`](../../src/ingestion/tools/seed/PROFILE.md) is generated from
 the same builder that writes the stand's `manifest.json`, so the two cannot
 disagree. Before adding a test, read it for:
 
@@ -71,7 +114,7 @@ disagree. Before adding a test, read it for:
   role-shaped names (`dev_lead`, `admin_operator`, …) a test may declare
   against; a raw email or UUID is never a stable target.
 - **populated / golden metrics** — that table is empty by design (see
-  `deploy/seed/golden_metrics.py`'s admission criteria: an expectation must be
+  `src/ingestion/tools/seed/golden_metrics.py`'s admission criteria: an expectation must be
   computable from the seed inputs, not read back out of the gold layer). No
   test here asserts a metric's exact value, and none should until the table
   has entries — reading a number off a running stand and asserting it back
@@ -87,7 +130,8 @@ disagree. Before adding a test, read it for:
   (compose seeds silver/gold directly). A test that needs a capability the
   stand may lack should carry the matching marker (below), not assume it.
 
-Regenerate it with `python3 deploy/seed/render_profile.py` after changing
+Regenerate it with `python3 -m insight_seed.render_profile` (from
+`src/ingestion/tools/seed`) after changing
 the roster or the manifest builder; `--check` verifies it without a
 database.
 
@@ -161,9 +205,12 @@ it":
   gate over the committed OpenAPI document); migrating it is a known
   follow-up. Until it lands, `api/operations.py` is the only catalogue of the
   surface and it is kept honest by hand.
-- **Cross-tenant refusal.** `deploy/seed` provisions a single tenant
-  (`TENANT_DEFAULT_ID`), so there is no second tenant's caller to be refused
-  with.
+- **Cross-tenant refusal.** Covered on compose, and only there: the second
+  tenant's caller is a fixture the seed writes when
+  `SEED_CROSS_TENANT_FIXTURE` is on, which `docker-compose.yml` sets. A cluster
+  stand turns it off (a second tenant aborts identity-resolution's scheduled
+  projection), and the seed's manifest then omits `other_tenant_lead`, so tests
+  declaring `requires_seed("other_tenant_lead")` skip rather than fail.
 - **JWT verification** — an expired token, a wrong audience, an untrusted
   issuer, a signature from a key the JWKS never published. Minting tokens is
   ruled out here by design (see `../lib/insight_stand/session.py`): this suite

@@ -3,7 +3,7 @@
 //! An async operation (persons-seed) moves `queued → running → completed/failed`.
 //! The POST handler enqueues a row; the worker flips it to `running`
 //! (`try_start`, so two workers can't double-run), then `complete`s or `fail`s
-//! it. GETs poll status. SQL ported from the .NET `Sql.Operations.cs`.
+//! it. GETs poll status.
 //!
 //! Raw SQL on the self-managed pool (like the rest of `infra::db`): the atomic
 //! `queued→running` transition (`try_start`) and the cross-tenant startup
@@ -53,9 +53,9 @@ impl OperationStatus {
 }
 
 /// One row of the `operations` table.
-// Field names mirror the DB columns (`operation_id` / `operation_type`) and the
-// .NET record, so keep the shared prefix.
-#[allow(clippy::struct_field_names)]
+// Field names mirror the DB columns (`operation_id` / `operation_type`), so
+// keep the shared prefix.
+#[expect(clippy::struct_field_names)]
 #[derive(Debug, Clone)]
 pub struct Operation {
     pub operation_id: Uuid,
@@ -92,7 +92,7 @@ pub async fn enqueue(
              insight_tenant_id, author_person_id, request_json)
         VALUES (?, ?, 'queued', ?, ?, ?)
     ";
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::MySql,
         SQL,
         [
@@ -117,7 +117,7 @@ pub async fn try_start(db: &DatabaseConnection, operation_id: Uuid) -> anyhow::R
     const SQL: &str =
         "UPDATE operations SET status = 'running' WHERE operation_id = ? AND status = 'queued'";
     let res = db
-        .execute(Statement::from_sql_and_values(
+        .execute_raw(Statement::from_sql_and_values(
             DbBackend::MySql,
             SQL,
             [operation_id.as_bytes().to_vec().into()],
@@ -141,7 +141,7 @@ pub async fn complete(
         SET status = 'completed', summary_json = ?, completed_at = UTC_TIMESTAMP(6)
         WHERE operation_id = ?
     ";
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::MySql,
         SQL,
         [summary_json.into(), operation_id.as_bytes().to_vec().into()],
@@ -165,7 +165,7 @@ pub async fn fail(
         SET status = 'failed', error_message = ?, completed_at = UTC_TIMESTAMP(6)
         WHERE operation_id = ?
     ";
-    db.execute(Statement::from_sql_and_values(
+    db.execute_raw(Statement::from_sql_and_values(
         DbBackend::MySql,
         SQL,
         [
@@ -191,7 +191,7 @@ pub async fn get_by_id(
         "SELECT {COLUMNS} FROM operations WHERE insight_tenant_id = ? AND operation_id = ? LIMIT 1"
     );
     let row = db
-        .query_one(Statement::from_sql_and_values(
+        .query_one_raw(Statement::from_sql_and_values(
             DbBackend::MySql,
             &sql,
             [
@@ -234,10 +234,50 @@ pub async fn list(
     params.push(limit.into());
 
     let rows = db
-        .query_all(Statement::from_sql_and_values(
+        .query_all_raw(Statement::from_sql_and_values(
             DbBackend::MySql,
             &sql,
             params,
+        ))
+        .await?;
+    rows.iter().map(row_to_operation).collect()
+}
+
+/// Every correction call that named this account, newest first.
+///
+/// The binding journal records WHAT each decision did; the operation records
+/// who ran it, why they said they ran it, and how many accounts went with it.
+/// Matching is by containment in the request payload rather than by time, so
+/// nothing is attributed to a call that did not name the account.
+///
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub async fn corrections_for_account(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    operation_type: &str,
+    source_type: &str,
+    source_id: Uuid,
+    account_id: &str,
+    limit: u64,
+) -> anyhow::Result<Vec<Operation>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM operations          WHERE insight_tenant_id = ?            AND operation_type = ?            AND JSON_CONTAINS(                 request_json,                  JSON_OBJECT('source', ?, 'source_id', ?, 'account_id', ?),                  '$.accounts')          ORDER BY started_at DESC, operation_id DESC LIMIT ?"
+    );
+
+    let rows = db
+        .query_all_raw(Statement::from_sql_and_values(
+            DbBackend::MySql,
+            &sql,
+            [
+                tenant_id.as_bytes().to_vec().into(),
+                operation_type.into(),
+                source_type.into(),
+                source_id.to_string().into(),
+                account_id.into(),
+                limit.into(),
+            ],
         ))
         .await?;
     rows.iter().map(row_to_operation).collect()
@@ -247,7 +287,7 @@ pub async fn list(
 /// `older_than`. Run once at worker startup so a pod restart cannot leave a row
 /// stuck in `running` forever (its in-memory job is gone). Intentionally NOT
 /// tenant-scoped — the single-process worker owns all in-flight operations
-/// across tenants. Mirrors `Sql.Operations.cs::SweepZombies`. Returns the number
+/// across tenants. Returns the number
 /// of rows reclaimed.
 ///
 /// # Errors
@@ -263,7 +303,7 @@ pub async fn sweep_zombies(db: &DatabaseConnection, older_than: DateTime) -> any
           AND started_at < ?
     ";
     let res = db
-        .execute(Statement::from_sql_and_values(
+        .execute_raw(Statement::from_sql_and_values(
             DbBackend::MySql,
             SQL,
             [older_than.into()],

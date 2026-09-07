@@ -1,5 +1,5 @@
 -- depends_on: {{ ref('jira__task_users') }}
--- depends_on: {{ ref('youtrack__task_users') }}
+-- depends_on: {{ ref('github__task_users') }}
 {{ config(
     materialized='incremental',
     incremental_strategy='delete+insert',

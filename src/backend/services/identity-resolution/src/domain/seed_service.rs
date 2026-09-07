@@ -1,17 +1,21 @@
 //! Persons-seed orchestration: tie the reader → build → group → resolve →
-//! row-build → apply pipeline together. Ports the .NET `PersonsSeedService`.
+//! row-build → apply pipeline together.
 //! The input source and the store are behind traits so this is unit-testable
 //! with fakes (no `ClickHouse` / MariaDB).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::people::{self, PersonChange};
+use super::resolution::EXCLUDED_PERSON;
+use super::roster::RosterSource;
 use super::seed::{
-    IdentityInputRow, SeedObservationRow, SourceAccountKey, assignments_to_rows, build_profiles,
-    group_by_email, resolve_assignments,
+    IdentityInputRow, KnownBinding, PersonAssignment, ResolveOutcome, SeedObservationRow,
+    SeedProfile, SourceAccountKey, assignments_to_rows, build_profiles, group_by_email,
+    resolve_assignments,
 };
 
 /// Streams the raw `identity_inputs` observations for a tenant, delivered
@@ -29,7 +33,7 @@ pub trait SeedStore {
     async fn known_account_bindings(
         &self,
         tenant_id: Uuid,
-    ) -> anyhow::Result<HashMap<SourceAccountKey, Uuid>>;
+    ) -> anyhow::Result<HashMap<SourceAccountKey, KnownBinding>>;
 
     async fn latest_email_to_person(
         &self,
@@ -41,6 +45,8 @@ pub trait SeedStore {
         tenant_id: Uuid,
         author_person_id: Uuid,
         rows: &[SeedObservationRow],
+        people: &[PersonChange],
+        retained_people: Option<&HashSet<Uuid>>,
     ) -> anyhow::Result<ApplyCounts>;
 }
 
@@ -50,17 +56,21 @@ pub trait SeedStore {
 pub struct ApplyCounts {
     pub observations_inserted: u64,
     pub org_chart_rows_rebuilt: u64,
+    pub people_opened: u64,
+    pub people_closed: u64,
+    pub people_unchanged: u64,
 }
 
-/// Outcome of one persons-seed run (feeds the operation status). Mirrors the
-/// .NET `PersonsSeedSummary` (org-chart counter lands with that rebuild).
-// Serialized field names mirror the .NET `PersonsSeedSummary` wire shape
-// (`accounts_*` prefix, `accounts_minted_new`, `org_chart_rows_rebuilt`) so the
-// `summary` JSON stays contract-compatible. `known_binding_conflicts` is an
-// additive Insight-side field (observability of a silent identity merge; not in
-// .NET) — additive keys are ignored by conformant consumers.
+/// Outcome of one persons-seed run (feeds the operation status).
+// The serialized field names (`accounts_*` prefix, `accounts_minted_new`,
+// `org_chart_rows_rebuilt`) are the `summary` JSON contract.
+// `known_binding_conflicts` is additive (observability of a silent identity
+// merge) — additive keys are ignored by conformant consumers.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SeedSummary {
+    pub people_opened: u64,
+    pub people_closed: u64,
+    pub people_unchanged: u64,
     pub accounts_read: usize,
     #[serde(rename = "accounts_reused_known")]
     pub reused_known: usize,
@@ -72,10 +82,23 @@ pub struct SeedSummary {
     pub skipped_closed: usize,
     #[serde(rename = "accounts_skipped_no_email")]
     pub skipped_no_email: usize,
+    /// Accounts no connector states an id for — left unbound, never minted.
+    #[serde(rename = "accounts_skipped_no_source_id")]
+    pub skipped_no_source_id: usize,
     pub observations_inserted: u64,
     pub org_chart_rows_rebuilt: u64,
-    /// Email groups collapsed across a multi-person binding conflict (logged).
+    /// Divergent e-mail groups with no operator-authored binding (surfaced).
     pub known_binding_conflicts: usize,
+    /// Divergent e-mail groups settled by an operator decision (kept silent).
+    pub operator_settled_groups: usize,
+    /// Unbound accounts whose e-mail is contested between persons (not linked).
+    pub skipped_contested_email: usize,
+    /// Accounts bound to the excluded person (nothing re-emitted, values link
+    /// nobody).
+    pub skipped_excluded: usize,
+    /// Addressless roster accounts minted a person; each reaches the queue.
+    #[serde(rename = "accounts_minted_from_roster")]
+    pub minted_from_roster: usize,
 }
 
 /// Run one persons-seed over an already-read input: fold to per-account
@@ -93,6 +116,7 @@ pub async fn seed_from_rows<S>(
     store: &S,
     tenant_id: Uuid,
     author_person_id: Uuid,
+    roster: Option<&RosterSource>,
     mint: impl FnMut() -> Uuid,
 ) -> anyhow::Result<SeedSummary>
 where
@@ -101,28 +125,40 @@ where
     // 1. Build per-account profiles from the (latest-first) input stream.
     let profiles = build_profiles(rows);
     let accounts_read = profiles.len();
+    warn_if_roster_spans_instances(&profiles, roster);
 
     // 2. Group by email; resolve each group against the current bindings/emails.
     let groups = group_by_email(profiles);
     let known = store.known_account_bindings(tenant_id).await?;
     let email_to_person = store.latest_email_to_person(tenant_id).await?;
-    let outcome = resolve_assignments(groups, &known, &email_to_person, mint);
+    let outcome = resolve_assignments(groups, &known, &email_to_person, roster, mint);
     tracing::info!(
         accounts = accounts_read,
         minted = outcome.minted,
+        minted_from_roster = outcome.minted_from_roster,
         reused = outcome.reused_known,
         linked = outcome.linked_by_email,
+        roster = roster.map(RosterSource::name),
         "persons-seed: resolved"
     );
+    warn_if_roster_matched_nothing(&outcome, roster);
 
     // 3. Materialize the resolved observations and apply them.
-    let observation_rows = assignments_to_rows(&outcome.assignments, author_person_id);
+    let observation_rows = assignments_to_rows(&outcome.assignments, author_person_id, &known);
+    let people_changes = people::changes(&outcome.assignments, roster);
+    let retained_people = retained_roster_people(&known, &outcome.assignments, roster);
     tracing::info!(
         observation_rows = observation_rows.len(),
         "persons-seed: applying"
     );
     let counts = store
-        .apply(tenant_id, author_person_id, &observation_rows)
+        .apply(
+            tenant_id,
+            author_person_id,
+            &observation_rows,
+            &people_changes,
+            retained_people.as_ref(),
+        )
         .await?;
     tracing::info!(
         observations_inserted = counts.observations_inserted,
@@ -131,25 +167,117 @@ where
     );
 
     Ok(SeedSummary {
+        people_opened: counts.people_opened,
+        people_closed: counts.people_closed,
+        people_unchanged: counts.people_unchanged,
         accounts_read,
         reused_known: outcome.reused_known,
         linked_by_email: outcome.linked_by_email,
         minted: outcome.minted,
         skipped_closed: outcome.skipped_closed,
         skipped_no_email: outcome.skipped_no_email,
+        skipped_no_source_id: outcome.skipped_no_source_id,
         observations_inserted: counts.observations_inserted,
         org_chart_rows_rebuilt: counts.org_chart_rows_rebuilt,
         known_binding_conflicts: outcome.known_binding_conflicts,
+        operator_settled_groups: outcome.operator_settled_groups,
+        skipped_contested_email: outcome.skipped_contested_email,
+        skipped_excluded: outcome.skipped_excluded,
+        minted_from_roster: outcome.minted_from_roster,
     })
+}
+
+fn retained_roster_people(
+    known: &HashMap<SourceAccountKey, KnownBinding>,
+    assignments: &[PersonAssignment],
+    roster: Option<&RosterSource>,
+) -> Option<HashSet<Uuid>> {
+    let roster = roster?;
+    let mut holders = known
+        .iter()
+        .filter(|(account, binding)| {
+            roster.speaks_for(&account.source_type) && binding.person_id != EXCLUDED_PERSON
+        })
+        .map(|(account, binding)| (account.clone(), binding.person_id))
+        .collect::<HashMap<_, _>>();
+
+    for assignment in assignments {
+        for profile in &assignment.profiles {
+            if !roster.speaks_for(&profile.account.source_type) {
+                continue;
+            }
+            match profile.roster_membership {
+                Some(membership) if membership.active => {
+                    holders.insert(profile.account.clone(), assignment.person_id);
+                }
+                Some(_) => {
+                    holders.remove(&profile.account);
+                }
+                None => {}
+            }
+        }
+    }
+
+    Some(holders.into_values().collect())
+}
+
+/// A configured roster that matched nothing is indistinguishable from one that
+/// had nothing to do — and the likeliest cause is a name that does not exist. A
+/// source type is not the connector package it ships in (the GitHub roster
+/// package emits `github`), so a plausible-looking value can match no account.
+fn warn_if_roster_matched_nothing(outcome: &ResolveOutcome, roster: Option<&RosterSource>) {
+    let Some(roster) = roster else {
+        return;
+    };
+    if outcome.minted_from_roster > 0 || outcome.skipped_no_email == 0 {
+        return;
+    }
+
+    tracing::warn!(
+        roster = roster.name(),
+        addressless_accounts = outcome.skipped_no_email,
+        "persons-seed: the configured roster minted nothing while addressless \
+         accounts were skipped; check the name against the source_type the \
+         connector emits"
+    );
+}
+
+/// The roster is named by source type, but an account is keyed by type AND
+/// connector instance — so two instances of the roster's type would each mint
+/// their own person for one addressless human, and nothing could join them.
+/// Naming the type cannot prevent that; saying so can.
+fn warn_if_roster_spans_instances(profiles: &[SeedProfile], roster: Option<&RosterSource>) {
+    let Some(roster) = roster else {
+        return;
+    };
+
+    let instances: HashSet<Uuid> = profiles
+        .iter()
+        .filter(|p| roster.speaks_for(&p.account.source_type))
+        .map(|p| p.account.source_id)
+        .collect();
+    if instances.len() < 2 {
+        return;
+    }
+
+    tracing::warn!(
+        roster = roster.name(),
+        instances = instances.len(),
+        "persons-seed: the configured roster covers several connector instances; \
+         an addressless person listed by more than one of them will be minted \
+         once per instance, and no automation can join those persons"
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sea_orm::prelude::DateTime;
 
+    use super::*;
+    use crate::domain::provenance::Provenance;
+
     struct FakeStore {
-        known: HashMap<SourceAccountKey, Uuid>,
+        known: HashMap<SourceAccountKey, KnownBinding>,
         emails: HashMap<String, Uuid>,
     }
     #[async_trait]
@@ -157,7 +285,7 @@ mod tests {
         async fn known_account_bindings(
             &self,
             _tenant: Uuid,
-        ) -> anyhow::Result<HashMap<SourceAccountKey, Uuid>> {
+        ) -> anyhow::Result<HashMap<SourceAccountKey, KnownBinding>> {
             Ok(self.known.clone())
         }
         async fn latest_email_to_person(
@@ -171,11 +299,22 @@ mod tests {
             _tenant: Uuid,
             _author: Uuid,
             rows: &[SeedObservationRow],
+            people: &[PersonChange],
+            _retained_people: Option<&HashSet<Uuid>>,
         ) -> anyhow::Result<ApplyCounts> {
             // Net-inserted (no dedup in the fake); org_chart rebuild is DB-only.
             Ok(ApplyCounts {
                 observations_inserted: rows.len() as u64,
                 org_chart_rows_rebuilt: 0,
+                people_opened: people
+                    .iter()
+                    .filter(|change| matches!(change, PersonChange::Upsert(_)))
+                    .count() as u64,
+                people_closed: people
+                    .iter()
+                    .filter(|change| matches!(change, PersonChange::Close { .. }))
+                    .count() as u64,
+                people_unchanged: 0,
             })
         }
     }
@@ -204,10 +343,16 @@ mod tests {
     async fn seed_from_rows_wires_pipeline_end_to_end() -> anyhow::Result<()> {
         let t: DateTime = "2026-01-01T00:00:00".parse()?;
         // Anna across two sources (shared email) + Boris; empty store → all mint.
+        // Every account states its own id, as a connector's identity inputs do:
+        // that row is what becomes the binding, and without one the seed mints
+        // nobody.
         let rows = vec![
+            input("bamboohr", "5001", "id", "5001", t),
             input("bamboohr", "5001", "email", "anna@corp.com", t),
             input("bamboohr", "5001", "display_name", "Anna P", t),
+            input("slack", "U777", "id", "U777", t),
             input("slack", "U777", "email", "anna@corp.com", t),
+            input("bamboohr", "5000", "id", "5000", t),
             input("bamboohr", "5000", "email", "boris@corp.com", t),
         ];
         let store = FakeStore {
@@ -220,6 +365,7 @@ mod tests {
             &store,
             Uuid::from_u128(9),
             Uuid::from_u128(99),
+            None,
             counter(),
         )
         .await?;
@@ -231,8 +377,9 @@ mod tests {
         );
         assert_eq!(summary.reused_known, 0);
         assert_eq!(summary.linked_by_email, 0);
-        // Anna: email+display_name (5001) + email (U777) = 3; Boris: email = 1.
-        assert_eq!(summary.observations_inserted, 4);
+        // Anna: id+email+display_name (5001) + id+email (U777) = 5;
+        // Boris: id+email = 2.
+        assert_eq!(summary.observations_inserted, 7);
         Ok(())
     }
 
@@ -247,7 +394,11 @@ mod tests {
                 source_id: Uuid::from_u128(1),
                 account_id: "5000".to_owned(),
             },
-            Uuid::from_u128(7),
+            KnownBinding {
+                person_id: Uuid::from_u128(7),
+                author_person_id: Uuid::nil(),
+                provenance: Provenance::Resolved,
+            },
         );
         let store = FakeStore {
             known,
@@ -259,6 +410,7 @@ mod tests {
             &store,
             Uuid::from_u128(9),
             Uuid::from_u128(99),
+            None,
             counter(),
         )
         .await?;
@@ -266,5 +418,133 @@ mod tests {
         assert_eq!(summary.minted, 0);
         assert_eq!(summary.observations_inserted, 1);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_roster_this_service_is_handed_is_the_one_that_mints() -> anyhow::Result<()> {
+        // The pipeline is what carries the configured roster to the decision, and
+        // every other roster test calls the resolver directly — so without this
+        // one, dropping the argument here leaves the feature dead and the suite
+        // green.
+        let at: DateTime = "2026-01-01T00:00:00".parse()?;
+        let rows = vec![
+            input("bamboohr", "e-1", "id", "e-1", at),
+            input("bamboohr", "e-1", "roster_membership", "active", at),
+        ];
+        let store = FakeStore {
+            known: HashMap::new(),
+            emails: HashMap::new(),
+        };
+        let Some(roster) = RosterSource::parse("bamboohr") else {
+            panic!("a named source must parse");
+        };
+
+        let summary = seed_from_rows(
+            rows,
+            &store,
+            Uuid::from_u128(9),
+            Uuid::from_u128(99),
+            Some(&roster),
+            counter(),
+        )
+        .await?;
+
+        assert_eq!(summary.minted_from_roster, 1, "the roster reached the mint");
+        assert_eq!(summary.skipped_no_email, 0);
+        assert_eq!(
+            summary.minted, 0,
+            "counted apart from an address-matched mint"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_a_roster_the_same_input_resolves_to_nothing() -> anyhow::Result<()> {
+        let at: DateTime = "2026-01-01T00:00:00".parse()?;
+        let rows = vec![input("bamboohr", "e-1", "id", "e-1", at)];
+        let store = FakeStore {
+            known: HashMap::new(),
+            emails: HashMap::new(),
+        };
+
+        let summary = seed_from_rows(
+            rows,
+            &store,
+            Uuid::from_u128(9),
+            Uuid::from_u128(99),
+            None,
+            counter(),
+        )
+        .await?;
+
+        assert_eq!(summary.minted_from_roster, 0);
+        assert_eq!(summary.skipped_no_email, 1);
+        assert_eq!(summary.observations_inserted, 0, "nothing to write");
+        Ok(())
+    }
+
+    #[test]
+    fn resolved_roster_binding_replaces_the_previous_holder() -> anyhow::Result<()> {
+        let at: DateTime = "2026-01-01T00:00:00".parse()?;
+        let account = SourceAccountKey {
+            source_type: "bamboohr".to_owned(),
+            source_id: Uuid::from_u128(1),
+            account_id: "e-1".to_owned(),
+        };
+        let known = HashMap::from([(
+            account,
+            KnownBinding {
+                person_id: Uuid::from_u128(1),
+                author_person_id: Uuid::nil(),
+                provenance: crate::domain::provenance::Provenance::Resolved,
+            },
+        )]);
+        let assignments = vec![crate::domain::seed::PersonAssignment {
+            person_id: Uuid::from_u128(2),
+            kind: crate::domain::seed::AssignmentKind::ReusedKnown,
+            profiles: build_profiles(vec![
+                input("bamboohr", "e-1", "id", "e-1", at),
+                input("bamboohr", "e-1", "roster_membership", "active", at),
+            ]),
+        }];
+        let Some(roster) = RosterSource::parse("bamboohr") else {
+            panic!("bamboohr is a roster source");
+        };
+
+        assert_eq!(
+            retained_roster_people(&known, &assignments, Some(&roster)),
+            Some(HashSet::from([Uuid::from_u128(2)]))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unobserved_roster_binding_is_retained_conservatively() {
+        let account = SourceAccountKey {
+            source_type: "bamboohr".to_owned(),
+            source_id: Uuid::from_u128(1),
+            account_id: "e-1".to_owned(),
+        };
+        let known = HashMap::from([(
+            account,
+            KnownBinding {
+                person_id: Uuid::from_u128(1),
+                author_person_id: Uuid::nil(),
+                provenance: crate::domain::provenance::Provenance::Resolved,
+            },
+        )]);
+        let Some(roster) = RosterSource::parse("bamboohr") else {
+            panic!("bamboohr is a roster source");
+        };
+
+        assert_eq!(
+            retained_roster_people(&known, &[], Some(&roster)),
+            Some(HashSet::from([Uuid::from_u128(1)]))
+        );
+    }
+
+    #[test]
+    fn no_configured_roster_disables_binding_based_closure() {
+        assert_eq!(retained_roster_people(&HashMap::new(), &[], None), None);
     }
 }

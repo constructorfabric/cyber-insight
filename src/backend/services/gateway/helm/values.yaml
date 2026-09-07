@@ -1,3 +1,10 @@
+global:
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    publicUrl: ""
+
 replicaCount: 1
 
 podAnnotations: {}
@@ -11,16 +18,18 @@ service:
   type: ClusterIP
   port: 8080
 
-# Cluster ingress -> gateway. The gateway is the single edge; the ingress routes
-# everything ("/") to it (path routing happens inside the gateway).
-ingress:
+# HTTPRoute on the shared Gateway -> gateway. The gateway is the single edge;
+# the route sends everything ("/") to it (path routing happens inside the
+# gateway). TLS terminates at the shared Gateway listener, not per-route.
+route:
   enabled: true
-  className: nginx
-  annotations: {}
+  parentRef:
+    name: insight
+    namespace: insight-infra
+    # Target listener on the Gateway (e.g. https). Empty = all listeners.
+    sectionName: ""
   host: "" # Leave empty for local (no host-based routing)
-  tls:
-    enabled: false
-    secretName: ""
+  annotations: {}
 
 # Gateway upstreams + route table. Every URL is a Helm template rendered with
 # `tpl` (configmap.yaml / deployment.yaml), so `{{ .Release.Name }}` resolves to
@@ -50,12 +59,25 @@ gateway:
   # `/v1/metrics` before proxying (the app services host at `/v1/*`, unaware of
   # the platform prefix).
   routes:
+    - prefix: /api/sql/query
+      upstream: 'http://{{ .Release.Name }}-analytics:8086'
+      auth: instance_token
+      timeoutMs: 40000
+      sqlApiOnly: true
+    - prefix: /mcp
+      upstream: 'http://{{ .Release.Name }}-analytics:8086'
+      auth: bearer
+      timeoutMs: 40000
+      mcpOnly: true
     - prefix: /api/analytics
       upstream: 'http://{{ .Release.Name }}-analytics:8081'
-      timeoutMs: 60000
+      timeoutMs: 135000
       stripPrefix: true
     - prefix: /api/identity
       upstream: 'http://{{ .Release.Name }}-identity-resolution:8082'
+      stripPrefix: true
+    - prefix: /api/previews
+      upstream: 'http://{{ .Release.Name }}-previews:8085'
       stripPrefix: true
 
   # Trusted ingress-hop CIDRs for X-Forwarded-For (set_real_ip_from). Empty =
@@ -64,6 +86,22 @@ gateway:
   setRealIpFrom: []
   # lua_shared_dict exchange-cache size (empty = routegen default 64m).
   jwtCacheSize: ""
+
+# nginx-prometheus-exporter sidecar serving stub_status as /metrics.
+metrics:
+  enabled: false
+  port: 9113
+  image:
+    repository: nginx/nginx-prometheus-exporter
+    tag: "1.5.3"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
 
 resources:
   requests:

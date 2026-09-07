@@ -6,7 +6,7 @@ replicaCount: 1
 
 image:
   repository: quay.io/keycloak/keycloak
-  tag: "26.4"
+  tag: "26.7"
   pullPolicy: IfNotPresent
 
 service:
@@ -18,7 +18,7 @@ service:
 # advertised issuer.
 hostname: ""
 
-# Admin console base URL. The ingress never exposes /kc/admin — admin access
+# Admin console base URL. The route never exposes /kc/admin — admin access
 # is `kubectl port-forward svc/<release>-keycloak <service.port>`, and this
 # is the URL the console advertises for that. Empty = derived as
 # http://localhost:<service.port>/kc.
@@ -36,14 +36,35 @@ database:
   username: ""
   passwordSecret: {name: "", key: ""}
 
-# Optional ingress exposing only /kc/realms and /kc/resources (Keycloak
-# serves under /kc natively — no rewrite). /kc/admin stays cluster-internal;
-# see adminHostname.
-ingress:
+# Optional HTTPRoute on the shared Gateway exposing only /kc/realms and
+# /kc/resources (Keycloak serves under /kc natively — no rewrite). /kc/admin
+# stays cluster-internal; see adminHostname.
+route:
   enabled: false
-  className: nginx
+  parentRef:
+    name: insight
+    namespace: insight-infra
+    # Target listener on the Gateway (e.g. https). Empty = all listeners.
+    sectionName: ""
   host: ""
   annotations: {}
+
+# The `insight` login theme, mounted at /opt/keycloak/themes/insight. It
+# overrides only the page Keycloak serves when a request names an execution
+# that no longer matches the authentication session, and inherits everything
+# else from `keycloak.v2`. Always mounted, but inert until a realm binds it
+# with `loginTheme: insight` — so bind it only on a Keycloak this chart
+# deploys.
+theme:
+  # Where that page hands the browser back to. Relative on purpose: Keycloak
+  # rides /kc on the same Gateway host as the SPA, so "/" is the app. An
+  # install that splits the two hosts must set an absolute URL. The
+  # `auth_error` marker drives the SPA's retry-once-then-stop guard.
+  #
+  # SAFETY: Keycloak resolves ${...} in theme properties against the server's
+  # own environment and serves the result in the page, so such a value is
+  # refused at render time rather than published.
+  returnUrl: "/?auth_error=kc_page_expired"
 
 resources:
   requests: {cpu: 100m, memory: 384Mi}

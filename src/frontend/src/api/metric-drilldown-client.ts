@@ -11,32 +11,71 @@ const BASE =
 
 export interface MetricEvidenceSelection {
   metric_key: string;
-  entity: { type: "person"; id: string };
+  entity:
+    | { type: "person"; id: string }
+    | { type: "persons"; ids: string[] }
+    | { type: "tenant" };
   period: { from: string; to: string };
   filters: MetricDimensionFilter[];
   display_dimensions: string[];
+}
+
+export type MetricEvidenceSortDirection = "asc" | "desc";
+
+export interface MetricEvidenceSort {
+  key: string;
+  direction: MetricEvidenceSortDirection;
+}
+
+/** How a page is narrowed and ordered — the part of a read the reader drives. */
+export interface MetricEvidenceView {
+  sort?: MetricEvidenceSort;
+  search?: string;
 }
 
 export interface MetricEvidenceColumn {
   key: string;
   label: string;
   type: "string" | "number" | "date";
+  /**
+   * Whether the server can order by this column. Absent on a server that
+   * predates server-side ordering, where no column is clickable.
+   */
+  sortable?: boolean;
 }
 
 export interface MetricEvidenceRow {
   values: Record<string, unknown>;
+  links?: Record<string, string>;
 }
 
 export interface MetricDrilldownResponse {
-  selection: MetricEvidenceSelection;
+  /**
+   * The selection as the server read it. `sort` is the effective order and is
+   * never null on a server that orders — its absence is the signal that this
+   * one cannot, and that the table's headers must stay inert.
+   */
+  selection: MetricEvidenceSelection & {
+    sort?: MetricEvidenceSort;
+    search?: string | null;
+  };
   columns: MetricEvidenceColumn[];
   rows: MetricEvidenceRow[];
   next_cursor: string | null;
 }
 
-export interface MetricDrilldownRequest extends MetricEvidenceSelection {
+export interface MetricDrilldownRequest
+  extends MetricEvidenceSelection,
+    MetricEvidenceView {
   cursor?: string;
   limit: number;
+}
+
+/** True once the answer came from a server that orders and narrows its own rows. */
+export function servesOrderedRows(
+  page: MetricDrilldownResponse | undefined
+): boolean {
+  return page?.selection?.sort != null;
 }
 
 async function parseResponseJson<T>(
@@ -86,12 +125,16 @@ export async function queryMetricDrilldown(
 export async function downloadMetricDrilldown(
   selection: MetricEvidenceSelection,
   format: "csv" | "xlsx",
+  view: MetricEvidenceView = {},
   signal?: AbortSignal
 ): Promise<void> {
   const res = await fetchWithAuth(`${BASE}/metric-drilldown/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...selection, format }),
+    // INVARIANT: the file holds the rows the screen holds, in the order the
+    // screen holds them — an export that ignored the view would answer a
+    // question the reader stopped asking.
+    body: JSON.stringify({ ...selection, ...view, format }),
     signal,
   });
   if (!res.ok) throw await errorFor(res);
@@ -105,17 +148,71 @@ export async function downloadMetricDrilldown(
   );
 }
 
-export function evidenceSelection(
-  canonical: MetricCanonicalSelection | undefined,
-  entityId: string,
+/**
+ * People one drilldown may read at once. MUST match `MAX_ENTITY_PERSONS` in
+ * the analytics validator: past it the request is a 400, so a caller that
+ * builds one anyway trades a table for an error dialog.
+ */
+export const MAX_EVIDENCE_PERSONS = 1000;
+
+/**
+ * The same selection for a GROUP of people — an org or team card, whose figure
+ * is taken over a roster rather than one person.
+ *
+ * A roster is passed as its own entity rather than one selection per member:
+ * the reader asked what the number on the card is made of, and one table of
+ * every record answers that where a hundred tabs do not.
+ *
+ * Null past the cap, so a scope too wide to read renders no affordance rather
+ * than one that fails when taken. A partial table is the worse answer: it
+ * would be a different figure from the one on the card, silently.
+ */
+export function personsEvidenceSelection(
+  // Only the parts a roster read needs: the entity of the figure this came
+  // from is replaced by the roster itself.
+  canonical:
+    | Pick<MetricCanonicalSelection, "metric_key" | "period" | "filters">
+    | undefined,
+  personIds: readonly string[],
   period?: { from: string; to: string },
   filters?: MetricDimensionFilter[],
   displayDimensions: string[] = []
 ): MetricEvidenceSelection | null {
   if (!canonical) return null;
+  // Sorted and deduplicated here as well as on the server: this object is the
+  // react-query key, and the same roster in another order would otherwise be a
+  // second cache entry for one question.
+  const ids = [...new Set(personIds)].sort();
+  if (ids.length === 0 || ids.length > MAX_EVIDENCE_PERSONS) return null;
+
   return {
     metric_key: canonical.metric_key,
-    entity: { type: "person", id: entityId },
+    entity: { type: "persons", ids },
+    period: period ?? canonical.period,
+    filters: filters ?? canonical.filters,
+    display_dimensions: [...new Set(displayDimensions)].sort(),
+  };
+}
+
+export function evidenceSelection(
+  canonical: MetricCanonicalSelection | undefined,
+  entityId?: string,
+  period?: { from: string; to: string },
+  filters?: MetricDimensionFilter[],
+  displayDimensions: string[] = []
+): MetricEvidenceSelection | null {
+  if (!canonical) return null;
+  const entity =
+    canonical.entity.type === "tenant"
+      ? ({ type: "tenant" } as const)
+      : entityId
+        ? ({ type: "person", id: entityId } as const)
+        : null;
+  if (!entity) return null;
+
+  return {
+    metric_key: canonical.metric_key,
+    entity,
     period: period ?? canonical.period,
     filters: filters ?? canonical.filters,
     display_dimensions: [...new Set(displayDimensions)].sort(),

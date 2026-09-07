@@ -37,6 +37,11 @@ logging:
 gears:
   api-gateway:
     config:
+      # INVARIANT: the service router's insight-http-metrics is the single
+      # writer of http.server.request.duration — the host's copy stays renamed
+      # or two bucket layouts collide in one series.
+      metrics:
+        prefix: "host"
       bind_addr: "0.0.0.0:8083"
       enable_docs: true
       cors_enabled: true
@@ -134,8 +139,8 @@ gears:
         client_id: ""
         client_secret: ""
         # id_token claim naming the user's single tenant (string; an array is
-        # tolerated — first entry wins). fakeidp/Keycloak emit `tenant_id`;
-        # Entra emits `tid`.
+        # tolerated — first entry wins). Keycloak emits `tenant_id`; Entra
+        # emits `tid`.
         tenant_claim: "tenant_id"
         # The identity-resolution source_type this IdP is seeded under (e.g.
         # "ms-entra") — required, drives the login-bootstrap person lookup.

@@ -119,7 +119,7 @@ describe("TeamMetricGroupCard", () => {
       />,
     );
     // Metric scores good (plurality top) → 1 ahead of peers.
-    expect(screen.getByText("1 ahead of peers")).toBeInTheDocument();
+    expect(screen.getByText("1 of 1 ahead of peers")).toBeInTheDocument();
     // Preview row: behind wins over ahead on a mixed profile.
     const row = screen.getByText("Active AI days").closest("li")!;
     expect(row).toHaveTextContent("1 behind");
@@ -159,7 +159,7 @@ describe("TeamMetricGroupCard", () => {
         onOpen={vi.fn()}
       />,
     );
-    expect(screen.getByText("no peer data")).toBeInTheDocument();
+    expect(screen.getByText("no comparison")).toBeInTheDocument();
     expect(
       screen.getByText(/No metrics with peer data/i),
     ).toBeInTheDocument();

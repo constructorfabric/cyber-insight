@@ -3,7 +3,7 @@
 This package holds:
 
 * `manifest` — the typed model of the stand's self-description
-  (`deploy/seed/manifest.json`), the only source of fixture names, capabilities
+  (`src/ingestion/tools/seed/manifest.json`), the only source of fixture names, capabilities
   and seeded facts.
 * `stand` — where the stand is: base-URL resolution for a host-side or
   in-network runner.
@@ -48,9 +48,6 @@ from .manifest import (
     MANIFEST_PATH_ENV,
     SUPPORTED_MANIFEST_VERSION,
     Capabilities,
-    Catalogue,
-    DefinitionOverride,
-    GoldenMetric,
     Manifest,
     Person,
     Realm,
@@ -73,6 +70,14 @@ from .personas import (
     persona_password,
     resolve_by_realm_role,
     verify_realm_roles,
+)
+from .scratch_identity import (
+    RUN_TAG,
+    SCRATCH_PREFIX,
+    SCRATCH_SOURCE_ID,
+    SCRATCH_SOURCE_TYPE,
+    issued_names,
+    scratch_name,
 )
 from .service_token import (
     ASSERTION_TYPE,
@@ -100,6 +105,7 @@ from .stand import (
     resolve_base_url,
     resolve_endpoint,
 )
+from .vectors import distinct_vectors, governs_vector, quality_vectors
 from .wait import wait_for, wait_until
 
 __all__: Sequence[str] = (
@@ -124,6 +130,10 @@ __all__: Sequence[str] = (
     "PASSWORD_ENV",
     "REALM_EXPORT_PATH",
     "ROLE_TO_REALM_ROLES",
+    "RUN_TAG",
+    "SCRATCH_PREFIX",
+    "SCRATCH_SOURCE_ID",
+    "SCRATCH_SOURCE_TYPE",
     "SERVICE_NAME",
     "SESSION_COOKIE_NAME",
     "SUPPORTED_MANIFEST_VERSION",
@@ -131,9 +141,6 @@ __all__: Sequence[str] = (
     "ApiClient",
     "ApiResponse",
     "Capabilities",
-    "Catalogue",
-    "DefinitionOverride",
-    "GoldenMetric",
     "JsonValue",
     "LoginNotCompletedError",
     "LoginSession",
@@ -157,15 +164,20 @@ __all__: Sequence[str] = (
     "default_identity_url",
     "default_manifest_path",
     "default_token_url",
+    "distinct_vectors",
     "expected_realm_roles",
+    "governs_vector",
     "identity_path",
+    "issued_names",
     "load_manifest",
     "open_service_session",
     "open_session",
     "persona_password",
+    "quality_vectors",
     "resolve_base_url",
     "resolve_by_realm_role",
     "resolve_endpoint",
+    "scratch_name",
     "verify_realm_roles",
     "wait_for",
     "wait_until",

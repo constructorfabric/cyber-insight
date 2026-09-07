@@ -36,6 +36,21 @@ class FixtureError(ValueError):
 
 
 @dataclass(frozen=True)
+class IdentityAccount:
+    """One source-account binding from a fixture's `identity_accounts`.
+
+    `person` is a persona email, or the literal 'excluded' for the reserved
+    bot person. `source_id` is the RAW connector source id; the rig hashes it
+    the way the connectors mint insight_source_id.
+    """
+
+    source_type: str
+    source_id: str
+    account_id: str
+    person: str
+
+
+@dataclass(frozen=True)
 class TestYaml:
     __test__ = False  # not a pytest test class despite the `Test` prefix
     name: str
@@ -54,6 +69,11 @@ class TestYaml:
     # double-count if gold does not collapse aliases. Without it every email is
     # its own person and no fixture can reach that path.
     identity_aliases: dict[str, list[str]] = field(default_factory=dict)
+    # Optional `identity_accounts: [{source_type, source_id, account_id, person}]`.
+    # Each entry is a source-account binding (`value_type='id'`) the rig writes
+    # into identity_persons beside the synthetic email bindings — the shape the
+    # account-first resolution map reads.
+    identity_accounts: list[IdentityAccount] = field(default_factory=list)
 
     @property
     def touched_tables(self) -> set[tuple[str, str]]:
@@ -107,6 +127,20 @@ def load(path: Path, *, schemas_dir: Path | None = None) -> TestYaml:
             raise FixtureError(f"{path}: identity_aliases.{canonical} must be a list of emails")
         identity_aliases[str(canonical)] = list(aliases)
 
+    accounts_doc = doc.get("identity_accounts") or []
+    if not isinstance(accounts_doc, list):
+        raise FixtureError(f"{path}: `identity_accounts` must be a list of bindings")
+    identity_accounts: list[IdentityAccount] = []
+    for idx, entry in enumerate(accounts_doc):
+        if not isinstance(entry, dict) or set(entry) != {"source_type", "source_id", "account_id", "person"}:
+            raise FixtureError(
+                f"{path}: identity_accounts[{idx}] must be a mapping with exactly "
+                "source_type, source_id, account_id, person"
+            )
+        if not all(isinstance(v, str) and v for v in entry.values()):
+            raise FixtureError(f"{path}: identity_accounts[{idx}] values must be non-empty strings")
+        identity_accounts.append(IdentityAccount(**entry))
+
     if "cases" not in doc:
         raise FixtureError(f"{path}: a test must define `cases`")
 
@@ -130,6 +164,19 @@ def load(path: Path, *, schemas_dir: Path | None = None) -> TestYaml:
                 raise FixtureError(f"{path}: bronze.{table}[{idx}]: {e}") from e
             if not isinstance(merged, dict):
                 raise FixtureError(f"{path}: bronze.{table}[{idx}] did not resolve to a record")
+            stated_payload = "raw_data" in merged
+            merged = _with_derived_payload(merged, schema)
+            if (
+                not stated_payload
+                and "raw_data" in schema.get("properties", {})
+                and not merged.get("raw_data")
+            ):
+                raise FixtureError(
+                    f"{path}: bronze.{table}[{idx}] derived an empty raw_data — the models of a "
+                    "source that hands over its whole report row read the payload, not the "
+                    "columns, so this row yields no field history at all. State `raw_data: null` "
+                    "if a payload-less row is what the case is about."
+                )
             try:
                 resolved.append(schema_validator.pad_and_validate(merged, schema, table=table))
             except schema_validator.SchemaError as e:
@@ -152,7 +199,49 @@ def load(path: Path, *, schemas_dir: Path | None = None) -> TestYaml:
         cases=cases,
         skip=skip,
         identity_aliases=identity_aliases,
+        identity_accounts=identity_accounts,
     )
+
+
+#: Columns that are the warehouse's framing rather than the source's payload.
+#: The connector builds `raw_data` from the report row and adds these alongside
+#: it, so a fixture's payload must leave them out too.
+_PAYLOAD_FRAMING = frozenset({"raw_data", "tenant_id", "source_id", "unique_key"})
+
+
+def _with_derived_payload(record: dict, schema: dict) -> dict:
+    """Fill a declared `raw_data` from the record's own fields.
+
+    A source that hands over its whole report row carries it in `raw_data`, and
+    the models that matter read the payload rather than the columns — bamboohr's
+    snapshot versions on it and its field history is derived from its keys. A
+    fixture stating only the columns yields no history and nothing downstream of
+    it, while every column still looks right.
+
+    Three spellings, three meanings:
+      * key absent   — derive the payload from the record. The columns and the
+                       payload stay in lockstep however a test overrides them.
+      * key a map    — derive, then lay the stated keys over the result. This is
+                       how a fixture adds a field the connector collects but no
+                       column holds; replacing the derived keys instead would
+                       reintroduce the drift this exists to prevent.
+      * key null     — the row deliberately carries no payload, the shape a
+                       source emitted before it began collecting every field.
+    """
+    if "raw_data" not in schema.get("properties", {}):
+        return record
+    stated = record.get("raw_data")
+    if "raw_data" in record and stated is None:
+        return record
+    if stated is not None and not isinstance(stated, dict):
+        return record
+
+    derived = {
+        key: value
+        for key, value in sorted(record.items())
+        if value is not None and key not in _PAYLOAD_FRAMING and not key.startswith("_airbyte_")
+    }
+    return {**record, "raw_data": {**derived, **(stated or {})}}
 
 
 def _find_schemas_dir(test_path: Path) -> Path:

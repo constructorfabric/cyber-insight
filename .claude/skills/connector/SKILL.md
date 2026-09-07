@@ -12,10 +12,11 @@ Manages the full lifecycle of Insight Connectors: creation, testing, schema gene
 
 ## References
 
-Before executing any workflow, read the connector specification:
-- **DESIGN**: `docs/domain/connector/specs/DESIGN.md` — mandatory fields, manifest rules, package structure
-- **TESTS**: `docs/domain/connector/specs/feature-connector-mock-tests/FEATURE.md` — test ladder (L0 static → L1 mock → L2 live smoke), coverage matrix, harness
+Before executing any workflow, read:
 - **README**: `src/ingestion/README.md` — commands, project structure
+- **PATTERNS**: `.cf-studio/config/rules/patterns.md` — descriptor shape, mandatory fields, package structure
+
+The test ladder is L0 static → L1 mock → L2 live smoke; `workflows/test.md` carries the harness.
 
 ## Non-negotiable wiring invariants
 
@@ -46,8 +47,7 @@ Generate one fragment:
 `cd src/ingestion/scripts/bootstrap-db && ./generate-connectors-config.sh '<category>/<name>'`.
 
 NEVER "fix" a legacy non-semver version on a connector that declares no
-`images:` block (`ai/openai`, `collaboration/slack`, `hr-directory/bamboohr` —
-all `2026.05.04`). ADR-0015 §"Legacy non-semver values" tolerates them by
+`images:` block (`ai/openai`, `collaboration/slack` — both `2026.05.04`). ADR-0015 §"Legacy non-semver values" tolerates them by
 design; they never reach `bump-descriptors`.
 
 ## Command Routing

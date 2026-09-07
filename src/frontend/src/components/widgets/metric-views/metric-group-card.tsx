@@ -1,3 +1,5 @@
+import { ChevronRight } from "lucide-react";
+import { MetricName } from "@/components/widgets/metric-help-tooltip";
 import {
   Card,
   CardContent,
@@ -11,8 +13,12 @@ import { GroupCardEmpty } from "@/components/widgets/group-card-empty";
 import { useSettings } from "@/hooks/use-settings";
 import { formatMetricValue } from "@/lib/format";
 import type { MetricGroup } from "@/lib/insight/groups";
+import { countableSignals } from "@/lib/insight/metric-containment";
 import { peerStatusToStatus } from "@/lib/insight/peer-status";
-import { forEntity, type NormalizedMetricResult } from "@/lib/metrics/collection";
+import {
+  forEntity,
+  type NormalizedMetricResult,
+} from "@/lib/metrics/collection";
 import { formatGapMagnitude } from "@/lib/metrics/gap";
 import {
   derivePeerStanding,
@@ -24,13 +30,9 @@ import {
   rankCounts,
   sectionStandingPhrase,
 } from "@/lib/scoring";
-import {
-  STATUS_BG_CLASS,
-  STATUS_STRIPE_LEFT,
-  STATUS_TEXT_CLASS,
-  applyFocusStatus,
-} from "@/lib/status";
+import { STATUS_BG_CLASS, applyFocusStatus } from "@/lib/status";
 import type { MetricCollectionResult } from "@/queries/metric-results";
+import { TEXT_HEADING } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
 export interface MetricGroupCardProps {
@@ -78,7 +80,7 @@ export function MetricGroupCard({
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base font-semibold">{def.title}</CardTitle>
+          <CardTitle className={TEXT_HEADING}>{def.title}</CardTitle>
           {subtitle ? (
             <CardDescription className="text-xs text-muted-foreground">
               {subtitle}
@@ -122,24 +124,54 @@ export function MetricGroupCard({
     return [{ metric, value: entityData.value, rank, standing }];
   });
 
-  const counts = rankCounts(rows.map((row) => ({ row, rank: row.rank })));
+  // One fact, one vote. The stripe turns red on a PATTERN of weakness — two
+  // bottoms and more than a quarter of the rankable set — so a metric counted
+  // twice because a second one contains it moves the section's colour without
+  // anything about the person changing. Thinning the tally, not the rows: the
+  // list below still names every metric the group measures.
+  const counted = countableSignals(
+    rows,
+    (row) => row.metric.metric_key,
+    (row) => row.rank
+  );
+  const counts = rankCounts(counted.map((row) => ({ row, rank: row.rank })));
   const status = applyFocusStatus(gradeSectionStanding(counts), focusMode);
   const badgeText = sectionStandingPhrase(counts);
 
   const headlineRow = pickHeadlineRow(rows);
-  const summary = headlineRow
-    ? headlineSummary(headlineRow)
-    : "No data for this period.";
 
-  // The preview is a FIXED set of keys — the card's stable identity. Keep a
-  // key even when its value is null (renders "—"); only drop a key the
-  // response never carried. A present-but-empty metric still belongs on the
-  // card.
-  const preview = def.card.preview
+  // Rows with a value, and only those. A "—" row spends a line saying nothing:
+  // a null here is not a measured zero — that would print 0 — it is a metric no
+  // connector feeds for this person, and the card's identity is not worth a
+  // line of blank on every period they lack it. Same rule the headline row
+  // follows.
+  //
+  // The lead goes FIRST in the list, not into a sentence above it. The card
+  // used to state a headline chosen from every metric of the group while
+  // listing three fixed keys, so it either named a metric the reader could not
+  // see, or repeated one of them a line later. One list, lead at the top.
+  const previewRows = def.card.preview
     .map((key) => rows.find((row) => row.metric.metric_key === key))
-    .filter((row): row is CardRow => row != null);
+    .filter((row): row is CardRow => row != null && row.value != null);
+  const preview = (
+    headlineRow
+      ? [headlineRow, ...previewRows.filter((row) => row !== headlineRow)]
+      : previewRows
+  ).slice(0, 4);
   const isEmpty = !rows.some((row) => row.value != null);
-  const stripeClass = STATUS_STRIPE_LEFT[status];
+
+  // A failed computation must not render as silence: the server answered 200
+  // with the failure in the view's slot, and the message is written for the
+  // reader (admins get the underlying error). One note per distinct message —
+  // a group of metrics sharing a broken source repeats one cause, not N.
+  const errorNotes = [
+    ...new Set(
+      def.collection.metrics.flatMap((metricConfig) => {
+        const message = data.byKey.get(metricConfig.key)?.error?.message;
+        return message ? [message] : [];
+      })
+    ),
+  ];
 
   return (
     <Card
@@ -160,12 +192,21 @@ export function MetricGroupCard({
         // Header→content on the card's own 12px rhythm (the preview stack's
         // gap-3), not the default 24px section gap.
         "gap-3",
-        !isEmpty && "text-left transition-colors hover:bg-accent/50",
-        stripeClass,
+        !isEmpty && "text-left transition-colors hover:bg-accent/50"
       )}
     >
       <CardHeader>
-        <CardTitle className="text-base font-semibold">{def.title}</CardTitle>
+        <CardTitle className={cn("flex items-center gap-1", TEXT_HEADING)}>
+          <span className="min-w-0 truncate">{def.title}</span>
+          {/* Same standing affordance as the KPI tile — an empty card is not
+              interactive and gets none. */}
+          {isEmpty ? null : (
+            <ChevronRight
+              className="size-4 shrink-0 text-muted-foreground"
+              aria-hidden
+            />
+          )}
+        </CardTitle>
         {subtitle || !isEmpty ? (
           <CardDescription className="flex flex-col gap-1 text-xs">
             {subtitle ? (
@@ -178,7 +219,7 @@ export function MetricGroupCard({
                 <span
                   className={cn(
                     "size-1.5 shrink-0 rounded-full",
-                    STATUS_BG_CLASS[status],
+                    STATUS_BG_CLASS[status]
                   )}
                   aria-hidden
                 />
@@ -190,46 +231,61 @@ export function MetricGroupCard({
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-3">
         {isEmpty ? (
-          <GroupCardEmpty />
+          errorNotes.length > 0 ? null : <GroupCardEmpty />
         ) : (
           <>
-            <p className="text-sm text-foreground/80">{summary}</p>
             {preview.length > 0 ? (
               <ul className="flex flex-col gap-1.5">
                 {preview.map((row) => {
                   const previewStatus = applyFocusStatus(
                     peerStatusToStatus(row.rank),
-                    focusMode,
+                    focusMode
                   );
+                  // Only the lead carries its comparison: it is the reason the
+                  // card is worth opening, and putting "vs median" on every row
+                  // is how the old summary line and the rows ended up saying
+                  // the same thing twice.
+                  const gap = row === preview[0] ? gapPhrase(row) : null;
                   return (
                     <li
                       key={row.metric.metric_key}
-                      className="flex items-center gap-2 text-sm"
+                      className="flex flex-col gap-0.5 text-sm"
                     >
-                      <span
-                        className={cn(
-                          "size-2 shrink-0 rounded-full",
-                          STATUS_BG_CLASS[previewStatus],
-                        )}
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                        {row.metric.label}
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            "size-2 shrink-0 rounded-full",
+                            STATUS_BG_CLASS[previewStatus]
+                          )}
+                          aria-hidden
+                        />
+                        <MetricName
+                          metric={row.metric}
+                          className="min-w-0 flex-1 truncate text-muted-foreground"
+                        />
+                        {/* The dot carries the standing; the number stays a
+                          number. Colouring both put two marks on one row, and
+                          a card of five rows then read as five problems
+                          instead of one section worth opening. */}
+                        <span className="shrink-0 font-medium tabular-nums">
+                          {row.value != null
+                            ? formatMetricValue(
+                                row.value,
+                                row.metric.format,
+                                row.metric.unit
+                              )
+                            : "—"}
+                        </span>
                       </span>
-                      <span
-                        className={cn(
-                          "shrink-0 font-medium tabular-nums",
-                          STATUS_TEXT_CLASS[previewStatus],
-                        )}
-                      >
-                        {row.value != null
-                          ? formatMetricValue(
-                              row.value,
-                              row.metric.format,
-                              row.metric.unit,
-                            )
-                          : "—"}
-                      </span>
+                      {/* Under the row, not beside it: a card is a quarter of
+                          the content width, and a third column there truncated
+                          the names it was meant to explain. The indent lines
+                          it up with the label. */}
+                      {gap ? (
+                        <span className="pl-4 text-xs text-muted-foreground tabular-nums">
+                          {gap}
+                        </span>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -237,6 +293,15 @@ export function MetricGroupCard({
             ) : null}
           </>
         )}
+        {errorNotes.length > 0 ? (
+          // A failed metric shows its message instead of silently rendering
+          // as empty; same subdued voice as the empty state.
+          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+            {errorNotes.map((note) => (
+              <p key={note}>{note}</p>
+            ))}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -254,21 +319,23 @@ function pickHeadlineRow(rows: CardRow[]): CardRow | null {
     .reduce<CardRow | null>((best, row) => {
       if (!best) return row;
       if (HEADLINE_TIER[row.rank] !== HEADLINE_TIER[best.rank])
-        return HEADLINE_TIER[row.rank] > HEADLINE_TIER[best.rank]
-          ? row
-          : best;
+        return HEADLINE_TIER[row.rank] > HEADLINE_TIER[best.rank] ? row : best;
       return row.standing.severity > best.standing.severity ? row : best;
     }, null);
   return ranked ?? rows.find((row) => row.value != null) ?? null;
 }
 
-function headlineSummary(row: CardRow): string {
+/** "−98% vs median", or null when there is no honest comparison to make. */
+function gapPhrase(row: CardRow): string | null {
   const { metric, value, standing } = row;
-  if (value == null) return "No data for this period.";
-  const base = `${metric.label}: ${formatMetricValue(value, metric.format, metric.unit)}`;
   const stats = standing.stats;
-  if (!standing.eligible || stats == null || Math.abs(standing.gapDelta) <= 1e-9)
-    return base;
+  if (
+    value == null ||
+    !standing.eligible ||
+    stats == null ||
+    Math.abs(standing.gapDelta) <= 1e-9
+  )
+    return null;
   const gap = formatGapMagnitude({
     value,
     median: stats.p50,
@@ -277,5 +344,5 @@ function headlineSummary(row: CardRow): string {
     format: metric.format,
     unit: metric.unit,
   });
-  return gap == null ? base : `${base} · ${gap} vs median`;
+  return gap == null ? null : `${gap} vs median`;
 }

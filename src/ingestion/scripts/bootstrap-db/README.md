@@ -22,7 +22,7 @@ docker run -d --name bootstrap-db-clickhouse -p 8123:8123 \
   "${CLICKHOUSE_SERVER_IMAGE}"
 ```
 
-`CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1` lets the `insight` admin manage access (`CREATE ROLE`/`CREATE USER`/`GRANT`) so the run provisions the read-only `presentation_ro` role and the grant-less `presentation` user (`provision-presentation-access.sh` → `presentation-role.sql`, #1963/#1964); the official image disables it by default. Both compose stacks (`docker-compose.yml`, `tests/e2e/compose`) and the bitnami prod admin already have access-management, and provisioning is guarded (an admin lacking it is skipped with a warning), so this flag is only needed for this bare throwaway container. The `presentation` user is created only when `CLICKHOUSE_PRESENTATION_PASSWORD` is set (unset in this bare run → role only, which is fine for a snapshot); analytics connects as it in the real stacks.
+`CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1` lets the `insight` admin manage access (`CREATE ROLE`/`CREATE USER`/`GRANT`) so the run provisions the read-only `presentation_ro` role and the grant-less `presentation` user (`provision-presentation-access.sh` → `presentation-role.sql`, #1963/#1964); the official image disables it by default. Both compose stacks (`docker-compose.yml`, `tests/e2e/compose`) and the bitnami prod admin already have access-management, and provisioning is guarded (an admin lacking it is skipped with a warning), so this flag is only needed for this bare throwaway container. The `presentation` user is created only when `CLICKHOUSE_PRESENTATION_PASSWORD` is set (unset in this bare run → role only, which is fine for a snapshot); analytics connects as it in the real stacks. The same pattern provisions the SELECT-only `grafana_ro` role and its grant-less `grafana` user for the Grafana ClickHouse datasource (`provision-grafana-access.sh` → `grafana-role.sql`, #2888), gated on `CLICKHOUSE_GRAFANA_PASSWORD`.
 
 Point `.env` at it: `CLICKHOUSE_HOST=$(ipconfig getifaddr en0)` (the LAN IP — reachable both for dbt on this machine and for the connector containers; see Prerequisites), `CLICKHOUSE_PORT=8123`, `CLICKHOUSE_PROTOCOL=http`, user/password/database `insight`. Check what got created:
 
@@ -47,21 +47,15 @@ Throw it away with `docker rm -f bootstrap-db-clickhouse`.
 
    ```yaml
 connectors:
-  salesforce:
-    path: crm/salesforce
+  hubspot:
+    path: crm/hubspot
     config:
+      hubspot_access_token:
+        value: fake
       insight_source_id:
-        value: salesforce-acme-prod
+        value: hubspot-acme-prod
       insight_tenant_id:
         value: fake
-      salesforce_client_id:
-        value: fake
-      salesforce_client_secret:
-        value: fake
-      salesforce_instance_url:
-        value: https://mycompany.my.salesforce.com
-      salesforce_start_date:
-        value: "2024-01-01"
   example-live-catalog-connector:
     path: category/name
     config:
@@ -149,7 +143,7 @@ Contributors whose physical table is not owned by dbt are covered too. `jira__ta
 | `bootstrap-db.sh <config.yaml>` | Sources `pins.env` and `.env` (if present), runs `seed-connectors.sh`, runs all dbt models, runs `../apply-ch-migrations.sh`. |
 | `run-dbt.sh [dbt args]` | Helper: generates a profiles.yml from the `CLICKHOUSE_*` variables and runs `dbt run` in `src/ingestion/dbt`. |
 | `check-field-parity.py [--manifest PATH]` | Audits every staging contributor against its silver union target (column set, positional order, exact type) plus manifest-vs-warehouse coverage. Same `CLICKHOUSE_*` env contract as the other scripts. Non-zero exit on any finding. |
-| `dump-ddl.sh` | Dumps `SHOW CREATE` for every `bronze_*` table, the `person`/`identity`/`silver`/`insight` databases (tables and views), and the gold-referenced `staging` tables into `../connectors-ddl/*.sql` — the committed snapshot that `../create-bronze-placeholders.sh` applies on fresh clusters. **Run it manually** after `bootstrap-db.sh` (see step above) whenever a schema changes, and commit the diff. `.github/workflows/connectors-ddl.yml` re-runs the whole pipeline on every `src/ingestion/**` PR and on every commit to `main`, and fails loudly when the committed snapshot no longer matches, with the full diff inline and as the `connectors-ddl-drift` artifact. Regenerate with the one-block recipe above (no credentials needed) and commit the result. |
+| `dump-ddl.sh` | Dumps `SHOW CREATE` for every `bronze_*` table, the `identity`/`silver`/`insight` databases (tables and views), and the gold-referenced `staging` tables into `../connectors-ddl/*.sql` — the committed snapshot that `../create-bronze-placeholders.sh` applies on fresh clusters. **Run it manually** after `bootstrap-db.sh` (see step above) whenever a schema changes, and commit the diff. `.github/workflows/connectors-ddl.yml` re-runs the whole pipeline on every `src/ingestion/**` PR and on every commit to `main`, and fails loudly when the committed snapshot no longer matches, with the full diff inline and as the `connectors-ddl-drift` artifact. Regenerate with the one-block recipe above (no credentials needed) and commit the result. |
 
 ## Image pins (pins.env)
 

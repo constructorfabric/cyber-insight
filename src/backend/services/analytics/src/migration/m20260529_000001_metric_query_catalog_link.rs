@@ -24,14 +24,13 @@
 //! (no orphan junction rows; cascaded cleanup when either parent is
 //! removed).
 //!
-//! ## DESIGN amendment
+//! ## Design amendment
 //!
-//! `docs/domain/metric-catalog/specs/DESIGN.md` §3.1 ("Metric ↔
-//! `analytics.metrics.query_ref` by `metric_key`. Loose pointer; no FK")
-//! and §6 integration table ("Read-only (loose pointer) … No FK") both
-//! ship pre-amendment. The amendment shipping in the same change as this
+//! The earlier rule linked metric to `analytics.metrics.query_ref` by
+//! `metric_key` as a read-only loose pointer with no FK. The amendment
+//! shipping in the same change as this
 //! migration narrows that rule: catalog still does NOT open or parse
-//! `query_ref` (opacity preserved per PRD §1.1 layer boundary), and
+//! `query_ref` (opacity preserved — the layer boundary is unchanged), and
 //! catalog still does NOT carry a `query_ref` column or any compute
 //! semantics. The new junction adds a *referential* link only — both
 //! sides remain agnostic to each other's payload.
@@ -253,7 +252,7 @@ impl MigrationTrait for Migration {
         let backend = manager.get_database_backend();
 
         for (metrics_hex, table_prefix) in QUERY_TO_CATALOG_PREFIX {
-            conn.execute(Statement::from_sql_and_values(
+            conn.execute_raw(Statement::from_sql_and_values(
                 backend,
                 INSERT_LINKS_FOR_METRICS_SQL,
                 [Value::from(*metrics_hex), Value::from(*table_prefix)],

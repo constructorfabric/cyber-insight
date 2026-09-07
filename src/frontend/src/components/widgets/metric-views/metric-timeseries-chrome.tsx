@@ -25,6 +25,7 @@ import type { MetricTimeseriesModel } from "@/components/widgets/metric-views/me
 import type { TimeseriesPresentation } from "@/components/widgets/metric-views/metric-timeseries-presentation";
 import { MetricTimeseriesTable } from "@/components/widgets/metric-views/metric-timeseries-table";
 import { downloadMetricTimeseriesXlsx } from "@/components/widgets/metric-views/metric-timeseries-xlsx";
+import { recordUsageEvent } from "@/telemetry";
 import type { MetricTimeseriesTableConfig } from "@/lib/metrics/timeseries-table";
 import type { MetricTimeseriesChartConfig } from "@/lib/metrics/timeseries-chart";
 
@@ -71,6 +72,7 @@ export function TimeseriesExportMenu({
   const [isExporting, setIsExporting] = useState(false);
 
   async function exportXlsx(): Promise<void> {
+    recordUsageEvent("export", "timeseries:xlsx");
     setIsExporting(true);
     try {
       await downloadMetricTimeseriesXlsx(id, model, range);
@@ -105,7 +107,10 @@ export function TimeseriesExportMenu({
           Excel (.xlsx)
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={() => downloadMetricTimeseriesCsv(id, model, range)}
+          onClick={() => {
+            recordUsageEvent("export", "timeseries:csv");
+            downloadMetricTimeseriesCsv(id, model, range);
+          }}
         >
           <FileText className="size-4" />
           CSV (.csv)
@@ -126,6 +131,7 @@ export function TimeseriesBody({
   selectedMetricKey,
   multiMetric,
   table,
+  onVerticalOverflow,
   onEvidence,
 }: {
   isPending: boolean;
@@ -138,9 +144,10 @@ export function TimeseriesBody({
   selectedMetricKey: string;
   multiMetric: MetricTimeseriesChartConfig["multiMetric"];
   table?: MetricTimeseriesTableConfig;
+  onVerticalOverflow?: (overflows: boolean) => void;
   onEvidence?: (
     metricKey: string,
-    columnKey: string,
+    columnKey: string | null,
     bucketStart: string | null
   ) => void;
 }) {
@@ -169,6 +176,7 @@ export function TimeseriesBody({
         <MetricTimeseriesTable
           model={model}
           config={table}
+          onVerticalOverflow={onVerticalOverflow}
           onEvidence={onEvidence}
         />
       ) : (

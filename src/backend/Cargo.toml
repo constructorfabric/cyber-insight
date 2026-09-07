@@ -1,13 +1,14 @@
 [workspace]
 members = [
     "libs/insight-clickhouse",
+    "libs/insight-http-metrics",
+    "libs/insight-migration",
     "libs/authenticator-sdk",
     "services/analytics",
+    "services/git-cli-proxy",
     "services/identity-resolution",
+    "services/previews",
     "services/authenticator",
-    # Dev/e2e-only fake OIDC provider (never shipped in a prod image). See
-    # services/fakeidp/README.md and cf/NGINX_BFF.md §10 G6.
-    "services/fakeidp",
     # Build-time CLI: compiles the gateway routes.yaml into nginx.conf
     # (gateway DESIGN DD-GW-02). Never shipped in a runtime image.
     "tools/routegen",
@@ -36,6 +37,8 @@ dbg_macro = "deny"
 clickhouse = { version = "0.15", features = ["uuid", "chrono"] }
 
 sqlparser = "0.62"
+schemars = "1.2"
+rmcp = { version = "3.2", default-features = false, features = ["macros", "server", "transport-streamable-http-server"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -47,6 +50,7 @@ anyhow = "1.0"
 
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
 futures = "0.3"
 # `Stream` + `StreamExt::next` for driving SeaORM result cursors. Already
@@ -59,17 +63,20 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 axum = "0.8"
 
 # Database (MariaDB via SeaORM)
-sea-orm = { version = "1.1", features = ["runtime-tokio", "sqlx-mysql", "with-uuid", "with-chrono", "with-json", "macros"] }
-sea-orm-migration = { version = "1.1", features = ["runtime-tokio", "sqlx-mysql"] }
+sea-orm = { version = "2.0", features = ["runtime-tokio", "sqlx-mysql", "with-uuid", "with-chrono", "with-json", "macros"] }
+sea-orm-migration = { version = "2.0", features = ["runtime-tokio", "sqlx-mysql"] }
 
 # IDs and time
 uuid = { version = "1.19", features = ["serde", "v7"] }
+url = "2.5"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.23"
 sha2 = "0.11"
+aes-gcm = "0.11"
+zeroize = "1.8"
 hex = "0.4"
 csv = "1.3"
-rust_xlsxwriter = "0.96"
+rust_xlsxwriter = { version = "0.99", features = ["constant_memory"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 
 # Logging
@@ -78,6 +85,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Security
 secrecy = { version = "0.10", features = ["serde"] }
+subtle = "2.6"
 
 # HTTP client (for Identity Resolution API)
 reqwest = { version = "0.12", features = ["json"] }
@@ -85,49 +93,66 @@ reqwest = { version = "0.12", features = ["json"] }
 # Caching
 redis = { version = "1.5", features = ["tokio-comp", "connection-manager"] }
 
-# JWT (gateway-JWT mint/verify, RFC 7523 assertions, fakeidp id_tokens).
+# JWT (gateway-JWT mint/verify, RFC 7523 assertions).
 # One version + one crypto provider (aws_lc_rs) across the workspace: v10 needs
 # exactly one provider process-wide under feature unification, else it panics.
 jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 
-# YAML (route configs, fakeidp users, test fixtures).
+# YAML (route configs, test fixtures).
 serde_yaml = "0.9"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 
 # gears-rust toolkit (crates.io, `cf-gears-toolkit-*` family)
-# Versions tracked to gears-rust HEAD (the authoritative source); bumped for
-# the authenticator gear (nginx+auth step 04).
-toolkit = { package = "cf-gears-toolkit", version = "=0.6.13" }
-toolkit-auth = { package = "cf-gears-toolkit-auth", version = "=0.7.2" }
-toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.7.2" }
-toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.7.4", features = ["axum", "sea-orm"] }
-toolkit-odata = { package = "cf-gears-toolkit-odata", version = "=0.8.2" }
+# Versions tracked to gears-rust HEAD (the authoritative source); the whole
+# family moves together with the opentelemetry major (see INVARIANT below).
+toolkit = { package = "cf-gears-toolkit", version = "=0.7.2" }
+toolkit-auth = { package = "cf-gears-toolkit-auth", version = "=0.7.6" }
+toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.8.1" }
+toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.9.2", features = ["axum", "sea-orm"] }
 
 # gears-rust SDKs (crates.io)
-authn-resolver-sdk = { package = "cf-gears-authn-resolver-sdk", version = "0.3.18" }
-types-registry-sdk = { package = "cf-gears-types-registry-sdk", version = "0.3.0" }
+authn-resolver-sdk = { package = "cf-gears-authn-resolver-sdk", version = "0.3.29" }
+types-registry-sdk = { package = "cf-gears-types-registry-sdk", version = "0.3.6" }
 
 # gears-rust system gears (crates.io)
-api_gateway = { package = "cf-gears-api-gateway", version = "0.2.9" }
-authn-resolver = { package = "cf-gears-authn-resolver", version = "0.2.18" }
-authz-resolver = { package = "cf-gears-authz-resolver", version = "0.1.25" }
+api_gateway = { package = "cf-gears-api-gateway", version = "0.4.9" }
+authn-resolver = { package = "cf-gears-authn-resolver", version = "0.2.29" }
+authz-resolver = { package = "cf-gears-authz-resolver", version = "0.1.37" }
 # Downstream gateway-JWT verification (JWKS + configurable claim mapping). Was a
 # local fork under plugins/; now the upstream published crate.
-oidc-authn-plugin = { package = "cf-gears-oidc-authn-plugin", version = "0.1.1" }
-tenant-resolver = { package = "cf-gears-tenant-resolver", version = "0.1.22" }
-static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "0.1.21" }
-single-tenant-tr-plugin = { package = "cf-gears-single-tenant-tr-plugin", version = "0.1.23" }
-grpc_hub = { package = "cf-gears-grpc-hub", version = "0.2.8" }
-gear_orchestrator = { package = "cf-gears-gear-orchestrator", version = "0.1.27" }
-types_registry = { package = "cf-gears-types-registry", version = "0.1.23" }
+oidc-authn-plugin = { package = "cf-gears-oidc-authn-plugin", version = "0.2.7" }
+tenant-resolver = { package = "cf-gears-tenant-resolver", version = "0.1.33" }
+static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "0.1.32" }
+single-tenant-tr-plugin = { package = "cf-gears-single-tenant-tr-plugin", version = "0.1.34" }
+grpc_hub = { package = "cf-gears-grpc-hub", version = "0.2.19" }
+gear_orchestrator = { package = "cf-gears-gear-orchestrator", version = "0.1.38" }
+types_registry = { package = "cf-gears-types-registry", version = "0.1.35" }
+
+# Anchored validation patterns (previews image-tag shapes). The lite build:
+# no Unicode tables, ASCII-only patterns here.
+regex-lite = "0.1"
+
+# Kubernetes client (previews gear). Same versions/features as gears-rust.
+kube = { version = "4.2", default-features = false }
+k8s-openapi = { version = "0.28", default-features = false }
 
 # Config
 figment = { version = "0.10", features = ["yaml", "env"] }
 
+# INVARIANT: must match the toolkit's opentelemetry major — a different major
+# is a different global meter provider and instruments silently no-op.
+opentelemetry = "0.32"
+# Local meter provider for the CLI job paths (seed/sync), which run outside the
+# toolkit server bootstrap and must build + flush their own provider.
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "metrics"] }
+
 # Internal crates
 insight-clickhouse = { path = "libs/insight-clickhouse" }
+insight-http-metrics = { path = "libs/insight-http-metrics" }
+insight-migration = { path = "libs/insight-migration" }
 authenticator-sdk = { path = "libs/authenticator-sdk" }
 
 # CI rebuild marker — bumped to retrigger the analytics

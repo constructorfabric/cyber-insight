@@ -6,7 +6,7 @@
 //! to an RFC 9457 `application/problem+json` envelope via the crate's
 //! `IntoResponse` impl.
 //!
-//! See `docs/domain/metric-catalog/specs/DESIGN.md` §3.3 (Error Envelope)
+//! See the committed contract at `docs/components/backend/analytics/openapi.json`
 //! and DNA `REST/API.md §7` for the platform-wide contract.
 
 use toolkit_canonical_errors::resource_error;
@@ -14,9 +14,37 @@ use toolkit_canonical_errors::resource_error;
 #[resource_error("gts.cf.insight.analytics_api.metric.v1~")]
 pub struct MetricError;
 
+/// Resource namespace for `/v1/reports*`.
+#[resource_error("gts.cf.insight.analytics_api.report.v1~")]
+pub struct ReportError;
+
 /// Resource namespace for `/v1/queries*` (saved-query CRUD + run, #1965).
 #[resource_error("gts.cf.insight.analytics_api.saved_query.v1~")]
 pub struct SavedQueryError;
+
+/// Resource namespace for `/v1/usage*` (adoption events + the admin read model).
+#[resource_error("gts.cf.insight.analytics_api.usage.v1~")]
+pub struct UsageError;
+
+/// Resource namespace for `/v1/connector-health*` (the operator's view of what
+/// the data mover reports about every connector's syncs).
+#[resource_error("gts.cf.insight.analytics_api.connector_health.v1~")]
+pub struct ConnectorHealthError;
+
+/// Resource namespace for `/v1/feedback*` (in-product feedback + the admin
+/// read model).
+#[resource_error("gts.cf.insight.analytics_api.feedback.v1~")]
+pub struct FeedbackError;
+
+/// Resource namespace for `/v1/ai*` (written context, the tenant system
+/// prompt, per-person keys, and the explain call).
+#[resource_error("gts.cf.insight.analytics_api.ai_assist.v1~")]
+pub struct AiError;
+
+/// Resource namespace for `/v1/ingestion*` (the admin ingestion-intensity read
+/// over the bronze ops view). Infrastructure-wide, not tenant-scoped.
+#[resource_error("gts.cf.insight.analytics_api.ingestion.v1~")]
+pub struct IngestionError;
 
 /// Resource namespace for `/v1/metrics*` (custom-metric CRUD + export/import).
 #[resource_error("gts.cf.insight.analytics_api.custom_metric.v1~")]

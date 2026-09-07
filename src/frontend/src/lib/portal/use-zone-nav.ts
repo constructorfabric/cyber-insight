@@ -1,11 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
 
+import { zoneHidden, zonePlanned } from "@/lib/portal/nav-policy";
 import { ZONES, type Zone } from "@/lib/portal/nav-model";
 import {
   usePortalShowPlanned,
 } from "@/lib/portal/portal-store";
 import { useActiveZone } from "@/lib/portal/use-active-zone";
-import { useViewerIsManager } from "@/lib/portal/use-viewer-is-manager";
+import { useViewerReach } from "@/lib/portal/use-viewer-reach";
+import { useIsAdmin } from "@/queries/identity-me";
 
 /**
  * Zones that still make sense when the viewer manages no one — everything else
@@ -27,19 +29,23 @@ export function useZoneNav(): {
 } {
   const navigate = useNavigate();
   const { activeZone, activePerson } = useActiveZone();
-  const { isManager, isPending: mgrPending } = useViewerIsManager();
-  // Zones we have not built are hidden unless the viewer opted into seeing
-  // planned work — a rail of scaffolds makes the built zones look unreliable.
+  const { canSeeOthers, isPending: reachPending } = useViewerReach();
+  // A rail of scaffolds makes the built zones look unreliable.
   const showPlanned = usePortalShowPlanned();
-  // An IC (no reports) has no subtree to roll up, so org zones are hidden — the
-  // shell collapses to Person. While the viewer's identity is still resolving,
-  // assume manager so the nav doesn't flash a collapsed state.
-  const orgZonesVisible = isManager || mgrPending;
+  // A viewer with nobody to look at has nothing to roll up, so org zones are
+  // hidden and the shell collapses to Person. While the answer is resolving,
+  // assume they have a cohort so the nav doesn't flash a collapsed state.
+  const orgZonesVisible = canSeeOthers || reachPending;
+  // Manage is opened by the admin role, not by having reports: the operator
+  // persona is an IC by design. Fail closed while the role check is pending —
+  // a rail entry that vanishes is worse than one that appears a beat late.
+  const { isAdmin } = useIsAdmin();
 
   const zones = ZONES.filter(
     (z) =>
-      (orgZonesVisible || IC_ZONES.has(z.id)) &&
-      (z.readiness !== "unbuilt" || showPlanned),
+      !zoneHidden(z.id) &&
+      (orgZonesVisible || IC_ZONES.has(z.id) || (z.id === "manage" && isAdmin)) &&
+      (!zonePlanned(z.id) || showPlanned),
   );
 
   function selectZone(zone: Zone) {
@@ -60,7 +66,7 @@ export function useZoneNav(): {
       // a lingering `?zone=` there would only contradict it.
       search: (prev: Record<string, unknown>) => ({
         ...prev,
-        ...(activeZone !== zone.id ? { item: undefined } : {}),
+        ...(activeZone !== zone.id ? { item: undefined, acct: undefined } : {}),
         zone: entity ? undefined : zone.id,
       }),
     });

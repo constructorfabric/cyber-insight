@@ -1,5 +1,6 @@
 import { headlineMetricKeys } from "@/lib/insight/groups";
 import { sectionMetricKeys, type LensConfig } from "@/lib/portal/lens-configs";
+import { defaultZoneItem } from "@/lib/portal/nav-model";
 
 /**
  * The Overview zone registry: each pane item (nav-model ZONE_SECTIONS.overview)
@@ -12,7 +13,7 @@ import { sectionMetricKeys, type LensConfig } from "@/lib/portal/lens-configs";
 const ATTENTION_KEYS: readonly string[] = headlineMetricKeys();
 
 /** The item the router renders when no pane item is selected. */
-export const DEFAULT_OVERVIEW_ITEM = "at-a-glance";
+export const DEFAULT_OVERVIEW_ITEM = defaultZoneItem("overview")!;
 
 export const OVERVIEW_ITEMS: Record<string, LensConfig> = {
   [DEFAULT_OVERVIEW_ITEM]: {
@@ -30,6 +31,9 @@ export const OVERVIEW_ITEMS: Record<string, LensConfig> = {
           "tasks.closed",
           "collab.messages_sent",
           "ai.cost",
+          // The daily distribution: this row totals a period, and only the
+          // per-day steps add up to one. The month's running snapshot does not.
+          "ai.daily_approximate_extra_usage_cost",
         ],
       },
       // The old header's "N using AI" stat, now an honest participation card
@@ -53,7 +57,11 @@ export const OVERVIEW_ITEMS: Record<string, LensConfig> = {
     title: "Overview · Trend",
     tagline: "org totals over time",
     sections: [
-      { kind: "trend", metrics: ["git.commits", "git.prs_merged", "collab.messages_sent"] },
+      {
+        kind: "trend",
+        metrics: ["git.prs_merged", "git.code_lines"],
+        activeContributorsFor: "git.prs_merged",
+      },
     ],
   },
   attention: {
@@ -62,9 +70,15 @@ export const OVERVIEW_ITEMS: Record<string, LensConfig> = {
     sections: [{ kind: "attention", metrics: ATTENTION_KEYS, max: 30 }],
   },
   health: {
-    title: "Overview · Health radar",
-    tagline: "domain coverage",
-    sections: [{ kind: "coverage-radar" }],
+    title: "Overview · Data coverage",
+    tagline: "which sections have data, and for how many people",
+    // One model, three cuts: the verdict, the parts nothing reaches, and how
+    // thinly people are seen. The radar that used to live here computed
+    // coverage a second way — a different predicate (`entityObserved`, which
+    // refuses zero-filled sums) over a different key set (each group's card
+    // preview rather than all its metrics) — so the same screen carried two
+    // counts of one thing by two definitions.
+    sections: [{ kind: "coverage-levels" }],
   },
   contribution: {
     title: "Overview · Contribution breakdown",
@@ -77,9 +91,9 @@ export const OVERVIEW_ITEMS: Record<string, LensConfig> = {
       {
         kind: "distribution",
         metric: "git.commits",
-        title: "Commit-volume distribution",
+        title: "How many commits people made",
         caption:
-          "How many people fall in each commit-count band — a long right tail means a few people produce most of the commits.",
+          "How many people fall in each commit-count band — when the bars stretch far to the right, a few people account for most of it.",
         unitLabel: "commits per person",
       },
     ],

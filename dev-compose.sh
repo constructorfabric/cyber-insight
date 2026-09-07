@@ -313,7 +313,7 @@ ghcr_volumes_block() {
 # binary, as `source:target[:mode]` relative to the repo root.
 ghcr_kept_mounts() {
   local svc="$1" out
-  out="$(docker compose -f docker-compose.yml --profile auth-keycloak --profile auth-fakeidp \
+  out="$(docker compose -f docker-compose.yml --profile auth-keycloak \
            config --format json 2>/dev/null |
     SERVICE="$svc" python3 -c '
 import json, os, sys
@@ -362,6 +362,37 @@ write_watch_override() {
       - --poll
       - --exec
       - run --bin analytics -- -c /app/config/insight.yaml run
+  # The one-shot migrate companion binds the release binary from
+  # deploy/compose/build, which watch mode deliberately does not build. Point it
+  # at the same cargo workspace so it can still apply migrations before the
+  # server starts — without it the server blocks forever on
+  # service_completed_successfully.
+  analytics-migrate:
+    image: insight-rust-watch:dev
+    pull_policy: build
+    build:
+      context: deploy/compose
+      dockerfile: rust-watch.Dockerfile
+    entrypoint: !reset null
+    working_dir: /workspace
+    environment:
+      CARGO_TARGET_DIR: /target
+      CARGO_INCREMENTAL: "1"
+    volumes: !override
+      - ./src/backend:/workspace:ro
+      - rust-target:/target
+      - rust-cargo-registry:/usr/local/cargo/registry
+      - rust-cargo-git:/usr/local/cargo/git
+      - ./deploy/compose/analytics-fullauth.yaml:/app/config/insight.yaml:ro
+    command:
+      - cargo
+      - run
+      - --bin
+      - analytics
+      - --
+      - -c
+      - /app/config/insight.yaml
+      - migrate
 YML
       ;;
     *)
@@ -379,7 +410,7 @@ cmd_up() {
   local build_only_csv=""
   local frontend_mode_override=""
   local instance="$COMPOSE_INSTANCE"
-  # Repeatable. Empty => gen-realm.py keeps its own defaults untouched.
+  # Repeatable. Empty => the realm generator keeps its own defaults untouched.
   local authenticator_redirects=""
   local skip_build=false
   local no_frontend=false
@@ -399,7 +430,7 @@ cmd_up() {
       --frontend-mode=*) frontend_mode_override="${1#*=}"; shift ;;
       --frontend-mode)   frontend_mode_override="$2"; shift 2 ;;
       --auth=*|--auth)
-        echo "ERROR: --auth was removed — auth always runs via Keycloak (fakeidp is retired)." >&2
+        echo "ERROR: --auth was removed — auth always runs via Keycloak." >&2
         return 2 ;;
       --authenticator-redirect=*)
         authenticator_redirects="$(add "$authenticator_redirects" "${1#*=}")"; shift ;;
@@ -457,17 +488,11 @@ cmd_up() {
   [[ -n "$frontend_mode_override" ]] && FRONTEND_MODE="$frontend_mode_override"
   FRONTEND_MODE="${FRONTEND_MODE:-dev}"
 
-  # Auth always runs via Keycloak; fakeidp is retired. A lingering
-  # AUTH_MODE=fakeidp in an old .env.compose is overridden, loudly.
+  # A lingering AUTH_MODE in an old .env.compose is dead config; warn, loudly.
   if [[ "${AUTH_MODE:-keycloak}" != "keycloak" ]]; then
     echo "WARN: AUTH_MODE=${AUTH_MODE} is retired — auth always runs via Keycloak." >&2
     echo "      Remove AUTH_MODE from $env_file to silence this." >&2
   fi
-  AUTH_MODE="keycloak"
-  # The seed-sample container reads AUTH_MODE too (deploy/seed/profiles.py's
-  # get_login_id_pairs) to pick which roster personas get a login-id fixture —
-  # export so the child `docker compose` process's env-var interpolation sees it.
-  export AUTH_MODE
 
   # NGINX_BFF: Keycloak needs NO special frontend. The SPA is cookie/BFF
   # (same-origin): it calls /auth/login + /api through the gateway and never
@@ -565,7 +590,7 @@ cmd_up() {
     platform: linux/amd64
 $(ghcr_volumes_block "$svc")
 YML
-          if [[ "$svc" == "identity-resolution" ]]; then
+          if [[ "$svc" == "analytics" || "$svc" == "identity-resolution" ]]; then
             # The one-shot migrate companion must flip to the ghcr image too:
             # left alone it keeps the build + local-binary bind mount (which
             # was intentionally not built in ghcr mode), never starts, and the
@@ -574,10 +599,10 @@ YML
             # subcommand, so resetting it here would start a SERVER that never
             # completes and the dependents would wait forever.
             cat <<YML
-  identity-resolution-migrate:
+  ${svc}-migrate:
     build: !reset null
     platform: linux/amd64
-$(ghcr_volumes_block identity-resolution-migrate)
+$(ghcr_volumes_block "${svc}-migrate")
 YML
           fi
         elif contains "$watch_list" "$svc"; then
@@ -615,10 +640,21 @@ YML
     echo "       Get on a network, or pin AUTHENTICATOR_OIDC_ISSUER in $env_file." >&2
     return 1
   fi
-  local kc_base="http://${kc_ip:-localhost}:8085/kc"
+  local kc_base="http://${kc_ip:-localhost}:${KEYCLOAK_PORT:-8085}/kc"
+
+  if [[ "${MCP_ENABLED:-false}" == "true" ]]; then
+    : "${CLICKHOUSE_MCP_PASSWORD:?CLICKHOUSE_MCP_PASSWORD must be set when MCP_ENABLED=true}"
+    if [[ -z "${MCP_PUBLIC_URL:-}" && -z "$kc_ip" ]]; then
+      echo "ERROR: no host IP detected — MCP_PUBLIC_URL cannot be derived." >&2
+      echo "       Pin MCP_PUBLIC_URL in $env_file and re-run." >&2
+      return 1
+    fi
+    export MCP_PUBLIC_URL="${MCP_PUBLIC_URL:-http://${kc_ip}:${GATEWAY_PORT:-8080}}"
+    echo "MCP endpoint → ${MCP_PUBLIC_URL}/mcp"
+  fi
 
   echo "=== Generating Keycloak realm import (deploy/compose/keycloak/realm-insight.generated.json) ==="
-  # gen-realm.py's own --authenticator-redirect REPLACES its defaults rather
+  # The generator's own --authenticator-redirect REPLACES its defaults rather
   # than appending, so whenever we pass any URI we must re-state the two
   # defaults too — dropping them would deregister the human login origins
   # and break `./dev-compose.sh up`.
@@ -632,11 +668,19 @@ YML
     done
     echo "    registering redirect URIs:$redirect_args"
   fi
+  # The realm is built from the seeder's roster, so the generator ships in
+  # that package and runs as an installed program. uv provisions the package
+  # into its own .venv on first use — the same tool the stand suite already
+  # requires — instead of this script reaching into the source tree.
+  command -v uv >/dev/null 2>&1 || {
+    echo "ERROR: uv is required to generate the Keycloak realm." >&2
+    echo "       Install it (brew install uv) and re-run; see CONTRIBUTING.md." >&2
+    return 1; }
   # shellcheck disable=SC2086  # redirect_args is a deliberately word-split flag list
-  python3 deploy/compose/keycloak/gen-realm.py \
+  uv run --project "$ROOT_DIR/src/ingestion/tools/seed" insight-seed-realm \
     --dev-email "$dev_lead_email" \
     $redirect_args \
-    --out deploy/compose/keycloak/realm-insight.generated.json
+    --out "$ROOT_DIR/deploy/compose/keycloak/realm-insight.generated.json"
 
   # NGINX_BFF: the AUTHENTICATOR (not the frontend) logs in against Keycloak,
   # server-side, as the pre-seeded `insight-authenticator` confidential client.
@@ -650,12 +694,10 @@ YML
   export AUTHENTICATOR_OIDC_ISSUER="${AUTHENTICATOR_OIDC_ISSUER:-${kc_base}/realms/insight}"
   export OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-insight-authenticator}"
   export OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET:-insight-authenticator-dev-secret}"
-  # The login-bootstrap resolve is scoped to idp.source_type; keycloak's
-  # sub differs in KIND from fakeidp's (gen-realm.py sets each realm user's
-  # id to their OWN roster uuid, so sub IS that uuid — not the fixed
-  # "fakeidp|dev" string fakeidp issues), so it must be seeded/looked-up
-  # under its own source_type, not the fakeidp default (see
-  # deploy/seed/profiles.py::get_login_id_pairs).
+  # The login-bootstrap resolve is scoped to idp.source_type: keycloak_realm
+  # sets each realm user's id to their OWN roster uuid, so sub IS that uuid and
+  # must be seeded/looked-up under the `keycloak` source_type (see
+  # src/ingestion/tools/seed/profiles.py::get_login_id_pairs).
   export AUTHENTICATOR_IDP_SOURCE_TYPE="keycloak"
   echo "authenticator issuer → ${AUTHENTICATOR_OIDC_ISSUER}"
 
@@ -685,7 +727,7 @@ YML
     if [[ -z "${FRONTEND_INTERNAL_PORT:-}" ]]; then
       case "$FRONTEND_MODE" in
         dev)   FRONTEND_INTERNAL_PORT=5173 ;;  # vite
-        built) FRONTEND_INTERNAL_PORT=80   ;;  # stock nginx image, runs as root
+        built) FRONTEND_INTERNAL_PORT=8080 ;;  # the mounted template declares `listen 8080`
         ghcr)  FRONTEND_INTERNAL_PORT=8080 ;;  # published image, runs as uid 101
       esac
       export FRONTEND_INTERNAL_PORT
@@ -756,11 +798,25 @@ YML
     contains "$ghcr_list" "$svc" && mkdir -p "deploy/compose/build/$svc"
   done
 
-  # Stop a fakeidp lingering from a stack started before its retirement.
-  # Compose profiles decide what to START, not what to stop, so without this
-  # an in-place `up` would leave both IdPs running. The auth-fakeidp profile
-  # puts the target service in scope for `stop`.
-  "${compose_cmd[@]}" --profile auth-fakeidp --profile auth-keycloak stop fakeidp >/dev/null 2>&1 || true
+  # Remove a fakeidp container lingering from a stack started before its
+  # retirement: the service no longer exists in docker-compose.yml, so an
+  # in-place `up` would otherwise leave both IdPs running.
+  docker rm -f "${COMPOSE_PROJECT_NAME:-insight}-fakeidp" >/dev/null 2>&1 || true
+
+  # The three frontend variants share one container_name but are different
+  # compose services, and a container owned by a profile-INACTIVE sibling is
+  # not an orphan — so an in-place `up` after a frontend mode switch dies on
+  # a name conflict instead of replacing it. Remove the old variant's
+  # container first; same-variant restarts are left to compose.
+  if [[ "$no_frontend" != "true" ]]; then
+    local front_ctr front_svc
+    front_ctr="${COMPOSE_PROJECT_NAME:-insight}-front"
+    front_svc="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$front_ctr" 2>/dev/null || true)"
+    if [[ -n "$front_svc" && "$front_svc" != "insight-front-$FRONTEND_MODE" ]]; then
+      echo "=== frontend mode switch: removing $front_ctr (was $front_svc) ==="
+      docker rm -f "$front_ctr" >/dev/null 2>&1 || true
+    fi
+  fi
 
   echo "=== docker compose up ==="
   if ! "${compose_cmd[@]}" ${profiles[@]+"${profiles[@]}"} up -d --remove-orphans; then
@@ -857,6 +913,19 @@ report_service_urls() {
   printf '  %-18s %s\n' "Analytics API"   "http://$h:${ANALYTICS_PORT:-8081}"
   printf '  %-18s %s\n' "Identity API"    "http://$h:${IDENTITY_RESOLUTION_PORT:-8086}"
   printf '  %-18s %s\n' "Authenticator"   "http://$h:${AUTHENTICATOR_PORT:-8083}"
+  if [[ "${MCP_ENABLED:-false}" == "true" ]]; then
+    local mcp_url="${MCP_PUBLIC_URL:-}"
+    if [[ -z "$mcp_url" ]]; then
+      local mcp_ip
+      mcp_ip="$(detect_host_ip || true)"
+      [[ -n "$mcp_ip" ]] && mcp_url="http://${mcp_ip}:${GATEWAY_PORT:-8080}"
+    fi
+    if [[ -n "$mcp_url" ]]; then
+      printf '  %-18s %s\n' "MCP SQL explorer" "${mcp_url}/mcp"
+    else
+      printf '  %-18s %s\n' "MCP SQL explorer" "unavailable: set MCP_PUBLIC_URL"
+    fi
+  fi
   printf '  %-18s %s\n' "Keycloak" \
     "http://$h:${KEYCLOAK_PORT:-8085}/kc/admin/  (admin console: admin/admin)"  # RULE-DEFAULTS-OK: display-only port default, mirrors the pre-existing per-service *_PORT lines above
   if [[ "${CLICKHOUSE_EXTERNAL:-false}" != "true" ]]; then
@@ -953,7 +1022,7 @@ cmd_down() {
   "${compose_cmd[@]}" \
     --profile local-mariadb --profile local-clickhouse \
     --profile front-dev --profile front-built --profile front-ghcr \
-    --profile auth-fakeidp --profile auth-keycloak \
+    --profile auth-keycloak \
     --profile build --profile seed \
     --profile local-mariadb --profile local-clickhouse \
     down $([[ "$wipe" == "true" ]] && echo "--volumes --remove-orphans")
@@ -1085,20 +1154,61 @@ usage: dev-compose.sh seed [--instance NAME] [--env-file PATH] [identity|silver|
 
 Populate the demo dataset. Stack must be up first.
 
-  identity   25 persons + org_chart + account_person_map in MariaDB.
+  identity   25 persons + org_chart + person_roles in MariaDB.
   silver     CREATE silver tables, apply gold-view migrations, generate
              ~24k rows of 60-day per-team activity in ClickHouse.
   all        Both (default if no arg).
 
-After `silver` or `all` runs, analytics is restarted so its
-metric-catalog schema validator re-checks the freshly-populated tables.
-Without that bounce, every metric stays cached at the boot-time
-`schema_status='error'`, the FE flags every bullet row schema_error=true,
-and section badges read "no peer data" everywhere.
-Tracking upstream as constructorfabric/insight#1307.
+After `silver` or `all` runs, three follow-up steps run automatically:
+the identity projection is refreshed (persons-seed in the
+identity-resolution container, which publishes to ClickHouse as its own
+final step — the same run the k8s CronJob makes), gold is rebuilt so
+observation rows resolve through the refreshed map, and analytics is
+restarted so its metric-catalog schema validator re-checks
+the freshly-populated tables. Without the bounce, every metric stays
+cached at the boot-time `schema_status='error'`, the FE flags every
+bullet row schema_error=true, and section badges read "no peer data"
+everywhere. Tracking upstream as constructorfabric/insight#1307.
 
-See deploy/seed/README.md for the ruff/mypy/venv setup.
+See src/ingestion/tools/seed/README.md for the ruff/mypy/venv setup.
 EOF
+}
+
+# One value from a compose env file: last assignment wins, leading whitespace
+# and one pair of surrounding quotes tolerated. `KEY=value` lines only — the
+# subset every writer of these files (the example + update_env_var) emits.
+env_file_value() {
+  local file="$1" key="$2" value
+  [[ -f "$file" ]] || return 0
+  value="$(sed -nE "s/^[[:space:]]*${key}=//p" "$file" | tail -1)"
+  if [[ "$value" == \"*\" || "$value" == \'*\' ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+# The persons-seed run the k8s CronJob makes (it publishes the snapshot as
+# its own final step): gold resolves identities only through what it
+# publishes, and compose has no cron to run it.
+seed_identity_projection() {
+  local env_file="$1"; shift
+  local compose_cmd=("$@")
+
+  # Explicit tenant: the cross-tenant fixture makes inference ambiguous.
+  # Same default as docker-compose.yml's seed-sample.
+  local tenant
+  tenant="$(env_file_value "$env_file" TENANT_DEFAULT_ID)"
+  tenant="${tenant:-00000000-df51-5b42-9538-d2b56b7ee953}"
+
+  echo "=== identity projection: persons-seed (as the k8s CronJob runs it) ==="
+  "${compose_cmd[@]}" exec -T \
+      -e "APP__gears__identity_resolution__config__tenant_default_id=${tenant}" \
+      identity-resolution /app/identity-resolution -c /app/config/insight.yaml seed || {
+    local status=$?
+    echo "ERROR: persons-seed failed (exit ${status}; 2 = another run holds the lock," >&2
+    echo "       3 = input guard refused — see the container log above)." >&2
+    return "$status"
+  }
 }
 
 cmd_seed() {
@@ -1125,18 +1235,32 @@ cmd_seed() {
 
   # Run the seed step itself. NOT `exec` — we still want to bounce
   # analytics after silver/all completes (see cf/insight#1307).
-  "${compose_cmd[@]}" --profile seed run --rm seed-sample "${args[@]}"
+  #
+  # --build: `compose run` reuses whatever image the tag currently holds, and a
+  # seed image left over from an older checkout runs the wrong entrypoint from
+  # the wrong directory — it surfaces as an EACCES on /app/manifest.json after
+  # the whole seed has run. The source is bind-mounted anyway, so the rebuild
+  # is layer-cached and only refreshes entrypoint/WORKDIR/deps.
+  "${compose_cmd[@]}" --profile seed run --build --rm seed-sample "${args[@]}"
   local seed_status=$?
   if [[ $seed_status -ne 0 ]]; then
     return $seed_status
   fi
 
-  # Restart analytics when ClickHouse data was touched. Its schema
-  # validator caches schema_status at startup and never re-checks; without
-  # this nudge the catalog keeps serving the pre-seed 'table_not_found'
-  # verdict and the FE shows "no peer data" everywhere.
   case "${args[0]}" in
     silver|all)
+      # Gold built unresolved above; mint bindings, publish the snapshot,
+      # rebuild. No --build: the seed run above just built the image.
+      echo
+      seed_identity_projection "$env_file" "${compose_cmd[@]}" || return $?
+      echo
+      echo "=== rebuilding gold over the refreshed identity map ==="
+      "${compose_cmd[@]}" --profile seed run --rm seed-sample gold || return $?
+
+      # Restart analytics when ClickHouse data was touched. Its schema
+      # validator caches schema_status at startup and never re-checks; without
+      # this nudge the catalog keeps serving the pre-seed 'table_not_found'
+      # verdict and the FE shows "no peer data" everywhere.
       echo
       echo "=== restarting analytics so it re-validates schema (cf/insight#1307) ==="
       "${compose_cmd[@]}" restart analytics >/dev/null
@@ -1163,6 +1287,7 @@ The main pass removes:
   • all stack containers (insight-*)
   • named volumes: mariadb-data, clickhouse-data, clickhouse-logs,
     redis-data, redpanda-data, rust-target, frontend-node-modules
+  • locally-built images (seed-sample, build containers, ...)
   • host-side build artefacts under deploy/compose/build/
   • the generated authenticator dev signing key
     (deploy/compose/authenticator-dev-keys/)
@@ -1192,6 +1317,7 @@ This will permanently remove Docker state for Compose instance
 $COMPOSE_PROJECT_NAME:
   • containers
   • named volumes
+  • the instance's locally-built images
   • the instance network
 
 Worktree-level build artefacts, generated config, keys, and .env.compose
@@ -1204,6 +1330,7 @@ This will permanently remove the local Insight stack state:
   • containers (insight-*)
   • named volumes (mariadb-data, clickhouse-data, redis-data,
     redpanda-data, rust-target, frontend-node-modules, ...)
+  • locally-built images (seed-sample, build containers, ...)
   • deploy/compose/build/ artefacts
   • deploy/compose/authenticator-dev-keys/ (dev signing key)
   • deploy/compose/override.generated.yml
@@ -1232,13 +1359,19 @@ EOF
   local compose_cmd=(docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$env_file" -f docker-compose.yml)
   [[ -f "$override" ]] && compose_cmd+=(-f "$override")
 
-  echo "=== docker compose down --volumes --remove-orphans ==="
+  # --rmi local: also drop the images compose built for this project (they
+  # carry no custom `image:` tag, which is what "local" matches — the pulled
+  # ghcr images keep their separate question below). A locally-built image
+  # that outlives a prune is worse than a stale volume: the next `run`
+  # silently reuses it even after the source tree it was built from has
+  # moved, and the layer cache makes the rebuild cheap anyway.
+  echo "=== docker compose down --volumes --rmi local --remove-orphans ==="
   "${compose_cmd[@]}" \
     --profile front-dev --profile front-built --profile front-ghcr \
-    --profile auth-fakeidp --profile auth-keycloak \
+    --profile auth-keycloak \
     --profile build --profile seed \
     --profile local-mariadb --profile local-clickhouse \
-    down --volumes --remove-orphans || true
+    down --volumes --rmi local --remove-orphans || true
 
   if [[ -z "$instance" && -d deploy/compose/build ]]; then
     echo "Removing deploy/compose/build/..."
@@ -1269,8 +1402,16 @@ EOF
   # Image removal is a separate question — re-pulling is slow.
   if ask_yes_no "Also remove pulled ghcr.io/constructorfabric/insight-* images?" "n"; then
     local imgs
-    imgs=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-           | grep -E '^ghcr\.io/constructorfabric/insight-' || true)
+    # A pull whose tag was since taken over by a newer image is listed as
+    # `repo:<none>` — not a valid reference for `docker rmi`. Address those as
+    # `repo@digest`, which removes only the ghcr association: unlike the image
+    # ID, it leaves any other tag on the same image (the e2e rig's
+    # `*:e2e-prebuilt` retags) in place. Tagged pulls keep the repo:tag form.
+    imgs=$(docker images --digests --format '{{.Repository}}:{{.Tag}} {{.Repository}}@{{.Digest}}' 2>/dev/null \
+           | awk '$1 ~ /^ghcr\.io\/constructorfabric\/insight-/ {
+               if ($1 !~ /:<none>$/)      print $1
+               else if ($2 !~ /@<none>$/) print $2
+             }' || true)
     if [[ -z "$imgs" ]]; then
       echo "  No matching images present."
     else
@@ -1343,15 +1484,23 @@ for dbt-built gold data rather than for containers to report healthy.
 
           The four backend services (analytics, authenticator,
           identity-resolution, gateway) and the frontend are PULLED, each
-          pinned to its own chart's appVersion — never :latest, and never
-          compiled here. Building them took ~26 minutes for code the stand
-          does not change.
+          pinned to its own chart's appVersion — never :latest.
 
-          --build-backend  Compile the backend from this working tree instead.
-                           Needed to test a backend change: `up` otherwise
-                           refuses when the tree differs from origin/main
-                           under src/backend/, since the pinned images would
-                           not be what ran.
+          An appVersion names what main released, so pass the flag for whatever
+          tree this checkout changes, or the stand will not run it:
+
+          --build-backend    Compile the Rust services from this tree. Adds
+                             ~28 min (measured across CI's build-path runs).
+          --prebuilt-backend Use backend images already loaded under the four
+                             *_IMAGE environment variables. Never builds or
+                             pulls a fallback image.
+          --build-frontend   Build the SPA from this tree with pnpm, served by
+                             the front-built nginx. Backend stays pinned.
+          --build            Both.
+
+          `up` refuses to pin a tree that differs from origin/main and names
+          the flag to pass — but only when origin/main is in the checkout. A
+          shallow clone says so on stderr and defers to its caller.
   seed    Re-seed the running stand (default target: all).
   test    Run the stand suite against an already-up stand. Passes extra
           arguments through to pytest — no `--` separator.
@@ -1359,9 +1508,10 @@ for dbt-built gold data rather than for containers to report healthy.
           --base-url <url> and --stand-manifest <path> when pointing it
           somewhere else.
 
-          --image <ref>  Run inside an already-pulled ui-tests image instead
+          --image <ref>  Run inside an already-pulled suite image instead
                          of on the host, sharing the gateway's network
-                         namespace. Never builds: pull the image first. Test
+                         namespace. Never builds: no suite image is published
+                         anymore (CI runs host-side); build one locally. Test
                          paths are then IMAGE-SIDE (/tests/stand/ui, not
                          tests/stand/ui), and pytest-playwright's artefacts
                          land in ./test-results as usual.
@@ -1408,7 +1558,7 @@ TEST_STAND_PINNED_BACKENDS=(
 # a 26-minute compile comes back invisibly.
 test_stand_pull_backends() {
   local entry var chart name image
-  echo "=== Pinning the backend to published images (skip with --build-backend) ==="
+  echo "=== Pinning the backend to published images (skip with --build) ==="
   for entry in "${TEST_STAND_PINNED_BACKENDS[@]}"; do
     IFS='|' read -r var chart name <<<"$entry"
     image="$(test_stand_pinned_image "$chart" "$name")" || return 1
@@ -1417,43 +1567,75 @@ test_stand_pull_backends() {
       echo "ERROR: cannot pull $image (pinned by $chart's appVersion)." >&2
       echo "       Not falling back to a source build — that would report a pass" >&2
       echo "       for an image this run never ran. Check ghcr access, or pass" >&2
-      echo "       --build-backend to build from source deliberately." >&2
+      echo "       --build to build from source deliberately." >&2
       return 1; }
     update_env_var "$TEST_STAND_ENV_FILE" "$var" "$image"
   done
 }
 
-# Refuse to pin when the working tree's backend differs from what the charts
-# describe.
+test_stand_use_prebuilt_backends() {
+  local entry var name image
+  for entry in "${TEST_STAND_PINNED_BACKENDS[@]}"; do
+    IFS='|' read -r var _ name <<<"$entry"
+    image="${!var:-}"
+    [[ -n "$image" ]] || {
+      echo "ERROR: --prebuilt-backend requires $var." >&2
+      return 1
+    }
+    docker image inspect "$image" >/dev/null 2>&1 || {
+      echo "ERROR: pre-built image '$image' for $name is not loaded." >&2
+      return 1
+    }
+    update_env_var "$TEST_STAND_ENV_FILE" "$var" "$image"
+  done
+  echo "=== the backend uses pre-built images from this ref ==="
+}
+
+# Refuse to pin when the working tree differs from what a chart describes.
 #
-# The appVersions track main. A branch that edits src/backend/** and then runs
-# against published images would report green for code it never executed. The PR
-# path filter makes this unreachable in the normal lane; this covers
-# workflow_dispatch and local runs, which bypass it.
-test_stand_backend_matches_charts() {
+# The appVersions track main. A branch that edits the given source tree and
+# then runs against published images would report green for code it never
+# executed. The PR path filter makes this unreachable in the normal lane; this
+# covers workflow_dispatch and local runs, which bypass it.
+test_stand_tree_matches_charts() {
+  local subtree="$1" flag="$2"
   git rev-parse --git-dir >/dev/null 2>&1 || return 0
   git remote get-url origin >/dev/null 2>&1 || return 0
-  git rev-parse --verify --quiet origin/main >/dev/null || return 0
+  # Inert on a depth-1 checkout (every CI runner). Say so, so a log reader does
+  # not read the silence as a passed check.
+  git rev-parse --verify --quiet origin/main >/dev/null || {
+    echo "NOTE: no origin/main here — ${subtree}/ unchecked, ${flag} is the caller's call." >&2
+    return 0; }
 
   local changed
-  changed="$(git diff --name-only origin/main -- src/backend 2>/dev/null | head -5)"
+  changed="$(git diff --name-only origin/main -- "$subtree" 2>/dev/null | head -5)"
   [[ -z "$changed" ]] && return 0
 
-  echo "ERROR: this tree changes src/backend/ relative to origin/main:" >&2
+  echo "ERROR: this tree changes ${subtree}/ relative to origin/main:" >&2
   printf '         %s\n' $changed >&2
-  echo "       The stand pins each backend image to its chart's appVersion, which" >&2
+  echo "       The stand pins each published image to its chart's appVersion, which" >&2
   echo "       tracks main — so those changes would NOT be what runs. Pass" >&2
-  echo "       --build-backend to build this tree instead." >&2
+  echo "       ${flag} to build this tree instead." >&2
   return 1
+}
+
+test_stand_backend_matches_charts() {
+  test_stand_tree_matches_charts src/backend --build-backend
+}
+
+test_stand_frontend_matches_chart() {
+  test_stand_tree_matches_charts src/frontend --build-frontend
 }
 
 # Derive the test env file from the committed example, overriding only the
 # knobs the test path forces. SEEDED_LOCAL_* are blanked so every `up` seeds.
+# `mode` is ghcr (image required) or built (image empty — the front-built
+# profile serves the pnpm build from src/frontend/dist).
 test_stand_write_env() {
-  local image="$1"
+  local mode="$1" image="${2:-}"
   [[ -f .env.compose.example ]] || { echo "ERROR: .env.compose.example not found." >&2; return 1; }
   cp .env.compose.example "$TEST_STAND_ENV_FILE"
-  update_env_var "$TEST_STAND_ENV_FILE" FRONTEND_MODE   "ghcr"
+  update_env_var "$TEST_STAND_ENV_FILE" FRONTEND_MODE   "$mode"
   update_env_var "$TEST_STAND_ENV_FILE" FRONTEND_IMAGE  "$image"
   update_env_var "$TEST_STAND_ENV_FILE" SEEDED_LOCAL_MARIA ""
   update_env_var "$TEST_STAND_ENV_FILE" SEEDED_LOCAL_CH    ""
@@ -1464,7 +1646,7 @@ test_stand_write_env() {
   # browser to its OWN loopback, and a host client to an origin that serves
   # the SPA rather than the authenticator.
   update_env_var "$TEST_STAND_ENV_FILE" AUTHENTICATOR_REDIRECT_URI "$(test_stand_origin)/auth/callback"
-  echo "=== test-stand env → $TEST_STAND_ENV_FILE (frontend: $image) ==="
+  echo "=== test-stand env → $TEST_STAND_ENV_FILE (frontend: ${image:-built from src/frontend}) ==="
   echo "    app origin: $(test_stand_origin)  callback: $(test_stand_origin)/auth/callback"
 }
 
@@ -1475,22 +1657,24 @@ test_stand_write_env() {
 #
 # The list is committed rather than derived. It was read off the evidence
 # models' own sources (src/ingestion/gold/<family>_metric_evidence.sql) against
-# what deploy/seed/generators/ writes:
+# what src/ingestion/tools/seed/generators/ writes:
 #
 #   task    <- task_issue_state / task_status_spans / task_worklog_flow  (task.py)
 #   git     <- class_git_{commits,file_changes,pull_requests,…}          (git.py)
 #   collab  <- class_collab_{chat,email,meeting}_activity, focus_metrics (collab.py)
 #   ai      <- class_ai_{assistant,dev}_usage                            (ai.py)
+#   ai_cost <- class_ai_overage                                          (ai.py)
+#   wiki    <- class_wiki_{pages,activity,engagement}                    (wiki.py)
 #
-# `wiki_metric_observations` is absent ON PURPOSE: its evidence model reads
-# class_wiki_* and there is no wiki generator, so requiring it would hang every
-# run. The crm, support, hr and people generators have no observation table of
-# their own — they feed other surfaces — so they cannot be gated on here.
+# The crm, support, hr and people generators have no observation table of their
+# own — they feed other surfaces — so they cannot be gated on here.
 TEST_STAND_READY_TABLES=(
   task_metric_observations
   git_metric_observations
   collab_metric_observations
   ai_metric_observations
+  ai_cost_metric_observations
+  wiki_metric_observations
 )
 
 test_stand_ch_query() {
@@ -1591,11 +1775,7 @@ TEST_STAND_GATEWAY_CONTAINER=insight-gateway
 # --output flag to keep in step.
 TEST_STAND_ARTIFACT_DIR="test-results"
 
-# Run the suite inside the published ui-tests image against the running stand.
-#
-# The image is never built here: CI pulls it, a developer builds it once by
-# hand (see deploy/compose/ui-tests.Dockerfile). This function only wires it to
-# the stand, and the wiring is the part that is easy to get wrong.
+# Run the suite inside a browser runner image against the running stand.
 #
 # Network namespace, not the compose network. The session cookie is
 # `__Host-`-prefixed, so the browser stores it only from a trustworthy origin,
@@ -1604,9 +1784,6 @@ TEST_STAND_ARTIFACT_DIR="test-results"
 # browser and the HTTP clients alike, with no Chromium flags (which do not lift
 # the restriction anyway — measured, see tests/stand/ui/conftest.py).
 #
-# Arguments are passed to pytest verbatim and are IMAGE-SIDE paths: the suite
-# lives at /tests/stand in the image, so select with /tests/stand/ui, not
-# tests/stand/ui.
 test_stand_test_in_image() {
   local image="$1" gw_port="$2"
   shift 2
@@ -1623,7 +1800,7 @@ test_stand_test_in_image() {
     return 1
   fi
 
-  local manifest="deploy/seed/manifest.json"
+  local manifest="src/ingestion/tools/seed/manifest.json"
   [[ -f "$manifest" ]] || {
     echo "ERROR: $manifest not found — seed the stand first: ./dev-compose.sh test-stand seed" >&2
     return 1; }
@@ -1640,22 +1817,30 @@ test_stand_test_in_image() {
 
   local run_args=(
     --rm
-    # As the INVOKING user, not the image's declared one. The image drops root
-    # (ui-tests.Dockerfile), but a bind-mounted artifact directory takes its
+    # As the INVOKING user, not the image's declared one. A suite image may
+    # drop root, but a bind-mounted artifact directory takes its
     # ownership from the host, so a container uid that does not match the host's
     # cannot write into it — and the traces a failed journey uploads are the
     # whole reason that mount exists.
     --user "$(id -u):$(id -g)"
+    --init
+    --ipc=host
     --network "container:${TEST_STAND_GATEWAY_CONTAINER}"
     -e "INSIGHT_STAND_BASE_URL=http://localhost:${TEST_STAND_GATEWAY_CONTAINER_PORT}"
-    -v "$PWD/${manifest}:/deploy/seed/manifest.json:ro"
-    -v "$PWD/${TEST_STAND_ARTIFACT_DIR}:/tests/${TEST_STAND_ARTIFACT_DIR}"
-    # Named, not inferred. The suite otherwise resolves this by walking up from
-    # its own file to the directory holding `tests/` — which is the repo root in
-    # a checkout and `/` in this image, where the suite lives at /tests with
-    # nothing above it. That wrote the ledger to /.artifacts, outside the mount,
-    # and only worked at all because the image used to run as root.
-    -e "INSIGHT_STAND_ARTIFACT_DIR=/tests/${TEST_STAND_ARTIFACT_DIR}"
+    # Mounted at a stable path and NAMED, rather than reproducing the suite's
+    # own repo-relative arithmetic inside an image where the tree lives at
+    # /tests and there is nothing above it.
+    -v "$PWD/${manifest}:/stand/manifest.json:ro"
+    -e "INSIGHT_STAND_MANIFEST=/stand/manifest.json"
+    -v "$PWD/tests:/workspace/tests:ro"
+    -v "$PWD/${TEST_STAND_ARTIFACT_DIR}:/workspace/${TEST_STAND_ARTIFACT_DIR}"
+    -w /workspace
+    -e "INSIGHT_STAND_ARTIFACT_DIR=/workspace/${TEST_STAND_ARTIFACT_DIR}"
+    -e HOME=/tmp
+    -e XDG_CACHE_HOME=/tmp/.cache
+    -e UV_PYTHON_INSTALL_DIR=/tmp/uv-python
+    -e UV_PROJECT_ENVIRONMENT=/tmp/stand-tests
+    -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
   )
 
   # The persona password comes from the generated realm export when it is
@@ -1663,7 +1848,7 @@ test_stand_test_in_image() {
   # keycloak stand working with no secret to distribute; the env var stays the
   # path for a stand whose realm this checkout cannot see.
   local realm="deploy/compose/keycloak/realm-insight.generated.json"
-  [[ -f "$realm" ]] && run_args+=(-v "$PWD/${realm}:/${realm}:ro")
+  [[ -f "$realm" ]] && run_args+=(-v "$PWD/${realm}:/workspace/${realm}:ro")
   [[ -n "${INSIGHT_STAND_PERSONA_PASSWORD:-}" ]] && run_args+=(-e INSIGHT_STAND_PERSONA_PASSWORD)
 
   # Service-principal tests need the `testclient` private key to sign their
@@ -1684,7 +1869,14 @@ test_stand_test_in_image() {
   fi
 
   echo "=== running the suite in ${image} (namespace: ${TEST_STAND_GATEWAY_CONTAINER}) ==="
-  docker run "${run_args[@]}" "$image" "$@"
+  docker run "${run_args[@]}" "$image" sh -ceu '
+    python -m pip install --user --no-cache-dir "uv==0.12.0"
+    export PATH="$HOME/.local/bin:$PATH"
+    uv sync --project /workspace/tests --frozen --no-dev --no-install-project
+    export PYTHONPATH="/workspace/tests/lib${PYTHONPATH:+:$PYTHONPATH}"
+    uv run --project /workspace/tests --no-sync \
+      pytest /workspace/tests/stand "$@"
+  ' sh "$@"
 }
 
 cmd_test_stand() {
@@ -1693,27 +1885,44 @@ cmd_test_stand() {
 
   case "$verb" in
     up)
-      local image build_backend=false
+      # Each tree is pinned to its chart's appVersion or built from this one,
+      # asked separately: --build is the both-axes alias.
+      local image backend_mode=pinned build_frontend=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
-          --build-backend) build_backend=true; shift ;;
+          --build)          backend_mode=source; build_frontend=true; shift ;;
+          --build-backend)  backend_mode=source; shift ;;
+          --prebuilt-backend) backend_mode=prebuilt; shift ;;
+          --build-frontend) build_frontend=true; shift ;;
           -h|--help) cmd_test_stand_help; return 0 ;;
           *) echo "ERROR: unknown test-stand up option: $1" >&2; return 2 ;;
         esac
       done
 
-      image="$(test_stand_frontend_image)" || return 1
-      test_stand_write_env "$image" || return 1
-
-      # Pinning writes the four *_IMAGE vars into the env file, which is what
-      # makes cmd_up put those services in its ghcr list — so this has to happen
-      # before cmd_up reads it.
-      if [[ "$build_backend" != true ]]; then
-        test_stand_backend_matches_charts || return 1
-        test_stand_pull_backends || return 1
+      if [[ "$build_frontend" == true ]]; then
+        test_stand_write_env built || return 1
+        echo "=== the frontend is built from this tree (pnpm), not pulled ==="
       else
-        echo "=== --build-backend: compiling the backend from this tree ==="
+        test_stand_frontend_matches_chart || return 1
+        image="$(test_stand_frontend_image)" || return 1
+        test_stand_write_env ghcr "$image" || return 1
       fi
+
+      # INVARIANT: pinning writes the *_IMAGE vars, and that is the only thing
+      # keeping cmd_up off the compiler — so it has to run before cmd_up reads
+      # the env file.
+      case "$backend_mode" in
+        source)
+          echo "=== the backend is compiled from this tree, not pulled ==="
+          ;;
+        prebuilt)
+          test_stand_use_prebuilt_backends || return 1
+          ;;
+        pinned)
+          test_stand_backend_matches_charts || return 1
+          test_stand_pull_backends || return 1
+          ;;
+      esac
 
       local up_args=(--env-file "$TEST_STAND_ENV_FILE"
                      --authenticator-redirect "$(test_stand_origin)/auth/callback")
@@ -1750,10 +1959,8 @@ cmd_test_stand() {
       # tears it down, so a failing suite leaves the stand intact to inspect.
       #
       # Two runners, one verb. On the host (default) the suite runs from
-      # tests/ with uv. With --image it runs inside an already-pulled ui-tests
-      # image instead, which is what CI uses: the browser, its version and the
-      # locked dependency set then come from a published artefact rather than
-      # from whatever the runner happens to have installed.
+      # tests/ with uv. With --image, it runs the checkout's test source in a
+      # browser runner image instead.
       local image=""
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1794,7 +2001,7 @@ cmd_test_stand() {
         echo "         brew install uv   # or: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
         return 1; }
       # --frozen: run exactly the locked dependency set, never re-resolve
-      # silently, so the host runner and the ui-tests image stay identical.
+      # silently, so every runner stays identical.
       uv run --project tests --frozen pytest tests/stand "$@"
       ;;
 

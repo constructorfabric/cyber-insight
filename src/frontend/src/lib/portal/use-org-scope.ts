@@ -5,16 +5,16 @@ import {
   findIdentityNode,
   flattenSubordinates,
   hasIndirectReports,
+  rosterTree,
   scopeRosterToDirectReports,
   type RosterEntry,
 } from "@/lib/insight/identity-tree";
-import {
-  type OrgScope,
-} from "@/lib/portal/portal-store";
-import {
-  usePortalScope,
-} from "@/lib/portal/portal-nav";
-import { useIcPerson } from "@/queries/ic-dashboard";
+import { usePortalScope } from "@/lib/portal/portal-nav";
+import type { OrgScope } from "@/lib/portal/portal-store";
+import type { PeopleListItem } from "@/api/identity-client";
+import { personDisplayName } from "@/lib/identities/person-display";
+import { useVisibilityPolicy } from "@/queries/identity-me";
+import { useVisibleRoster } from "@/queries/visible-roster";
 import type { IdentityPerson } from "@/types/insight";
 
 /** One option in the scope picker: a manager, their depth, and their team size. */
@@ -40,6 +40,51 @@ export interface ResolvedScope {
   canDirectOnly: boolean;
 }
 
+/** What the scope is called when it is the organisation itself. */
+export const WHOLE_ORG_LABEL = "Whole organisation";
+
+/**
+ * Scope resolution for an organisation with no reporting lines.
+ *
+ * There is one cohort — everyone the viewer may see — so there is no pivot to
+ * pick and nothing for `directOnly` to narrow. The viewer stays in: this scope
+ * counts the organisation, and an org-level head-count that changes with who
+ * is looking disagrees with the roster listed right beside it (#2724).
+ */
+export function flatOrgScope(
+  roster: readonly PeopleListItem[] | null,
+): ResolvedScope {
+  if (!roster) {
+    return {
+      pivot: null,
+      roster: null,
+      label: WHOLE_ORG_LABEL,
+      count: 0,
+      managerNodes: [],
+      canDirectOnly: false,
+    };
+  }
+
+  const members: RosterEntry[] = roster.map((person) => ({
+    person_id: person.person_id,
+    email: person.email ?? "",
+    display_name: person.display_name ?? "",
+    username: person.username ?? "",
+    // No reporting lines to name, and no depth to be at.
+    supervisor_person_id: null,
+    is_direct: false,
+  }));
+
+  return {
+    pivot: null,
+    roster: members,
+    label: WHOLE_ORG_LABEL,
+    count: members.length,
+    managerNodes: [],
+    canDirectOnly: false,
+  };
+}
+
 /**
  * Pure scope resolution (design §6): pivot = scope.root within the viewer's
  * tree (permission boundary — identity only serves the viewer their subtree),
@@ -51,7 +96,14 @@ export function resolveScopeRoster(
   scope: OrgScope,
 ): ResolvedScope {
   if (!tree) {
-    return { pivot: null, roster: null, label: "", count: 0, managerNodes: [], canDirectOnly: false };
+    return {
+      pivot: null,
+      roster: null,
+      label: "",
+      count: 0,
+      managerNodes: [],
+      canDirectOnly: false,
+    };
   }
   // Person id, not email: since the identity cutover that is the only key the
   // tree, the routes and the metric entity ids agree on.
@@ -75,7 +127,7 @@ export function resolveScopeRoster(
       node.subordinates.length > 0
         ? {
             person_id: node.person_id,
-            name: node.display_name || node.email,
+            name: personDisplayName(node),
             depth,
             teamSize: 0,
           }
@@ -91,7 +143,7 @@ export function resolveScopeRoster(
   return {
     pivot,
     roster,
-    label: pivot.display_name || pivot.email,
+    label: personDisplayName(pivot),
     count: roster?.length ?? 0,
     managerNodes,
     canDirectOnly,
@@ -107,17 +159,30 @@ export function useOrgScope(): ResolvedScope & {
   pivotPersonId: string;
 } {
   const { personId } = useViewer();
-  const viewerQ = useIcPerson(personId ?? "");
   const scope = usePortalScope();
-  const resolved = useMemo(
-    () => resolveScopeRoster(viewerQ.data ?? null, personId, scope),
-    [viewerQ.data, personId, scope],
+  const { isFlat } = useVisibilityPolicy();
+  const visibleRoster = useVisibleRoster(true);
+  const tree = useMemo(
+    () =>
+      visibleRoster.isPending || !personId
+        ? null
+        : rosterTree(visibleRoster.roster, personId),
+    [visibleRoster.isPending, visibleRoster.roster, personId],
   );
+
+  const resolved = useMemo(
+    () =>
+      isFlat
+        ? flatOrgScope(visibleRoster.isPending ? null : visibleRoster.roster)
+        : resolveScopeRoster(tree, personId, scope),
+    [isFlat, visibleRoster.isPending, visibleRoster.roster, tree, personId, scope],
+  );
+
   return {
     ...resolved,
-    isLoading: viewerQ.isLoading,
-    isError: viewerQ.isError,
-    refetch: () => viewerQ.refetch(),
+    isLoading: visibleRoster.isPending,
+    isError: visibleRoster.isError,
+    refetch: visibleRoster.retry,
     pivotPersonId: resolved.pivot?.person_id ?? personId ?? "",
   };
 }

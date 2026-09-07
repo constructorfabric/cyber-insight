@@ -6,7 +6,7 @@ Connectors pull data from your tools — Jira issues, Slack messages, GitHub pul
 
 - A completed Insight install per the deployment runbook: [HELM_DEPLOY.md](./HELM_DEPLOY.md).
 - The `insight-reconcile-loop` CronWorkflow present in the `insight` namespace (installed as part of that runbook).
-- The `airbyte-auth-secrets` Secret mirrored into the `insight` namespace — done in Step 3 of the deployment runbook.
+- Airbyte reachable and `airbyte.namespace` set per Step 1 of the runbook. The reconcile loop reads Airbyte's `airbyte-auth-secrets` from Airbyte's own namespace at run time (the chart renders the Role/RoleBinding for it) — do **not** copy that Secret into `insight`.
 
 ## Contents
 
@@ -15,7 +15,7 @@ Connectors pull data from your tools — Jira issues, Slack messages, GitHub pul
 - [Prerequisites](#prerequisites)
 - [Contents](#contents)
 - [Anatomy of a connector Secret](#anatomy-of-a-connector-secret)
-- [The 25 available connectors](#the-25-available-connectors)
+- [The available connectors](#the-available-connectors)
 - [Example Secret for every connector](#example-secret-for-every-connector)
   - [AI & coding assistants](#ai--coding-assistants)
   - [Source control & CI](#source-control--ci)
@@ -32,7 +32,7 @@ Connectors pull data from your tools — Jira issues, Slack messages, GitHub pul
 Every connector Secret needs three things for the reconcile loop to discover and wire it up:
 
 - **A label**, `app.kubernetes.io/part-of: insight` — the selector the reconcile loop uses to find connector Secrets.
-- **Two annotations**: `insight.cyberfabric.com/connector: <name>` identifies which connector definition to use, and `insight.cyberfabric.com/source-id: <id>` names this specific source instance (the convention is `<name>-main`).
+- **Two annotations**: `insight.cyberfabric.com/connector: <name>` identifies which connector definition to use, and `insight.cyberfabric.com/source-id: <id>` names this specific source instance (the convention is `<name>-main`). Two connectors that describe accounts of the SAME vendor instance must share one source id — an account is keyed on (source type, source id, account id), so a different id makes one account into two. `github` and `github-directory` are such a pair: both use `github-main`.
 - **`stringData`** holding the connector's required fields — credentials, base URLs, and similar settings specific to that tool.
 
 For example, the Jira connector Secret (`connectors/jira.yaml`) looks like this:
@@ -52,16 +52,16 @@ stringData:
   jira_api_token:    "ATATT-CHANGE_ME"
 ```
 
-## The 25 available connectors
+## The available connectors
 
-Replace `CHANGE_ME` (and any other placeholder) values in whichever connector files you need, under `connectors/`:
+The canonical list is the descriptors in `src/ingestion/connectors/*/*/descriptor.yaml`; this document carries example Secrets for the common ones. Replace `CHANGE_ME` (and any other placeholder) values in whichever connector files you need, under `connectors/`:
 
-`jira`, `slack`, `github-v2`, `gitlab`, `m365`, `salesforce`, `zoom`, `confluence`, `youtrack`, `zendesk`, `workday`, `bamboohr`, `ms-entra`, `figma`, `outline`, `hubspot`, `cursor`, `openai`, `chatgpt-team`, `claude-team`, `claude-admin`, `claude-enterprise`, `github-copilot`, `bitbucket-cloud`, `zulip-proxy`.
+`jira`, `slack`, `github`, `gitlab`, `m365`, `zoom`, `confluence`, `zendesk`, `bamboohr`, `ms-entra`, `outline`, `hubspot`, `cursor`, `chatgpt-team`, `claude-team`, `claude-enterprise`, `bitbucket-cloud`, `zulip-proxy`, `github-directory`.
 
 Apply all of them at once, or one at a time:
 
 ```sh
-kubectl -n insight apply -f connectors/      # all 25 connectors at once
+kubectl -n insight apply -f connectors/      # all connectors at once
 # or one at a time:
 kubectl -n insight apply -f connectors/jira.yaml
 ```
@@ -116,19 +116,6 @@ stringData:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: insight-claude-admin-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: claude-admin, insight.cyberfabric.com/source-id: claude-admin-main }
-type: Opaque
-stringData:
-  admin_api_key: "CHANGE_ME"
-```
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
   name: insight-claude-enterprise-main
   namespace: insight
   labels: { app.kubernetes.io/part-of: insight }
@@ -136,22 +123,6 @@ metadata:
 type: Opaque
 stringData:
   analytics_api_key: "CHANGE_ME"
-```
-
-```yaml
-# ⚠ CDK connector; org-scoped GitHub PAT
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-github-copilot-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: github-copilot, insight.cyberfabric.com/source-id: github-copilot-main }
-type: Opaque
-stringData:
-  github_token:      "CHANGE_ME"       # PAT with Copilot org metrics scope
-  github_org:        "CHANGE_ME"
-  # github_start_date: "2026-01-01"     # optional; default = 90 days ago
 ```
 
 ```yaml
@@ -167,39 +138,7 @@ stringData:
   cursor_api_key: "CHANGE_ME"
 ```
 
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-openai-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: openai, insight.cyberfabric.com/source-id: openai-main }
-type: Opaque
-stringData:
-  openai_admin_api_key: "CHANGE_ME"
-  openai_start_date:    "2026-01-01"
-```
-
 ### Source control & CI
-
-```yaml
-# ⚠ CDK connector; supersedes `github`
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-github-v2-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: github-v2, insight.cyberfabric.com/source-id: github-v2-main }
-type: Opaque
-stringData:
-  github_token:         "CHANGE_ME"
-  github_organizations: "org-a,org-b"
-  github_start_date:    "2026-01-01"
-  github_skip_archived: "true"
-  github_skip_forks:    "true"
-```
 
 ```yaml
 apiVersion: v1
@@ -216,7 +155,10 @@ stringData:
 ```
 
 ```yaml
-# ⚠ CDK connector; baked url_base
+# Declarative Bitbucket Cloud connector on the git-cli-proxy: commit-level data
+# comes from a bare clone served by the proxy instead of one vendor API call per
+# commit. Needs a deployed git-cli-proxy (gitCliProxy.deploy); its address and
+# token are injected by reconcile, so this Secret carries neither.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -226,8 +168,49 @@ metadata:
   annotations: { insight.cyberfabric.com/connector: bitbucket-cloud, insight.cyberfabric.com/source-id: bitbucket-cloud-main }
 type: Opaque
 stringData:
-  bitbucket_token:      "CHANGE_ME"    # Atlassian ATCTT access token (NOT an ATATT API token)
-  bitbucket_workspaces: "workspace-a,workspace-b"
+  bitbucket_token:      "CHANGE_ME"    # workspace access token, or an App Password with bitbucket_username
+  bitbucket_username:   ""             # required only for an App Password / personal API token
+  bitbucket_workspaces: '["acme"]'     # JSON array of workspace slugs
+  bitbucket_start_date: "2026-01-01"
+```
+
+```yaml
+# GitHub org roster -> identity_inputs. Required for GitHub-brokered SSO:
+# without it a GitHub login resolves to no person and the callback returns 403.
+# source-id is `github-main`, NOT `github-directory-main`: this connector and
+# the `github` connector describe accounts of the same organization, and the
+# roster's member-id binding only meets the commit e-mails claimed against
+# that account when both carry one source id.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: insight-github-directory-main
+  namespace: insight
+  labels: { app.kubernetes.io/part-of: insight }
+  annotations: { insight.cyberfabric.com/connector: github-directory, insight.cyberfabric.com/source-id: github-main }
+type: Opaque
+stringData:
+  github_token:         "ghp_CHANGE_ME"   # read:org (+ user:email for member emails)
+  github_organizations: '["myorg"]'       # JSON array
+```
+
+```yaml
+# Declarative GitHub connector on the git-cli-proxy: commit-level data comes
+# from a bare clone served by the proxy instead of one vendor API call per
+# commit. Needs a deployed git-cli-proxy (gitCliProxy.deploy); its address and
+# token are injected by reconcile, so this Secret carries neither.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: insight-github-main
+  namespace: insight
+  labels: { app.kubernetes.io/part-of: insight }
+  annotations: { insight.cyberfabric.com/connector: github, insight.cyberfabric.com/source-id: github-main }
+type: Opaque
+stringData:
+  github_token:         "ghp_CHANGE_ME"   # repo, read:org, read:project
+  github_organizations: '["myorg"]'       # JSON array
+  github_start_date:    "2026-01-01"
 ```
 
 ### Issue tracking & docs
@@ -245,21 +228,6 @@ stringData:
   jira_instance_url: "https://your-org.atlassian.net"
   jira_email:        "svc@your-org.com"
   jira_api_token:    "ATATT-CHANGE_ME"
-```
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-youtrack-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: youtrack, insight.cyberfabric.com/source-id: youtrack-main }
-type: Opaque
-stringData:
-  youtrack_base_url: "https://your-org.youtrack.cloud/api"
-  youtrack_token:    "perm-CHANGE_ME"
-  # youtrack_page_size: "100"                # optional
 ```
 
 ```yaml
@@ -291,21 +259,6 @@ stringData:
   outline_instance_url: "https://your-outline-host"
   outline_api_token:    "CHANGE_ME"
   outline_start_date:   "2026-01-01"
-```
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-figma-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: figma, insight.cyberfabric.com/source-id: figma-main }
-type: Opaque
-stringData:
-  figma_token:      "figd_CHANGE_ME"
-  figma_team_ids:   "1234567890,0987654321"
-  figma_start_date: "2026-01-01"
 ```
 
 ### Communication & meetings
@@ -389,23 +342,6 @@ stringData:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: insight-workday-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: workday, insight.cyberfabric.com/source-id: workday-main }
-type: Opaque
-stringData:
-  workday_base_url:            "https://wd2-impl-services1.workday.com"
-  workday_isu_username:        "CHANGE_ME"
-  workday_isu_password:        "CHANGE_ME"
-  workday_workers_report_path: "/ccx/service/customreport2/.../Workers"
-  workday_leave_report_path:   "/ccx/service/customreport2/.../Leave"
-```
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
   name: insight-ms-entra-main
   namespace: insight
   labels: { app.kubernetes.io/part-of: insight }
@@ -418,22 +354,6 @@ stringData:
 ```
 
 ### CRM & support
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: insight-salesforce-main
-  namespace: insight
-  labels: { app.kubernetes.io/part-of: insight }
-  annotations: { insight.cyberfabric.com/connector: salesforce, insight.cyberfabric.com/source-id: salesforce-main }
-type: Opaque
-stringData:
-  salesforce_instance_url:  "https://your-org.my.salesforce.com"
-  salesforce_client_id:     "CHANGE_ME"
-  salesforce_client_secret: "CHANGE_ME"
-  salesforce_start_date:    "2026-01-01"
-```
 
 ```yaml
 # ⚠ CDK connector; baked url_base (api.hubapi.com)
@@ -469,4 +389,4 @@ stringData:
 
 | Problem | What to check |
 |---------|-----------------|
-| Connectors are not syncing | Confirm `airbyte-auth-secrets` was mirrored into the `insight` namespace (Step 3 of the deployment runbook, [HELM_DEPLOY.md](./HELM_DEPLOY.md)). The reconcile loop runs as an Argo `CronWorkflow` named `insight-reconcile-loop` — **not** the analytics pod — so inspect the Workflow pods it spawns: `kubectl -n insight get pods -l workflows.argoproj.io/cron-workflow=insight-reconcile-loop`, then `kubectl -n insight logs <pod>` (or `argo logs @latest -n insight` if the Argo CLI is available) |
+| Connectors are not syncing | Confirm `airbyte.namespace` points at the namespace holding Airbyte's `airbyte-auth-secrets` and that the chart's Role/RoleBinding exists there (Step 1/3 of the deployment runbook, [HELM_DEPLOY.md](./HELM_DEPLOY.md)). The reconcile loop runs as an Argo `CronWorkflow` named `insight-reconcile-loop` — **not** the analytics pod — so inspect the Workflow pods it spawns: `kubectl -n insight get pods -l workflows.argoproj.io/cron-workflow=insight-reconcile-loop`, then `kubectl -n insight logs <pod>` (or `argo logs @latest -n insight` if the Argo CLI is available) |

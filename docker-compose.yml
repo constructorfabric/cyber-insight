@@ -188,9 +188,41 @@ services:
   # (The legacy Rust api-gateway is gone — the nginx `gateway` below is the sole
   # :8080 entry, doing full auth via the authenticator, NGINX_BFF #1583 step 09.)
   # Auth runs via Keycloak (real login form + generated realm): full cookie/BFF
-  # auth, the authenticator does the OIDC flow. fakeidp is retired — its
-  # service lingers below only until its removal lands; dev-compose.sh never
-  # starts it.
+  # auth, the authenticator does the OIDC flow.
+
+  # analytics owns the `analytics` schema but the server never migrates it — it
+  # validates that the schema carries its embedded migration set and refuses to
+  # boot otherwise. So compose must run `migrate` first, exactly like
+  # identity-resolution below. Exits 0 and stays exited; the server gates on it.
+  analytics-migrate:
+    # backend-common supplies the insight network (without it the migrator lands
+    # on the default network, can't resolve `mariadb`, and the server blocks
+    # forever on service_completed_successfully) + restart:no + init.
+    !!merge <<: *backend-common
+    image: ${ANALYTICS_IMAGE:-insight-analytics:dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-insight}-analytics-migrate
+    build:
+      context: src/backend
+      dockerfile: services/analytics/Dockerfile
+    depends_on:
+      mariadb: {condition: service_healthy, required: false}
+    environment:
+      APP__gears__analytics__config__database_url: "mysql://${MARIADB_USER:-insight}:${MARIADB_PASSWORD:-insight-local}@${MARIADB_HOST:-mariadb}:${MARIADB_INTERNAL_PORT:-3306}/analytics"
+    volumes:
+      - type: bind
+        source: ./deploy/compose/build/analytics/analytics
+        target: /app/analytics
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./deploy/compose/analytics-fullauth.yaml:/app/config/insight.yaml:ro
+    command:
+      - "/app/analytics" # <watched path — unused, one-shot>
+      - "--"
+      - "/app/analytics"
+      - "-c"
+      - "/app/config/insight.yaml"
+      - "migrate"
 
   analytics:
     !!merge <<: *backend-common
@@ -205,6 +237,7 @@ services:
       mariadb: {condition: service_healthy, required: false}
       clickhouse: {condition: service_healthy, required: false}
       redis: {condition: service_healthy}
+      analytics-migrate: {condition: service_completed_successfully}
     environment:
       !!merge <<: *backend-env
       # analytics runs on the gears-rust host: structural config
@@ -221,6 +254,23 @@ services:
       APP__gears__analytics__config__clickhouse_password: "${CLICKHOUSE_PRESENTATION_PASSWORD:-presentation-local}"
       APP__gears__analytics__config__identity_url: "http://identity-resolution:8082"
       APP__gears__analytics__config__redis_url: "redis://redis:6379"
+      APP__gears__analytics__config__reports__temp_dir: "/tmp/insight-reports"
+      # Explaining a metric with an LLM. Off unless .env.compose turns it on;
+      # enabled without a sealing key stops the service at boot, so the two
+      # move together.
+      APP__gears__analytics__config__ai_assist__enabled: "${AI_ASSIST_ENABLED:-false}"
+      APP__gears__analytics__config__ai_assist__token_encryption_key: "${AI_ASSIST_TOKEN_ENCRYPTION_KEY:-}"
+      APP__gears__analytics__config__ai_assist__api_key: "${AI_ASSIST_API_KEY:-}"
+      APP__gears__analytics__config__ai_assist__admin_only: "${AI_ASSIST_ADMIN_ONLY:-true}"
+      APP__gears__analytics__config__ai_assist__model: "${AI_ASSIST_MODEL:-claude-sonnet-5}"
+      APP__gears__analytics__config__mcp__enabled: "${MCP_ENABLED:-false}"
+      APP__gears__analytics__config__sql_api__enabled: "${SQL_API_ENABLED:-false}"
+      APP__gears__analytics__config__sql_api__token: "${SQL_API_TOKEN:-}"
+      APP__gears__analytics__config__mcp__public_url: "${MCP_PUBLIC_URL:-}"
+      APP__gears__analytics__config__mcp__allow_insecure_private_network: "true"
+      APP__gears__analytics__config__mcp__max_concurrent_queries: "${MCP_MAX_CONCURRENT_QUERIES:-16}"
+      APP__gears__analytics__config__mcp__clickhouse_user: "insight_mcp"
+      APP__gears__analytics__config__mcp__clickhouse_password: "${CLICKHOUSE_MCP_PASSWORD:-}"
       # Gateway-JWT verification (NGINX_BFF R1) is done by the upstream
       # cf-gears-oidc-authn-plugin. Its config is nested/list-shaped (not
       # env-injectable) and resolves the JWKS via OIDC discovery over HTTPS ONLY,
@@ -322,6 +372,11 @@ services:
       APP__gears__identity_resolution__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
       APP__gears__identity_resolution__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__identity_resolution__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      # The tenant this journal is keyed by. The seed already passes it per
+      # invocation; the SERVICE needs it too, because a write that has no
+      # caller context to infer a tenant from (the login bootstrap) checks the
+      # asserted one against this rather than trusting it.
+      APP__gears__identity_resolution__config__tenant_default_id: "${TENANT_DEFAULT_ID:-00000000-df51-5b42-9538-d2b56b7ee953}"
     volumes:
       - type: bind
         source: ./deploy/compose/build/identity-resolution/identity-resolution
@@ -346,14 +401,14 @@ services:
   # ── Authenticator (OIDC login + sessions + cookie-to-JWT exchange) ─────
   #
   # The BFF / token-handler service (nginx+auth step 04). Runs the OIDC
-  # code+PKCE login against fakeidp, keeps opaque sessions in Redis, and mints
+  # code+PKCE login against Keycloak, keeps opaque sessions in Redis, and mints
   # the linked ES256 gateway JWT served at /internal/authz. signing_keys_path
   # points at a bind-mounted dev key that dev-compose.sh generates on `up`
   # (deploy/compose/authenticator-dev-keys, gitignored — never baked into an
   # image); prod mounts a K8s Secret. Login requires the person to exist in
   # Identity (seed the DB with
-  # ./dev-compose.sh seed identity — the fakeidp dev user resolves to a seeded
-  # person); an unknown person is denied (403). First-admin bootstrap / RBAC are
+  # ./dev-compose.sh seed identity — realm users resolve to seeded
+  # persons); an unknown person is denied (403). First-admin bootstrap / RBAC are
   # out of scope (a separate universe-admin initiative).
   authenticator:
     !!merge <<: *backend-common
@@ -364,9 +419,6 @@ services:
       dockerfile: services/authenticator/Dockerfile
     depends_on:
       redis: {condition: service_healthy}
-      # required: false → compose skips this dependency when the fakeidp
-      # profile is inactive (it always is — dev-compose.sh runs auth-keycloak).
-      fakeidp: {condition: service_started, required: false}
       identity-resolution: {condition: service_started}
     environment:
       !!merge <<: *backend-env
@@ -377,14 +429,15 @@ services:
       # the JWKS over https (the plugin's runtime is https-only). The browser
       # still reaches the gateway plainly at :8080.
       APP__gears__authenticator__config__gateway_issuer: "${AUTHENTICATOR_GATEWAY_ISSUER:-https://authn-tls:8443}"
-      # OIDC: discovery/token/JWKS are fetched in-network at fakeidp:8084; the
-      # browser-facing redirect_uri is host-visible (the SPA / e2e runs there).
-      APP__gears__authenticator__config__idp__issuer_url: "${AUTHENTICATOR_OIDC_ISSUER:-http://fakeidp:8084}"
+      # OIDC: the issuer must equal Keycloak's advertised KC_HOSTNAME issuer
+      # (dev-compose.sh exports both from the host IP); the browser-facing
+      # redirect_uri is host-visible (the SPA / e2e runs there).
+      APP__gears__authenticator__config__idp__issuer_url: "${AUTHENTICATOR_OIDC_ISSUER:-http://localhost:8085/kc/realms/insight}"
       APP__gears__authenticator__config__idp__client_id: "${OIDC_CLIENT_ID:-insight-authenticator}"
       APP__gears__authenticator__config__idp__client_secret: "${OIDC_CLIENT_SECRET:-}"
       # Required: the identity-resolution source_type the login-bootstrap
       # lookup is scoped to. The realm sets each user's `sub` to their own
-      # roster uuid — the stable external id; deploy/seed/identity.py seeds
+      # roster uuid — the stable external id; the seeder's identity step seeds
       # the matching value_type='id' rows under this same source_type.
       APP__gears__authenticator__config__idp__source_type: "${AUTHENTICATOR_IDP_SOURCE_TYPE:-keycloak}"
       # Callback rides the SPA's browser origin (Vite :3000) so the __Host-sid
@@ -394,6 +447,9 @@ services:
       # Resolves the testclient public_key_paths against the mounted dev keys
       # (dev-compose.sh generates testclient.pub.pem there; nothing committed).
       APP__gears__authenticator__config__service_tokens__public_key_dir: "/app/keys"
+      APP__gears__authenticator__config__mcp_oauth__enabled: "${MCP_ENABLED:-false}"
+      APP__gears__authenticator__config__mcp_oauth__public_url: "${MCP_PUBLIC_URL:-}"
+      APP__gears__authenticator__config__mcp_oauth__allow_insecure_private_network: "true"
       # Audit events to the platform topic (step 10.8). Delivery failures are
       # dropped + counted, so a stack without Redpanda still works.
       APP__gears__authenticator__config__audit__brokers: "${AUDIT_BROKERS:-redpanda:9092}"
@@ -425,54 +481,14 @@ services:
       - "${AUTHENTICATOR_PORT:-8083}:8083"
       - "${AUTHENTICATOR_TOKEN_PORT:-8093}:8093"
 
-  # ── Fake IdP (dev/e2e ONLY — never shipped to production) ──────────────
-  #
-  # A tiny in-repo OIDC provider so the authenticator's real login / refresh /
-  # logout code path runs locally and in CI with no external IdP. It signs with
-  # a throwaway keypair generated at startup and exposes /_control/* test hooks. Builds
-  # entirely from its own Dockerfile (no host-built-binary bind mount), so it is
-  # self-contained. See src/backend/services/fakeidp/README.md and
-  # cf/NGINX_BFF.md §10 G6. Gated behind --profile auth-fakeidp (the default
-  # auth mode); --profile auth-keycloak brings up `keycloak` instead.
-  fakeidp:
-    !!merge <<: *backend-common
-    profiles: ["auth-fakeidp"]
-    image: ${FAKEIDP_IMAGE:-insight-fakeidp:dev}
-    container_name: ${COMPOSE_PROJECT_NAME:-insight}-fakeidp
-    build:
-      context: src/backend
-      dockerfile: services/fakeidp/Dockerfile
-    environment:
-      # Issuer is the in-network URL: the authenticator (step 04) fetches
-      # discovery / JWKS / token here and validates the id_token `iss` against
-      # it, so it must match the URL used inside the compose network. The
-      # host-curl README flow rewrites fakeidp:8084 -> localhost:8084.
-      FAKEIDP_ISSUER: "${FAKEIDP_ISSUER:-http://fakeidp:8084}"
-      FAKEIDP_BIND: "0.0.0.0:8084"
-      # Audience of issued tokens = the authenticator's OIDC client_id.
-      FAKEIDP_DEFAULT_AUD: "${OIDC_CLIENT_ID:-insight-authenticator}"
-      FAKEIDP_TOKEN_TTL: "${FAKEIDP_TOKEN_TTL:-300}"
-      # Default login identity: the dev-impersonation person the seeder writes
-      # into identity (dev-compose.sh's DEV_USER_EMAIL). Overrides the
-      # first user in users.yaml so a plain login resolves to a seeded person.
-      FAKEIDP_DEV_USER_EMAIL: "${DEV_USER_EMAIL:-dev@company.nonpresent}"
-      # Back-channel logout receiver on the authenticator (endpoint lands in a
-      # later step; wired here so the /_control/backchannel hook has a target).
-      FAKEIDP_BACKCHANNEL_URL: "${FAKEIDP_BACKCHANNEL_URL:-http://authenticator:8083/auth/oidc/back-channel-logout}"
-      RUST_LOG: ${RUST_LOG:-info}
-    ports:
-      - "${FAKEIDP_PORT:-8084}:8084"
-
-  # ── Keycloak (dev/e2e realm-import IdP — the real-OIDC counterpart to
-  # fakeidp) ───────────────────────────────────────────────────────────────
+  # ── Keycloak (dev/e2e realm-import IdP) ────────────────────────────────
   #
   # Single container, embedded H2, imports the roster-generated realm at
   # deploy/compose/keycloak/realm-insight.generated.json (produced by
-  # deploy/compose/keycloak/gen-realm.py, gitignored). Gated behind
-  # --profile auth-keycloak; mutually exclusive with fakeidp's auth-fakeidp
-  # profile.
+  # insight_seed.keycloak_realm, gitignored). Gated behind
+  # --profile auth-keycloak.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: quay.io/keycloak/keycloak:26.7
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-keycloak
     command: ["start-dev", "--import-realm", "--http-relative-path=/kc"]
     environment:
@@ -493,7 +509,11 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_HTTP_PORT: "8085"
       JAVA_OPTS_APPEND: "-Xms256m -Xmx512m"
-    ports: ["8085:8085"]
+    # Host port is configurable like every other service's, so a second
+    # instance (or another stack already on 8085) does not block the edge.
+    # A changed port needs KEYCLOAK_HOSTNAME and AUTHENTICATOR_OIDC_ISSUER
+    # moved with it — the issuer is baked into the tokens.
+    ports: ["${KEYCLOAK_PORT:-8085}:8085"]
     volumes:
       - ./deploy/compose/keycloak/realm-insight.generated.json:/opt/keycloak/data/import/realm-insight.json:ro
     # `insight`, not `default` — every other service in this stack (see
@@ -541,6 +561,7 @@ services:
       identity-resolution: {condition: service_started}
     environment:
       GATEWAY_AUTHENTICATOR_URL: "http://authenticator:8083"
+      GATEWAY_MCP_PUBLIC_URL: "${MCP_PUBLIC_URL:-}"
       # The three frontend variants listen on three different ports — vite on
       # 5173, the local-dist nginx on 80, and the published image on 8080 since
       # it began running as a non-root user (uid 101 cannot bind 80).
@@ -593,7 +614,11 @@ services:
       insight:
         aliases: [insight-front]
     environment:
-      CSP_REMOTE: ${CSP_REMOTE:-}
+      # Must be DEFINED even when empty: the stock nginx entrypoint's envsubst
+      # only substitutes environment variables that exist, and an unsubstituted
+      # ${SENTRY_CONNECT_SRC} in the CSP template is an nginx [emerg]. The
+      # published image's own entrypoint substitutes it unconditionally.
+      SENTRY_CONNECT_SRC: ${SENTRY_CONNECT_SRC:-}
     volumes:
       # Host-built dist/ — produced by dev-compose.sh build (build-frontend)
       # or by running `pnpm build` in src/frontend.
@@ -601,7 +626,9 @@ services:
       - ./src/frontend/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./src/frontend/nginx/security-headers.conf:/etc/nginx/snippets/security-headers.conf:ro
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      # 8080, not the stock image's 80: the mounted default.conf.template is
+      # the published image's and declares `listen 8080`.
+      - "${FRONTEND_PORT:-3000}:8080"
 
   insight-front-ghcr:
     !!merge <<: *restart-policy
@@ -700,9 +727,12 @@ services:
     profiles: ["seed"]
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-seed-sample
     networks: [insight]
+    # Context is the ingestion tree: the image carries the seeder AND the DDL /
+    # gold-build scripts its silver step runs. Same image CI publishes for the
+    # cluster Job — the toolbox deliberately carries neither.
     build:
-      context: deploy/seed
-      dockerfile: Dockerfile
+      context: src/ingestion
+      dockerfile: tools/seed/Dockerfile
     # The image pins USER 1000. That is unambiguous where it was chosen — as a
     # k8s Job the seed mounts nothing from a host — but compose bind-mounts the
     # source below and the seed writes manifest.json back into it, so the
@@ -724,17 +754,20 @@ services:
       # above) — the dev-lead's login-bootstrap value_type='id' row is seeded
       # under this source_type.
       IDP_SOURCE_TYPE: "${AUTHENTICATOR_IDP_SOURCE_TYPE:-keycloak}"
-      # Selects which roster personas get a login-id fixture (fakeidp: dev lead
-      # only, its fixed "fakeidp|dev"; keycloak: the whole roster, each on their
-      # own uuid — see deploy/seed/profiles.py's get_login_id_pairs).
-      # dev-compose.sh exports this; keycloak is the only mode it runs.
-      AUTH_MODE: "${AUTH_MODE:-keycloak}"
       # MariaDB — falls back to the local docker service name/port; the
       # wizard rewrites these when external MariaDB is selected.
       MARIADB_HOST: "${MARIADB_HOST:-mariadb}"
       MARIADB_PORT: "${MARIADB_INTERNAL_PORT:-3306}"
       MARIADB_USER: "${MARIADB_USER:-insight}"
       MARIADB_PASSWORD: "${MARIADB_PASSWORD:-insight-local}"
+      # Required by the seeder, with no default in code: which database holds the
+      # analytics catalogue tables is a per-stand fact. Here it is a database of
+      # its own; a chart-deployed stand keeps them in `mariadb.database`.
+      MARIADB_ANALYTICS_DB: "${MARIADB_ANALYTICS_DB:-analytics}"
+      # The second-tenant refusal fixture. ON here because tests/stand asserts
+      # cross-tenant refusal against it; a cluster stand turns it off, where a
+      # second tenant would abort identity-resolution's scheduled projection.
+      SEED_CROSS_TENANT_FIXTURE: "${SEED_CROSS_TENANT_FIXTURE:-1}"
       # ClickHouse — same convention as MariaDB above.
       CLICKHOUSE_HOST: "${CLICKHOUSE_HOST:-clickhouse}"
       CLICKHOUSE_HTTP_PORT: "${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
@@ -743,6 +776,9 @@ services:
       CLICKHOUSE_DATABASE: "${CLICKHOUSE_DATABASE:-insight}"
       # Grant-less `presentation` user's password (#1964), provisioned on seed.
       CLICKHOUSE_PRESENTATION_PASSWORD: "${CLICKHOUSE_PRESENTATION_PASSWORD:-presentation-local}"
+      MCP_ENABLED: "${MCP_ENABLED:-false}"
+      SQL_API_ENABLED: "${SQL_API_ENABLED:-false}"
+      CLICKHOUSE_MCP_PASSWORD: "${CLICKHOUSE_MCP_PASSWORD:-}"
       # apply-ch-migrations.sh runs `dbt run` from /ingestion/dbt. The
       # ingestion tree is bind-mounted read-only (below), so redirect dbt's
       # writable outputs (target/, logs/) to a writable scratch dir.
@@ -756,22 +792,24 @@ services:
       # ISO date pins the dataset reproducibly, the literal `today` (or unset)
       # tracks the calendar. Both are recorded in the emitted manifest.
       SEED_ANCHOR_DATE: "${SEED_ANCHOR_DATE:-}"
-      SEED_DAYS: "${SEED_DAYS:-60}"
+      # Two years, matching the deployed stand. Wider than any one request the
+      # analytics API will answer (it refuses a period of 400 days or more), so
+      # a test asking about "the seeded period" must clamp — see
+      # tests/stand/api/analytics/query_window.
+      SEED_DAYS: "${SEED_DAYS:-730}"
+      # Organisation size; empty is the committed 26-person roster. Listed
+      # because compose's `environment` is an allowlist.
+      SEED_ORG_HEADCOUNT: "${SEED_ORG_HEADCOUNT:-}"
+      # Preflight's documented escape hatch; unreachable unless listed here.
+      SEED_FORCE: "${SEED_FORCE:-}"
       # The issuer the authenticator resolved for this run. `test-stand up`
       # persists it after cmd_up so the manifest
       # records the real IdP instead of assuming the default.
       AUTHENTICATOR_OIDC_ISSUER: "${AUTHENTICATOR_OIDC_ISSUER:-}"
     volumes:
-      # Bind-mount the source so seed.py edits don't need a rebuild.
-      # NOT read-only: the seed writes manifest.json back into this directory
-      # at the end of a successful run, and downstream test phases read it
-      # from that fixed path.
-      - ./deploy/seed:/app
-      # Schema + gold inputs: the SAME scripts the k8s clickhouse-migrate
-      # Hook Job runs — create-bronze-placeholders.sh (+ lib/ch-exec.sh),
-      # apply-ch-migrations.sh, migrations/*.sql — plus the full dbt project
-      # (dbt/, silver/, gold/, connectors/ referenced by dbt model-paths)
-      # so `dbt run --select tag:gold` can build the dbt-owned gold models.
-      # Mounted at /ingestion to match the toolbox image layout the scripts
-      # resolve paths against.
-      - ./src/ingestion:/ingestion:ro
+      # One mount, writable, over the tree the image already carries: seeder
+      # edits and script edits both take effect without a rebuild (the package
+      # is installed editable), and the seed writes manifest.json back into
+      # tools/seed at the end of a run — the fixed path downstream test phases
+      # read. Read-only would fail that last step after all the real work.
+      - ./src/ingestion:/ingestion

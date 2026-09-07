@@ -8,6 +8,7 @@ test at all. This module closes those gaps one at a time.
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from lib import identity_seed as seed
 from lib.ch_seeder import CHSeeder
 from lib.config import SessionConfig
 from lib.dbt_runner import DbtRunner
+from lib.tracked_models import TrackedModels
 from lib.worker import WorkerContext
 
 pytestmark = [pytest.mark.identity, pytest.mark.mutating]
@@ -85,19 +87,18 @@ def _bamboohr_employee(
     *, run_tag: str, entity_id: str, email: str, display_name: str, supervisor_email: str | None
 ) -> dict:
     """A minimal `bronze_bamboohr.employees` row — the real shape the bamboohr
-    connector would append, not a hand-crafted identity_inputs row."""
-    return {
-        # Non-nullable Airbyte CDK columns — real connector rows always carry
-        # these; some staging transformations (e.g. latest-row selection)
-        # rely on `_airbyte_extracted_at`.
-        "_airbyte_raw_id": str(uuid.uuid4()),
-        "_airbyte_extracted_at": "2026-01-05T00:00:00",
-        "_airbyte_meta": "{}",
-        "_airbyte_generation_id": 0,
+    connector would append, not a hand-crafted identity_inputs row.
+
+    The identity fields go in BOTH the top-level columns and `raw_data`. Since
+    the connector began collecting every employee field without configuration,
+    the snapshot versions on `raw_data` and the field history is derived from
+    its keys — a row carrying only the columns yields no history, and with it
+    no identity_inputs at all.
+    """
+    fields = {
+        # The payload carries `id` too — the connector builds it from the whole
+        # report row, which is keyed by it.
         "id": entity_id,
-        "unique_key": f"pipeline-{run_tag}-bamboohr-{entity_id}",
-        "tenant_id": f"pipeline-tenant-{run_tag}",
-        "source_id": f"pipeline-source-{run_tag}",
         "workEmail": email,
         "displayName": display_name,
         "firstName": display_name.split(" ")[0],
@@ -109,6 +110,24 @@ def _bamboohr_employee(
         "status": "Active",
         "supervisorEmail": supervisor_email,
         "supervisorEId": None,
+    }
+    return {
+        # Non-nullable Airbyte CDK columns — real connector rows always carry
+        # these; some staging transformations (e.g. latest-row selection)
+        # rely on `_airbyte_extracted_at`.
+        "_airbyte_raw_id": str(uuid.uuid4()),
+        "_airbyte_extracted_at": "2026-01-05T00:00:00",
+        "_airbyte_meta": "{}",
+        "_airbyte_generation_id": 0,
+        "unique_key": f"pipeline-{run_tag}-bamboohr-{entity_id}",
+        "tenant_id": f"pipeline-tenant-{run_tag}",
+        "source_id": f"pipeline-source-{run_tag}",
+        # Same shape the fixture-loader derives for YAML fixtures: keys sorted,
+        # values the source did not state left out.
+        "raw_data": json.dumps(
+            {k: v for k, v in sorted(fields.items()) if v is not None}, separators=(",", ":")
+        ),
+        **fields,
     }
 
 
@@ -125,7 +144,7 @@ def _open_parent(cfg: SessionConfig, child: str) -> str | None:
     """The single OPEN (valid_to IS NULL) org_chart parent for `child`, under
     SEED_TENANT. Raw SQL on purpose — this asserts the seed's WRITE, mirroring
     `test_persons_seed.py::_org_chart_edges`."""
-    with seed._connection(cfg) as conn, conn.cursor() as cur:  # noqa: SLF001 — harness-internal helper
+    with seed._connection(cfg) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT LOWER(HEX(parent_person_id))"
             " FROM org_chart"
@@ -197,7 +216,7 @@ def _insert_raw_inputs(
         )
     clickhouse.execute(
         cfg,
-        "INSERT INTO identity.identity_inputs "  # noqa: S608 — every value is a fixed test literal above, no untrusted input
+        "INSERT INTO identity.identity_inputs "
         "(unique_key, insight_tenant_id, insight_source_type, insight_source_id,"
         " source_account_id, value_type, value, operation_type, _synced_at, _version) VALUES "
         + ", ".join(values),
@@ -208,6 +227,7 @@ def test_seed_org_chart_from_real_bamboohr_connector_pipeline(
     identity_svc,
     ch_seeder: CHSeeder,
     dbt_runner: DbtRunner,
+    tracked_models: TrackedModels,
     worker_ctx: WorkerContext,
     compose_stack: SessionConfig,
 ) -> None:
@@ -217,9 +237,6 @@ def test_seed_org_chart_from_real_bamboohr_connector_pipeline(
     org-chart test in this suite bypasses that path entirely; this is the one
     proof that the bamboohr connector's own dbt models actually feed the seed.
     """
-    if not identity_svc.supports_seed_cli:
-        pytest.skip("the seed CLI exists only on the Rust implementation (#1690)")
-
     run_tag = uuid.uuid4().hex[:10]
     manager_email = f"pipeline.manager.{run_tag}@e2e.test"
     report_email = f"pipeline.report.{run_tag}@e2e.test"
@@ -248,12 +265,12 @@ def test_seed_org_chart_from_real_bamboohr_connector_pipeline(
     )
 
     staging, silver = dbt_runner.derive_selectors({("bronze_bamboohr", "employees")})
-    dbt_runner.build(" ".join(f"+{m}" for m in staging), worker_ctx=worker_ctx)
+    tracked_models.build(staging, worker_ctx=worker_ctx, with_ancestors=True)
     assert "identity_inputs" in silver, (
         f"bamboohr__identity_inputs did not surface a silver:identity_inputs tag (silver={silver}) "
         "— derive_selectors no longer sees the connector's identity path"
     )
-    dbt_runner.run("identity_inputs", worker_ctx=worker_ctx)
+    tracked_models.run(["identity_inputs"], worker_ctx=worker_ctx)
 
     landed = clickhouse.query(
         compose_stack,
@@ -266,6 +283,19 @@ def test_seed_org_chart_from_real_bamboohr_connector_pipeline(
         "identity.identity_inputs for the seeded report — the connector/dbt path is broken, "
         "not just untested"
     )
+
+    profile_rows = clickhouse.query(
+        compose_stack,
+        "SELECT value_type, value FROM identity.identity_inputs"
+        f" WHERE insight_source_type = 'bamboohr' AND source_account_id = 'rep-{run_tag}'"
+        "   AND value_type IN ('person_display_name', 'person_first_name', 'person_last_name')"
+        "   AND operation_type = 'UPSERT' ORDER BY value_type",
+    )
+    assert profile_rows == [
+        ("person_display_name", "Pipeline Report"),
+        ("person_first_name", "Pipeline"),
+        ("person_last_name", "Report"),
+    ]
 
     res = identity_svc.run_seed_cli(tenant=str(seed.SEED_TENANT), force=True)
     assert res.returncode == 0, f"rc={res.returncode}\n{res.stdout}\n{res.stderr}"
@@ -285,9 +315,6 @@ def test_seed_and_subchart_survive_a_circular_manager_chain(identity_svc, compos
     `max_depth` specifically so a cyclic org_chart terminates instead of
     recursing forever (`WITH RECURSIVE ... UNION ALL`, unlike the `UNION`/
     distinct visibility CTE, does not self-terminate on a cycle)."""
-    if not identity_svc.supports_seed_cli:
-        pytest.skip("the seed CLI exists only on the Rust implementation (#1690)")
-
     run_tag = uuid.uuid4().hex[:10]
     a_email = f"cycle.a.{run_tag}@e2e.test"
     b_email = f"cycle.b.{run_tag}@e2e.test"
@@ -345,6 +372,7 @@ def test_seed_and_subchart_survive_a_circular_manager_chain(identity_svc, compos
 def test_ms_entra_connector_emits_no_org_chart_signal_yet(
     ch_seeder: CHSeeder,
     dbt_runner: DbtRunner,
+    tracked_models: TrackedModels,
     worker_ctx: WorkerContext,
     compose_stack: SessionConfig,
 ) -> None:
@@ -374,9 +402,9 @@ def test_ms_entra_connector_emits_no_org_chart_signal_yet(
     )
 
     staging, silver = dbt_runner.derive_selectors({("bronze_ms_entra", "users")})
-    dbt_runner.build(" ".join(f"+{m}" for m in staging), worker_ctx=worker_ctx)
+    tracked_models.build(staging, worker_ctx=worker_ctx, with_ancestors=True)
     assert "identity_inputs" in silver, f"ms_entra__identity_inputs no longer tags silver:identity_inputs (silver={silver})"
-    dbt_runner.run("identity_inputs", worker_ctx=worker_ctx)
+    tracked_models.run(["identity_inputs"], worker_ctx=worker_ctx)
 
     emitted = clickhouse.query(
         compose_stack,
@@ -396,6 +424,7 @@ def test_seed_and_subchart_project_arbitrary_depth_from_a_synced_chain(
     identity_svc,
     ch_seeder: CHSeeder,
     dbt_runner: DbtRunner,
+    tracked_models: TrackedModels,
     worker_ctx: WorkerContext,
     compose_stack: SessionConfig,
 ) -> None:
@@ -409,9 +438,6 @@ def test_seed_and_subchart_project_arbitrary_depth_from_a_synced_chain(
     both write (org_chart parent-per-level) and read (GET /v1/subchart
     depth-per-level) reflect the full chain, not a depth the seed or the API
     silently caps at 2."""
-    if not identity_svc.supports_seed_cli:
-        pytest.skip("the seed CLI exists only on the Rust implementation (#1690)")
-
     run_tag = uuid.uuid4().hex[:10]
     chain_len = 5  # deeper than the fixed fixture's 2 levels; well under max_depth=16
     emails = [f"chain.{i}.{run_tag}@e2e.test" for i in range(chain_len)]
@@ -434,9 +460,9 @@ def test_seed_and_subchart_project_arbitrary_depth_from_a_synced_chain(
     )
 
     staging, silver = dbt_runner.derive_selectors({("bronze_bamboohr", "employees")})
-    dbt_runner.build(" ".join(f"+{m}" for m in staging), worker_ctx=worker_ctx)
+    tracked_models.build(staging, worker_ctx=worker_ctx, with_ancestors=True)
     assert "identity_inputs" in silver, f"bamboohr__identity_inputs did not surface a silver:identity_inputs tag (silver={silver})"
-    dbt_runner.run("identity_inputs", worker_ctx=worker_ctx)
+    tracked_models.run(["identity_inputs"], worker_ctx=worker_ctx)
 
     res = identity_svc.run_seed_cli(tenant=str(seed.SEED_TENANT), force=True)
     assert res.returncode == 0, f"rc={res.returncode}\n{res.stdout}\n{res.stderr}"

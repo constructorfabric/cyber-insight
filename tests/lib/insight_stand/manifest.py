@@ -1,9 +1,9 @@
 """Typed model of the seed manifest.
 
 The manifest is the stand's self-description: what was seeded, who exists, what
-the stand can do. `deploy/seed/seed.py` writes it to one place:
+the stand can do. `src/ingestion/tools/seed/seed.py` writes it to one place:
 
-    deploy/seed/manifest.json
+    src/ingestion/tools/seed/manifest.json
 
 A reader may be told to look elsewhere — `$INSIGHT_STAND_MANIFEST`, or pytest's
 `--stand-manifest` — because a runner that does not share the repo's filesystem
@@ -38,7 +38,7 @@ from .errors import ManifestError
 # The location the seed writes to, resolved from this file:
 #   tests/lib/insight_stand/manifest.py -> ../../../
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
-MANIFEST_PATH: Final[Path] = _REPO_ROOT / "deploy" / "seed" / "manifest.json"
+MANIFEST_PATH: Final[Path] = _REPO_ROOT / "src" / "ingestion" / "tools" / "seed" / "manifest.json"
 
 # Point a runner at a manifest it can actually reach. Named the same way as
 # $INSIGHT_STAND_BASE_URL and $INSIGHT_STAND_ENV_FILE in stand.py.
@@ -52,10 +52,11 @@ def default_manifest_path(environ: Mapping[str, str] | None = None) -> Path:
 
     The override earns its place in containers. `MANIFEST_PATH` is derived from
     THIS FILE's location, so in an image that holds the tree at `/tests` it
-    resolves to `/deploy/seed/manifest.json` — and a bind mount then has to
-    reproduce that arithmetic exactly, or the suite reports an unseeded stand.
-    Naming the file is the honest alternative to guessing where `parents[3]`
-    landed.
+    resolves to a path with nothing above it — reproducing that arithmetic in a
+    bind mount is how a seeded stand gets reported as unseeded. A containerised
+    runner therefore mounts the file at a stable path and names it through this
+    variable (`dev-compose.sh` uses `/stand/manifest.json`) instead of guessing
+    where `parents[3]` landed.
     """
     env = os.environ if environ is None else environ
     override = (env.get(MANIFEST_PATH_ENV) or "").strip()
@@ -64,7 +65,7 @@ def default_manifest_path(environ: Mapping[str, str] | None = None) -> Path:
 
 # The schema revision this model was written against. A stand emitting a
 # different version is a hard error, not something to parse optimistically.
-SUPPORTED_MANIFEST_VERSION: Final[int] = 1
+SUPPORTED_MANIFEST_VERSION: Final[int] = 2
 
 # Capability fields that answer yes/no, and so can back a `requires_*` marker.
 # `idp` is excluded on purpose: it carries a value, not a yes/no.
@@ -93,7 +94,7 @@ def _optional_str(doc: Mapping[str, Any], key: str, where: str) -> str | None:
 
 @dataclass(frozen=True)
 class Realm:
-    """`realm` — mirrors deploy/compose/keycloak/gen-realm.py's realm."""
+    """`realm` — mirrors the seeder's `keycloak_realm` output."""
 
     name: str
     issuer: str
@@ -172,47 +173,14 @@ class Capabilities:
         capability marker's table would otherwise skip every test carrying it,
         with a reason that reads perfectly plausibly.
 
-        `idp` is deliberately not answerable here — it is a VALUE
-        (`keycloak` | `fakeidp`), not a yes/no, so comparing it is the caller's
-        job.
+        `idp` is deliberately not answerable here — it is a VALUE (the
+        identity source_type the login rows were seeded under, e.g.
+        `keycloak`), not a yes/no, so comparing it is the caller's job.
         """
         if name not in BOOLEAN_CAPABILITIES:
             known = ", ".join(sorted(BOOLEAN_CAPABILITIES))
             raise ValueError(f"{name!r} is not a boolean capability; known: {known}")
         return bool(getattr(self, name))
-
-
-@dataclass(frozen=True)
-class GoldenMetric:
-    """One `golden_metrics[]` entry: an exact, hand-sourced expectation.
-
-    Currently always absent — `golden_metrics` is `[]` on every stand, by
-    design. See `deploy/seed/golden_metrics.py` for why, and read
-    `Manifest.golden_metrics_note` to tell "none measured yet" apart from
-    "measured and genuinely zero".
-
-    No test under `stand/` reads this yet: the harness that did is being
-    migrated separately. It is parsed regardless because `Manifest` models the
-    document the seed writes — dropping the field would mean a manifest missing
-    it stopped being an error, which is the opposite of what a reader is for.
-    """
-
-    metric_key: str
-    expected: float | int | str
-    scope: str
-    window: str
-    derivation: str
-
-    @classmethod
-    def parse(cls, doc: Mapping[str, Any], where: str) -> GoldenMetric:
-        return cls(
-            metric_key=_require(doc, "metric_key", str, where),
-            # The phase-3 schema declares this as number|string; do not narrow.
-            expected=_require(doc, "expected", (int, float, str), where),
-            scope=_require(doc, "scope", str, where),
-            window=_require(doc, "window", str, where),
-            derivation=_require(doc, "derivation", str, where),
-        )
 
 
 @dataclass(frozen=True)
@@ -243,49 +211,6 @@ class Tenants:
 
 
 @dataclass(frozen=True)
-class DefinitionOverride:
-    """The product definition the seed re-labelled for this tenant."""
-
-    metric_key: str
-    label: str
-
-    @classmethod
-    def parse(cls, doc: Mapping[str, Any], where: str) -> DefinitionOverride:
-        return cls(
-            metric_key=_require(doc, "metric_key", str, where),
-            label=_require(doc, "label", str, where),
-        )
-
-
-@dataclass(frozen=True)
-class Catalogue:
-    """Rows no endpoint creates, seeded by `deploy/seed/analytics.py`.
-
-    It is optional and a test must treat absence as "cannot assert" rather than
-    as failure: a stand seeded without the `analytics` step is a real state.
-    `tests/stand/conftest.py`'s `requires_catalogue` marker is how a test
-    declares it needs it, so the skip carries a reason instead of the test
-    quietly asserting against an empty universe.
-    """
-
-    definition_override: DefinitionOverride | None
-
-    @classmethod
-    def parse(cls, doc: Mapping[str, Any], where: str) -> Catalogue:
-        override = doc.get("definition_override")
-        return cls(
-            definition_override=(
-                None
-                if override is None
-                else DefinitionOverride.parse(
-                    _as_mapping(override, f"{where}.definition_override"),
-                    f"{where}.definition_override",
-                )
-            ),
-        )
-
-
-@dataclass(frozen=True)
 class Manifest:
     """The whole document, field for field."""
 
@@ -296,9 +221,6 @@ class Manifest:
     personas: tuple[Person, ...]
     service_urls: Mapping[str, str]
     fixtures: Mapping[str, Person]
-    catalogue: Catalogue
-    golden_metrics: tuple[GoldenMetric, ...]
-    golden_metrics_note: str
     capabilities: Capabilities
     seed_revision: str
     data_window: str
@@ -367,23 +289,6 @@ class Manifest:
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in urls_raw.items()):
             raise ManifestError(f"{where}.service_urls: every key and value must be a string")
 
-        golden_raw = _require(doc, "golden_metrics", list, where)
-        golden = tuple(
-            GoldenMetric.parse(
-                _as_mapping(entry, f"{where}.golden_metrics[{i}]"),
-                f"{where}.golden_metrics[{i}]",
-            )
-            for i, entry in enumerate(golden_raw)
-        )
-
-        # Optional, unlike every field above: a manifest written before the
-        # analytics seed step existed is still readable, and reports an empty
-        # catalogue rather than failing to parse.
-        catalogue = Catalogue.parse(
-            _as_mapping(doc.get("catalogue") or {}, f"{where}.catalogue"),
-            f"{where}.catalogue",
-        )
-
         seeded_raw = _require(doc, "seeded", list, where)
         if not all(isinstance(step, str) for step in seeded_raw):
             raise ManifestError(f"{where}.seeded: every entry must be a string")
@@ -392,8 +297,8 @@ class Manifest:
         return cls(
             manifest_version=version,
             tenant=tenant,
-            # Optional, like `catalogue`: a manifest written before the second
-            # tenant existed still parses, and reports `other` as absent.
+            # Optional, unlike every field above: a manifest written before the
+            # second tenant existed still parses, and reports `other` as absent.
             tenants=Tenants.parse(
                 _as_mapping(doc.get("tenants") or {}, f"{where}.tenants"),
                 tenant,
@@ -403,9 +308,6 @@ class Manifest:
             personas=personas,
             service_urls=dict(urls_raw),
             fixtures=fixtures,
-            catalogue=catalogue,
-            golden_metrics=golden,
-            golden_metrics_note=_require(doc, "golden_metrics_note", str, where),
             capabilities=Capabilities.parse(
                 _as_mapping(_require(doc, "capabilities", dict, where), f"{where}.capabilities")
             ),
@@ -480,9 +382,6 @@ __all__: Sequence[str] = (
     "MANIFEST_PATH_ENV",
     "SUPPORTED_MANIFEST_VERSION",
     "Capabilities",
-    "Catalogue",
-    "DefinitionOverride",
-    "GoldenMetric",
     "Manifest",
     "Person",
     "Realm",

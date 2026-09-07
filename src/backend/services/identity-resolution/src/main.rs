@@ -1,5 +1,4 @@
-//! Insight Identity Resolution service (Rust port of the .NET `identity` service,
-//! epic #1602).
+//! Insight Identity Resolution service (epic #1602).
 //!
 //! Boots as a gears-rust host on [`toolkit::bootstrap::run_server`] — same host
 //! pattern as `services/analytics`. Auth is ENABLED (`NGINX_BFF` R1): the
@@ -42,7 +41,7 @@ use toolkit::bootstrap::{AppConfig, run_server};
 /// Identity Resolution service.
 #[derive(Parser)]
 #[command(name = "identity-resolution")]
-#[command(about = "Insight Identity Resolution service (Rust port of .NET identity)")]
+#[command(about = "Insight Identity Resolution service")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     /// Path to YAML configuration file.
@@ -61,10 +60,11 @@ enum Commands {
     /// The Helm chart runs this as an initContainer before the server pod
     /// (same pattern as the analytics service).
     Migrate,
-    /// Run one persons-seed and exit (issue #1690). The Helm chart runs this
-    /// as a `CronJob`; operators run it manually via `kubectl create job
-    /// --from=cronjob/...`. Exit codes: 0 ok / 1 failed / 2 another run holds
-    /// the lock / 3 refused by an input guard.
+    /// Run one persons-seed and exit, publishing the refreshed log to
+    /// ClickHouse as its final step. Run by the Helm `CronJob`, by the
+    /// ingestion pipeline, and manually via `kubectl create job
+    /// --from=cronjob/...`. Exit codes: 0 ok / 1 failed (seed or publish) /
+    /// 2 another run holds the lock / 3 refused by an input guard.
     Seed {
         /// Seed mode; only `link-by-email` is implemented.
         #[arg(long, default_value = seed_runner::LINK_BY_EMAIL_MODE)]
@@ -72,12 +72,27 @@ enum Commands {
         /// Override the input guards (empty `identity_inputs` / wrong-tenant).
         #[arg(long)]
         force: bool,
+        /// Exit 0 when another run holds the lock: connectors finishing
+        /// together race their seed steps over the same inputs.
+        #[arg(long)]
+        busy_ok: bool,
+        /// Exit 0 when an input guard refuses the run: an empty
+        /// `identity_inputs` is legitimate where no connector emits identity
+        /// claims. Refusals still surface as failed rows in the operations
+        /// journal (GET /v1/persons-seed?status=failed).
+        #[arg(long)]
+        guard_ok: bool,
     },
+    /// Print the OpenAPI document to stdout and exit. Offline — no config,
+    /// no backends, no logging subscriber, so stdout stays pure JSON. Backs
+    /// the committed-doc drift gate.
+    Openapi,
     /// Copy the `persons` log into ClickHouse `identity.identity_persons`
-    /// (the metrics email→`person_id` resolve source) and exit. Same execution
-    /// model as `seed` — Helm `CronJob` / manual Job; pairs naturally as
-    /// "sync after seed". Exit codes: 0 ok / 1 failed / 2 another run holds
-    /// the lock / 3 refused by the empty-log guard.
+    /// (the metrics email→`person_id` resolve source) and exit. Nothing
+    /// schedules this — seed runs and operator corrections publish on their
+    /// own; it is the repair tool for a snapshot that fell behind them.
+    /// Exit codes: 0 ok / 1 failed / 2 another run holds the lock / 3 refused
+    /// by the empty-log guard.
     Sync {
         /// Override the empty-log guard (publish an empty snapshot).
         #[arg(long)]
@@ -93,21 +108,41 @@ const EXIT_SEED_GUARD: i32 = 3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    // Layered config: defaults -> YAML -> env (APP__*). Logging/OTel are
-    // initialized by the bootstrap runtime for the server path; subcommands
-    // run outside it and install their own plain subscriber.
-    let config = AppConfig::load_or_default(cli.config.as_ref())?;
-    match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_server(config).await,
+    let mut cli = Cli::parse();
+    let command = cli.command.take().unwrap_or(Commands::Run);
+
+    // Layered config: defaults -> YAML -> env (APP__*). Loaded per command
+    // rather than up front, so the offline `openapi` emit cannot fail on a
+    // config file it never reads. Logging/OTel are initialized by the bootstrap
+    // runtime for the server path; subcommands run outside it and install their
+    // own plain subscriber.
+    let load_config = || AppConfig::load_or_default(cli.config.as_ref());
+
+    match command {
+        Commands::Openapi => print_openapi(),
+        Commands::Run => run_server(load_config()?).await,
         Commands::Migrate => {
             init_subcommand_logging();
-            gear::run_migrate(&config).await
+            gear::run_migrate(&load_config()?).await
         }
-        Commands::Seed { mode, force } => {
+        Commands::Seed {
+            mode,
+            force,
+            busy_ok,
+            guard_ok,
+        } => {
             init_subcommand_logging();
+            let config = load_config()?;
             match gear::run_seed(&config, &mode, force).await {
                 Ok(()) => Ok(()),
+                Err(seed_runner::SeedRunError::LockBusy) if busy_ok => {
+                    tracing::warn!("another persons-seed run holds the lock; tolerated");
+                    Ok(())
+                }
+                Err(seed_runner::SeedRunError::Guard(msg)) if guard_ok => {
+                    tracing::warn!(%msg, "persons-seed refused by input guard; tolerated");
+                    Ok(())
+                }
                 Err(seed_runner::SeedRunError::LockBusy) => {
                     tracing::warn!("another persons-seed run holds the lock; exiting");
                     std::process::exit(EXIT_SEED_LOCK_BUSY);
@@ -124,6 +159,7 @@ async fn main() -> Result<()> {
         }
         Commands::Sync { force } => {
             init_subcommand_logging();
+            let config = load_config()?;
             match gear::run_sync(&config, force).await {
                 Ok(()) => Ok(()),
                 Err(sync_runner::SyncRunError::LockBusy) => {
@@ -141,6 +177,15 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+/// Print the `OpenAPI` document as pretty JSON. Offline — see
+/// [`api::openapi_document`]. No logging subscriber is installed on this path,
+/// so stdout stays pure JSON for the drift gate to consume.
+fn print_openapi() -> Result<()> {
+    let doc = api::openapi_document()?;
+    println!("{}", serde_json::to_string_pretty(&doc)?);
+    Ok(())
 }
 
 /// Plain stdout logging for the `migrate` / `seed` subcommands. The bootstrap

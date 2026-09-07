@@ -1,12 +1,9 @@
 import { useMemo } from "react";
 
-import { useViewer } from "@/auth";
-import { cohortKey, collectRosterAttrs } from "@/lib/insight/slices";
+import { cohortKey, collectPeopleAttrs } from "@/lib/insight/slices";
 import { normalizePersonId } from "@/lib/metrics/entity";
-import {
-  usePortalSlice,
-} from "@/lib/portal/portal-nav";
-import { useIcPerson } from "@/queries/ic-dashboard";
+import { useCohortOptions } from "@/lib/portal/use-cohort-options";
+import { useVisibleRoster } from "@/queries/visible-roster";
 
 /**
  * The entity ids of a person's slice cohort — everyone in the viewer's org who
@@ -16,12 +13,14 @@ import { useIcPerson } from "@/queries/ic-dashboard";
  * once, not re-derived per screen.
  */
 export function usePersonCohort(entityId: string): string[] {
-  const slice = usePortalSlice();
-  const { personId } = useViewer();
-  const tree = useIcPerson(personId ?? "").data ?? null;
+  // The slice the OPTIONS still contain, not whatever is stored: a value the
+  // catalog has since dropped would otherwise keep building cohorts while the
+  // control shows "Team (all)".
+  const { slice } = useCohortOptions();
+  const roster = useVisibleRoster(true).roster;
   const attrByEntity = useMemo(
-    () => collectRosterAttrs(tree, normalizePersonId),
-    [tree],
+    () => collectPeopleAttrs(roster, normalizePersonId),
+    [roster],
   );
   return useMemo(() => {
     if (!slice) return [];

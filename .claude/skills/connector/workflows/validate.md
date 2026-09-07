@@ -21,7 +21,7 @@ Before the checklist review, always run the automated validators:
 
 If either fails, fix the reported per-path errors before proceeding with the checklist. See `src/ingestion/tools/declarative-connector/README.md` §"Debugging strict-validation errors".
 
-Then run the mock-server test suite (L1 of the test ladder, `docs/domain/connector/specs/feature-connector-mock-tests/FEATURE.md`):
+Then run the mock-server test suite (L1 of the test ladder):
 
 ```bash
 # one-time env: cd src/ingestion/tests/connectors && python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
@@ -88,6 +88,8 @@ Read connector package files and verify each item:
 - [ ] AddFields includes `source_id` from `config['insight_source_id']`
 - [ ] AddFields includes `unique_key` with pattern: `{tenant_id}-{source_id}-{natural_key}`
 - [ ] InlineSchemaLoader has `additionalProperties: true`
+- [ ] Every `AddFields` target is declared `string` (+ `"null"`) in the inline schema — Jinja emits strings; a target declared `object` gets NULLED by the destination (`DESTINATION_SERIALIZATION_ERROR` in `_airbyte_meta`) on every sync.
+- [ ] No `AddFields` re-projects a field the payload already carries (snake_case aliases of `emailAddress`, `displayName`, ...). Injected fields are limited to extraction-time values: config, `unique_key`, `stream_partition.*`, cursor hoists. Renames live in dbt.
 - [ ] Schema includes `tenant_id`, `source_id`, `unique_key` as string fields
 - [ ] Nullable types used only where API actually returns null (not all fields)
 - [ ] EVERY top-level stream — including lightweight substream parents added for cache hygiene — carries the full identity stamp and a `promote_bronze_to_rmt` line. Reconcile (ADR-0015) auto-selects every discovered stream, so "helper" top-level streams land as real bronze tables; without the stamp + RMT promotion they accumulate unbounded duplicates. Parent streams that must NOT become tables go inline inside `partition_router.parent_stream_configs[].stream` instead (invisible to discover).
@@ -149,7 +151,7 @@ Read connector package files and verify each item:
 
 - Because the CI `bump-descriptors` job bumps `descriptor.version` by one minor every time an image rebuilds (per ADR-0016 + ADR-0015), the field MUST be on strict-semver form `MAJOR.MINOR.PATCH` from day one. The matcher is `.github/workflows/scripts/bump-descriptor-version.sh --descriptor <path> --print-only` succeeding (exit 0) — it prints the version it *would* write and leaves the file untouched.
 - `bump-descriptors` fires **only on the push to `main`**, so this check failing does NOT fail the PR on its own. Run Check 8 (the wiring guard), which does.
-- Applies to descriptors that declare an `images:` block. Descriptors without one never reach `bump-descriptors`; legacy non-semver values there (`ai/openai`, `collaboration/slack`, `hr-directory/bamboohr`) are tolerated per ADR-0015 §"Legacy non-semver values" — report as a warning, not a failure.
+- Applies to descriptors that declare an `images:` block. Descriptors without one never reach `bump-descriptors`; legacy non-semver values there (`ai/openai`, `collaboration/slack`) are tolerated per ADR-0015 §"Legacy non-semver values" — report as a warning, not a failure.
 - Each of MAJOR, MINOR, PATCH MUST be `0` or a non-zero digit followed by more digits (no leading zeros — semver.org §2).
 - NO `v` prefix, NO pre-release suffix, NO build metadata.
 - Examples that PASS: `1.0.0`, `0.1.0`, `10.20.30`, `100.0.0`.

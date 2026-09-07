@@ -1,13 +1,18 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Portal PREFERENCES (feature-flagged behind `insight.portal`).
+ * Portal PREFERENCES.
  *
- * `enabled` and `showPlanned` persist to localStorage (mirroring the metrics-v2
- * flag pattern in feature-flags.ts). Nothing else lives here: every piece of
- * navigation state — zone, item, scope, slice, period — rides in the URL
+ * `showPlanned` persists to localStorage (mirroring the metrics-v2 flag pattern
+ * in feature-flags.ts). Nothing else lives here: every piece of navigation
+ * state — zone, item, scope, slice, period — rides in the URL
  * (`portal-search.ts`, `portal-nav.ts`), because it describes the view rather
  * than the reader.
+ *
+ * The portal itself is no longer among them. It is the interface, not a choice,
+ * so the key that used to carry the opt-out is DELETED on load rather than read
+ * — a reader who once turned it off lands where everybody else does instead of
+ * being held on screens nothing writes to any more.
  */
 
 /**
@@ -22,24 +27,13 @@ export interface OrgScope {
   attrFilter?: { key: string; value: string };
 }
 
-const ENABLED_KEY = "insight.portal";
+/** Retired: read by nothing, removed wherever it is still stored. */
+const RETIRED_ENABLED_KEY = "insight.portal";
 const SHOW_PLANNED_KEY = "insight.portal.showPlanned";
 
 interface PortalState {
-  enabled: boolean;
-  /**
-   * Whether navigation shows entries we have not built yet (`unbuilt` in the
-   * nav model). Default ON while the whole portal is itself a preview: for us
-   * and for demos the dead entries ARE the roadmap. Turn it off — or flip the
-   * default — the day the portal stops being opt-in, so a customer never has
-   * to tell our backlog apart from their own missing data.
-   */
+  /** Whether navigation shows entries we have not built yet (`unbuilt` in the nav model). */
   showPlanned: boolean;
-}
-
-/** Router-safe read: `beforeLoad` runs outside React, so it cannot use a hook. */
-export function readPortalEnabled(): boolean {
-  return readEnabled();
 }
 
 /**
@@ -57,18 +51,29 @@ function readKey(key: string): string | null {
   }
 }
 
-function readEnabled(): boolean {
-  return readKey(ENABLED_KEY) === "true";
+function readOptInPref(key: string): boolean {
+  return readKey(key) === "true";
 }
 
-/** Absent key = default ON (see `showPlanned`); only an explicit "false" hides. */
-function readShowPlanned(): boolean {
-  return readKey(SHOW_PLANNED_KEY) !== "false";
+/**
+ * Drops the retired opt-out, once, at load. Writing nothing when it is already
+ * absent keeps this off the storage-quota path for every reader who never had
+ * it.
+ */
+function forgetRetiredPreference(): void {
+  if (typeof window === "undefined") return;
+  if (readKey(RETIRED_ENABLED_KEY) === null) return;
+  try {
+    window.localStorage.removeItem(RETIRED_ENABLED_KEY);
+  } catch {
+    // localStorage unavailable — nothing reads the key either way.
+  }
 }
+
+forgetRetiredPreference();
 
 let state: PortalState = {
-  enabled: readEnabled(),
-  showPlanned: readShowPlanned(),
+  showPlanned: readOptInPref(SHOW_PLANNED_KEY),
 };
 
 const listeners = new Set<() => void>();
@@ -93,13 +98,6 @@ function persist(key: string, value: string): void {
   }
 }
 
-/** Turn the portal preview on or off for this reader. */
-export function setPortalEnabled(enabled: boolean): void {
-  state = { ...state, enabled };
-  persist(ENABLED_KEY, enabled ? "true" : "false");
-  emit();
-}
-
 /** Show or hide the not-yet-built sections for this reader. */
 export function setPortalShowPlanned(show: boolean): void {
   state = { ...state, showPlanned: show };
@@ -107,20 +105,11 @@ export function setPortalShowPlanned(show: boolean): void {
   emit();
 }
 
-/** Whether this reader has the portal preview on. */
-export function usePortalEnabled(): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => state.enabled,
-    () => false,
-  );
-}
-
 /** Whether this reader wants planned sections listed. */
 export function usePortalShowPlanned(): boolean {
   return useSyncExternalStore(
     subscribe,
     () => state.showPlanned,
-    () => true,
+    () => false,
   );
 }

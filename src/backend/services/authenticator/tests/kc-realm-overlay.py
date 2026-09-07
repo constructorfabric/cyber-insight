@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn the generated compose realm into the e2e rig's Keycloak import set.
 
-Input is `gen-realm.py` output (the roster realm the compose stack imports).
+Input is `insight-seed-realm` output (the roster realm the compose stack imports).
 The rig needs the same realm plus what only the e2e suites care about:
 
 - a short access-token lifespan, so the authenticator's background refresher
@@ -67,7 +67,7 @@ def _test_user(email: str, password: str, tenant_id: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--realm", required=True, help="gen-realm.py output JSON")
+    parser.add_argument("--realm", required=True, help="insight-seed-realm output JSON")
     parser.add_argument("--out-dir", required=True, help="Keycloak import directory")
     parser.add_argument("--second-realm", required=True, help="Name of the user-less second realm")
     parser.add_argument("--backchannel-url", required=True, help="insight-authenticator back-channel logout URL")

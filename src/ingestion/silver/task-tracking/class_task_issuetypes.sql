@@ -1,5 +1,5 @@
 -- depends_on: {{ ref('jira__task_issuetypes') }}
--- depends_on: {{ ref('youtrack__task_issuetypes') }}
+-- depends_on: {{ ref('github__task_issuetypes') }}
 {{ config(
     materialized='incremental',
     incremental_strategy='delete+insert',

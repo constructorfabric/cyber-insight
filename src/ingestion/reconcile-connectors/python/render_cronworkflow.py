@@ -5,18 +5,21 @@ CLI:
   render_cronworkflow.py
     --connector NAME
     --connection-name NAME
-    --schedule "CRON"
+    --schedule "CRON"            # one cron per line; every line renders as
+                                 # one entry of the `schedules:` array
     --tenant SLUG
+    --cron-name NAME             # object name, computed by lib/argo.sh:argo_cron_workflow_name
     --insight-source-id SLUG     # secret annotation insight.cyberfabric.com/source-id
     --dbt-select SEL             # descriptor.dbt_select (may be empty)
     --enrich-image REF           # descriptor.images.enrich.image (may be empty)
     --tpl PATH
 
 Stdout: rendered YAML.
-Exit:   0 success, 2 missing template variables.
+Exit:   0 success, 2 missing template variables or empty --schedule.
 
 Schedule precedence is resolved by the caller (Secret annotation >
-descriptor.schedule > default).
+descriptor.schedule > default), which may hold one cron or several — a list
+prints newline-separated and travels verbatim.
 
 The renderer is a pure stamp — it neither reads `descriptor.yaml` nor any
 other file beyond the template. All descriptor-derived values are passed
@@ -28,7 +31,7 @@ plus tt-enrich-jira-run for jira) instead of the bare `airbyte-sync`
 template. Without this dispatch, Bronze rows would land but Silver /
 class_* tables would never get rebuilt.
 """
-import argparse, os, string, sys
+import argparse, json, os, string, sys
 
 
 def main() -> int:
@@ -37,6 +40,7 @@ def main() -> int:
     p.add_argument("--connection-name", required=True)
     p.add_argument("--schedule", required=True)
     p.add_argument("--tenant", required=True)
+    p.add_argument("--cron-name", required=True)
     p.add_argument("--insight-source-id", required=True)
     p.add_argument("--dbt-select", default="")
     p.add_argument("--enrich-image", default="")
@@ -59,11 +63,20 @@ def main() -> int:
     # did not.
     dbt_select_staging = "tag:staging,tag:jira" if args.connector == "jira" else ""
 
+    schedules = [line.strip() for line in args.schedule.splitlines() if line.strip()]
+    if not schedules:
+        sys.stderr.write("render_cronworkflow: --schedule carries no cron expression\n")
+        return 2
+    # INVARIANT: a flow array stays on one line. The template substitutes into
+    # its own header comment too, where a multi-line value would break out.
+    schedules_flow = json.dumps(schedules)
+
     env = {
         "CONNECTOR": args.connector,
         "CONNECTION_NAME": args.connection_name,
-        "SCHEDULE": args.schedule,
+        "SCHEDULES": schedules_flow,
         "TENANT": args.tenant,
+        "CRON_NAME": args.cron_name,
         "INSIGHT_SOURCE_ID": args.insight_source_id,
         "DATA_SOURCE": data_source,
         "DBT_SELECT": args.dbt_select,

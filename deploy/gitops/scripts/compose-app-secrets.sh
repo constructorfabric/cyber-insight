@@ -44,7 +44,10 @@
 #                                 `http://<release>-identity-resolution:8082`,
 #                                 unlike analytics (overridable via
 #                                 .identityUrl above).
-#   .authenticator.oidc.sourceType       required — idp.source_type (the
+#   .authenticator.oidc.resolveBy        external_id (default) | email — which
+#                                        question the login bootstrap asks.
+#   .authenticator.oidc.sourceType       required in external_id mode —
+#                                        idp.source_type (the
 #                                        identity-resolution source_type this
 #                                        IdP is seeded under, e.g. "ms-entra").
 #   .authenticator.oidc.externalIdClaim  optional; default "sub" (Entra: "oid").
@@ -137,30 +140,78 @@ AUTH_REDIRECT_URI=$(render_tpl "$(yq -r '.authenticator.oidc.redirectUri // ""' 
 # only issues a refresh token WITH offline_access (e.g. Entra) adds it here.
 AUTH_SCOPES=$(yq -r '(.authenticator.oidc.scopes // ["openid","email","profile"]) | join(" ")' "$VALUES")
 # Tenant sourcing: the id_token claim naming the single tenant (`tenant_id` on
-# fakeidp/Keycloak, `tid` on Entra) and the fallback for a claim-less IdP
+# Keycloak, `tid` on Entra) and the fallback for a claim-less IdP
 # (e.g. Okta). Empty fallback = fail closed downstream.
 AUTH_TENANT_CLAIM=$(     yq -r '.authenticator.oidc.tenantClaim     // "tenant_id"' "$VALUES")
 AUTH_DEFAULT_TENANT_ID=$(yq -r '.authenticator.oidc.defaultTenantId // ""' "$VALUES")
+# Which question the login bootstrap asks to find the person: `external_id`
+# (default) resolves by the IdP's own stable user id under source_type;
+# `email` resolves by the token's `email` claim against the ROSTER's addresses
+# (GET /internal/persons/by-roster-email) — for installs whose IdP has no
+# directory connector, where nothing seeds an id binding for the provider and
+# external_id matches nobody.
+AUTH_RESOLVE_BY=$(yq -r '.authenticator.oidc.resolveBy // "external_id"' "$VALUES")
+# yq's `//` does not fire on an explicit empty string, but the chart's sprig
+# `default` does — normalise here so one values file cannot mean `external_id`
+# through the chart and a hard failure through this script.
+[ -n "$AUTH_RESOLVE_BY" ] || AUTH_RESOLVE_BY="external_id"
 # The identity-resolution source_type this IdP is seeded under (e.g.
-# "ms-entra") — required; drives the login-bootstrap resolve
+# "ms-entra") — drives the login-bootstrap resolve
 # (GET /internal/persons/by-external-id?source_type=...&external_id=...).
+# Required in external_id mode; unread in email mode.
 AUTH_SOURCE_TYPE=$(yq -r '.authenticator.oidc.sourceType // ""' "$VALUES")
 # id_token claim carrying the IdP's stable external user id for source_type
 # (Entra: "oid"; the generic OIDC "sub" is not the same directory-stable id).
 AUTH_EXTERNAL_ID_CLAIM=$(yq -r '.authenticator.oidc.externalIdClaim // "sub"' "$VALUES")
+# Off unless a values file says otherwise: it widens who may enter, and the
+# chart-rendered path defaults it the same way.
+AUTH_PROVISION_ON_LOGIN=$(yq -r '.authenticator.oidc.provisionOnLogin // false' "$VALUES")
 # `__override` view-as login (insight#1941/#1944) — dev/demo stands ONLY.
 AUTH_OVERRIDE_ENABLED=$(yq -r '.authenticator.overrideEnabled // false' "$VALUES")
+AUTH_EXPERIMENTS_ENABLED=$(yq -r '.authenticator.experimentsEnabled // false' "$VALUES")
 # The authn-tls discovery FQDN — the minted token `iss` and downstream issuer.
 GATEWAY_ISSUER="https://${RELEASE}-authenticator.${NS_APP}.svc.cluster.local:8443"
 GATEWAY_JWKS_URL="http://${RELEASE}-authenticator.${NS_APP}.svc.cluster.local:8083/.well-known/jwks.json"
 AUTH_TOKEN_AUD="http://${RELEASE}-authenticator.${NS_APP}.svc.cluster.local:8093/internal/token"
 
-for v in AUTH_IDP_ISSUER AUTH_REDIRECT_URI AUTH_SOURCE_TYPE; do
+case "$AUTH_RESOLVE_BY" in
+  external_id|email) ;;
+  *)
+    echo "ERROR: authenticator.oidc.resolveBy must be external_id or email in $VALUES (got '$AUTH_RESOLVE_BY')" >&2
+    exit 1
+    ;;
+esac
+
+# sourceType scopes the external-id resolve, so it is required only there. The
+# email mode resolves against the roster and never reads it.
+REQUIRED_AUTH_VARS="AUTH_IDP_ISSUER AUTH_REDIRECT_URI"
+if [ "$AUTH_RESOLVE_BY" = "external_id" ]; then
+  REQUIRED_AUTH_VARS="$REQUIRED_AUTH_VARS AUTH_SOURCE_TYPE"
+fi
+for v in $REQUIRED_AUTH_VARS; do
   [ -n "${!v}" ] && [ "${!v}" != "null" ] || {
-    echo "ERROR: authenticator.oidc.* incomplete in $VALUES ($v empty) — auth is always on (NGINX_BFF); sourceType is required for the login-bootstrap resolve (constructorfabric/insight#1960)" >&2
+    echo "ERROR: authenticator.oidc.* incomplete in $VALUES ($v empty) — auth is always on (NGINX_BFF); sourceType is required for the login-bootstrap resolve in external_id mode (constructorfabric/insight#1960)" >&2
     exit 1
   }
 done
+
+# The email mode's lookup is confined to the roster, and identity refuses it
+# with no roster declared — every sign-in would be denied. Catch it here, while
+# the operator is still editing values.
+if [ "$AUTH_RESOLVE_BY" = "email" ]; then
+  ROSTER_SOURCE_TYPE=$(yq -r '.identityResolution.rosterSourceType // ""' "$VALUES")
+  [ -n "$ROSTER_SOURCE_TYPE" ] && [ "$ROSTER_SOURCE_TYPE" != "null" ] || {
+    echo "ERROR: authenticator.oidc.resolveBy=email needs identityResolution.rosterSourceType in $VALUES — the email lookup is confined to the roster, and without one identity refuses it rather than matching an address any source happened to state" >&2
+    exit 1
+  }
+  # The gear refuses this pair at boot (minting needs the source-native id the
+  # roster observed), so a stand that sets both composes cleanly and then
+  # CrashLoops with auth always on at the next pod start.
+  if [ "$(yq -r '.authenticator.oidc.provisionOnLogin // false' "$VALUES")" = "true" ]; then
+    echo "ERROR: authenticator.oidc.provisionOnLogin cannot be used with resolveBy=email in $VALUES — no login provisions in this mode" >&2
+    exit 1
+  fi
+fi
 
 for v in MDB_HOST MDB_USER MDB_DB CH_HOST CH_USER CH_DB RD_HOST; do
   [ -n "${!v}" ] && [ "${!v}" != "null" ] || {
@@ -279,11 +330,27 @@ stringData:
   APP__gears__authenticator__config__idp__default_tenant_id: "${AUTH_DEFAULT_TENANT_ID}"
   APP__gears__authenticator__config__idp__source_type: "${AUTH_SOURCE_TYPE}"
   APP__gears__authenticator__config__idp__external_id_claim: "${AUTH_EXTERNAL_ID_CLAIM}"
+  APP__gears__authenticator__config__idp__provision_on_login: "${AUTH_PROVISION_ON_LOGIN}"
   APP__gears__authenticator__config__redirect_uri: "${AUTH_REDIRECT_URI}"
   APP__gears__authenticator__config__oidc_scopes: "${AUTH_SCOPES}"
   APP__gears__authenticator__config__service_tokens__audience: "${AUTH_TOKEN_AUD}"
   APP__gears__authenticator__config__override_enabled: "${AUTH_OVERRIDE_ENABLED}"
+  APP__gears__authenticator__config__experiments_enabled: "${AUTH_EXPERIMENTS_ENABLED}"
 EOF
+  # The resolution mode, emitted ONLY when it is not the gear's own default.
+  #
+  # The chart pin is per-environment (inventory.yaml `chartVersion`) while this
+  # script always runs from the working tree, and `deploy-app` composes the
+  # Secret BEFORE helm upgrades the release. An authenticator image that
+  # predates the field rejects the whole config (`deny_unknown_fields`) and
+  # CrashLoops with auth always on, so writing the key unconditionally would
+  # take an environment down at its next deploy purely for having pulled this
+  # repo. `external_id` is the gear's own default, so omitting it in that mode
+  # is behaviourally identical; an environment that asks for `email`
+  # necessarily runs a pin that understands the key.
+  if [ "$AUTH_RESOLVE_BY" = "email" ]; then
+    echo "  APP__gears__authenticator__config__idp__resolve_by: \"email\""
+  fi
 } | kubectl -n "$NS_APP" apply -f - >/dev/null
 echo "composed → $NS_APP/insight-authenticator-config"
 
@@ -309,7 +376,7 @@ stringData:
   APP__gears__identity_resolution__config__clickhouse_user: "${CH_USER}"
   APP__gears__identity_resolution__config__clickhouse_password: "${CH_PW}"
 EOF
-  # First-admin bootstrap inputs (migrate initContainer): mirror the
+  # First-admin bootstrap inputs (migrate hook Job): mirror the
   # chart-side block in charts/insight/templates/secrets.yaml.
   if [ -n "$TENANT_DEFAULT" ] && [ "$TENANT_DEFAULT" != "null" ]; then
     echo "  APP__gears__identity_resolution__config__tenant_default_id: \"${TENANT_DEFAULT}\""

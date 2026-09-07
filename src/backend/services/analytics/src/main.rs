@@ -33,7 +33,9 @@ mod config;
 mod domain;
 mod gear;
 mod infra;
+mod mcp;
 mod migration;
+mod sql_explorer;
 
 // System gears — linked via inventory for the REST host + auth pipeline.
 // `oidc-authn-plugin` verifies the ES256 gateway JWT against the authenticator's
@@ -107,13 +109,19 @@ async fn main() -> Result<()> {
     config.apply_cli_overrides(cli.verbose);
 
     if cli.print_config {
-        println!("Effective configuration:\n{}", config.to_yaml()?);
+        println!(
+            "Effective configuration:\n{}",
+            config::redacted_yaml(&config)?
+        );
         return Ok(());
     }
 
     match cli.command.unwrap_or(Commands::Run) {
         Commands::Run => run_server(config).await,
-        Commands::Migrate => gear::run_migrate(&config).await,
+        Commands::Migrate => {
+            init_subcommand_logging();
+            gear::run_migrate(&config).await
+        }
         // Validate the gear config (section present, deserializes, required
         // URLs set) without connecting to any backend.
         Commands::Check => gear::check_config(&config),
@@ -125,6 +133,20 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Plain stdout logging for the `migrate` subcommand. The bootstrap runtime only
+/// installs its subscriber inside `run_server`, so without this every
+/// `tracing::…` on the subcommand path is a silent no-op — and the migration
+/// Job's log is the only record the schema change leaves behind. `try_init`
+/// keeps this safe if a future toolkit starts initializing earlier.
+fn init_subcommand_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
 }
 
 /// Print the analytics `OpenAPI` document as pretty JSON. Offline — see

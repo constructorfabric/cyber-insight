@@ -28,11 +28,33 @@ data:
 
     logging:
       default:
-        console_level: info
+        # The install-wide knobs: global.observability.logs.{level,format} —
+        # the same values the platform CM publishes as INSIGHT_LOG_LEVEL /
+        # INSIGHT_LOG_FORMAT.
+        console_level: {{ ((((.Values.global).observability).logs).level) | default "info" }}
+        console_format: {{ ((((.Values.global).observability).logs).format) | default "json" }}
+
+    opentelemetry:
+      resource:
+        service_name: "insight-authenticator"
+      exporter:
+        kind: {{ .Values.opentelemetry.exporter.kind }}
+        {{- with .Values.opentelemetry.exporter.endpoint }}
+        endpoint: {{ . | quote }}
+        {{- end }}
+      tracing:
+        enabled: {{ .Values.opentelemetry.tracing.enabled }}
+      metrics:
+        enabled: {{ .Values.opentelemetry.metrics.enabled }}
 
     gears:
       api-gateway:
         config:
+          # INVARIANT: the service router's insight-http-metrics is the single
+          # writer of http.server.request.duration — the host's copy stays renamed
+          # or two bucket layouts collide in one series.
+          metrics:
+            prefix: "host"
           bind_addr: "0.0.0.0:{{ .Values.service.port }}"
           auth_disabled: false
           cors_enabled: false
@@ -123,6 +145,9 @@ data:
       authenticator:
         config:
           signing_keys_path: {{ .Values.signingKeysPath | quote }}
+          mcp_oauth:
+            enabled: {{ .Values.global.mcp.enabled }}
+            public_url: {{ if .Values.global.mcp.enabled }}{{ required "global.mcp.publicUrl is required when MCP is enabled" .Values.global.mcp.publicUrl | quote }}{{ else }}""{{ end }}
           # Audit events to the platform Redpanda topic (PRD nfr-auth-audit).
           audit:
             brokers: {{ .Values.audit.brokers | quote }}

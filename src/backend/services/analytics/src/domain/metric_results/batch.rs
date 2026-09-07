@@ -10,13 +10,21 @@ use crate::domain::metric_definitions::MetricDefinition;
 use super::compiler::{
     CompiledQuery, PeerQueryRow, PeriodQueryRow, compile_breakdown_query,
     compile_group_ranking_query, compile_histogram_query, compile_peer_batch_query,
-    compile_period_batch_query, compile_timeseries_query,
+    compile_period_batch_query, compile_pooled_histogram_query, compile_rollup_query,
+    compile_timeseries_query,
 };
+use super::failure::ViewFailure;
 use super::validation::{
     ValidatedDimensionFilter, ValidatedGroupLimit, ValidatedMetricRequest,
     ValidatedMetricResultsRequest, ValidatedMetricView,
 };
 use super::view::Bucket;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerPopulation {
+    DeclaredCohort,
+    Tenant,
+}
 
 #[derive(Debug)]
 pub struct BatchItem {
@@ -34,9 +42,17 @@ pub enum UnbatchedView {
     Breakdown {
         dimensions: Vec<String>,
     },
+    Rollup {
+        dimensions: Vec<String>,
+    },
     // Histogram bins one entity's own per-event values; it never batches with
     // other metrics (per-entity bin membership is metric-specific).
     Histogram,
+    // The pooled shape bins the same values per dimension tuple instead, with
+    // no entity grain — same reason it cannot batch.
+    PooledHistogram {
+        dimensions: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +88,15 @@ pub struct PlannedRanking {
     pub query: CompiledQuery,
 }
 
+/// Ranking pre-pass outcomes: the groups for rankings that answered and the
+/// failure for those that did not. A view whose ranking failed plans as
+/// `PlannedQuery::Failed` instead of aborting the whole request.
+#[derive(Debug, Default)]
+pub struct RankingResults {
+    pub groups: BTreeMap<RankingPolicyKey, Vec<RankedGroup>>,
+    pub failures: BTreeMap<RankingPolicyKey, ViewFailure>,
+}
+
 #[derive(Debug)]
 pub enum PlannedQuery {
     PeriodBatch {
@@ -89,17 +114,29 @@ pub enum PlannedQuery {
         view: UnbatchedView,
         query: CompiledQuery,
     },
+    // A view that already failed before planning (its group ranking query
+    // failed); it flows through the same execution pipeline so the response
+    // keeps every requested view slot.
+    Failed {
+        metric_index: usize,
+        view_index: usize,
+        failure: ViewFailure,
+    },
 }
 
 pub fn plan_rankings(req: &ValidatedMetricResultsRequest) -> Vec<PlannedRanking> {
     let mut policies = BTreeMap::new();
     for metric in &req.metrics {
         for view in &metric.views {
-            let ValidatedMetricView::Timeseries {
+            let (ValidatedMetricView::Timeseries {
                 dimensions,
                 group_limit: Some(limit),
                 ..
-            } = view
+            }
+            | ValidatedMetricView::Rollup {
+                dimensions,
+                group_limit: Some(limit),
+            }) = view
             else {
                 continue;
             };
@@ -125,9 +162,41 @@ pub fn plan_rankings(req: &ValidatedMetricResultsRequest) -> Vec<PlannedRanking>
         .collect()
 }
 
+/// Both histogram shapes are single (never batched) queries; which one is
+/// planned is decided by whether the request asked to bin per dimension tuple
+/// instead of per entity.
+fn plan_histogram(
+    req: &ValidatedMetricResultsRequest,
+    metric: &ValidatedMetricRequest,
+    (metric_index, view_index): (usize, usize),
+    dimensions: &[String],
+) -> PlannedQuery {
+    let (view, query) = if dimensions.is_empty() {
+        (
+            UnbatchedView::Histogram,
+            compile_histogram_query(&metric.def, req, &metric.filters),
+        )
+    } else {
+        (
+            UnbatchedView::PooledHistogram {
+                dimensions: dimensions.to_vec(),
+            },
+            compile_pooled_histogram_query(&metric.def, req, dimensions, &metric.filters),
+        )
+    };
+    PlannedQuery::Single {
+        metric_index,
+        view_index,
+        def: Box::new(metric.def.clone()),
+        view,
+        query,
+    }
+}
+
 pub fn plan_queries(
     req: &ValidatedMetricResultsRequest,
-    rankings: &BTreeMap<RankingPolicyKey, Vec<RankedGroup>>,
+    rankings: &RankingResults,
+    peer_population: PeerPopulation,
 ) -> Result<Vec<PlannedQuery>, CanonicalError> {
     let mut period_groups: BTreeMap<(String, Vec<ValidatedDimensionFilter>), Vec<BatchItem>> =
         BTreeMap::new();
@@ -187,14 +256,22 @@ pub fn plan_queries(
                         ),
                     });
                 }
-                ValidatedMetricView::Histogram => {
-                    singles.push(PlannedQuery::Single {
-                        metric_index,
-                        view_index,
-                        def: Box::new(metric.def.clone()),
-                        view: UnbatchedView::Histogram,
-                        query: compile_histogram_query(&metric.def, req, &metric.filters),
-                    });
+                ValidatedMetricView::Rollup { .. } => {
+                    singles.push(plan_rollup(
+                        req,
+                        rankings,
+                        metric,
+                        (metric_index, view_index),
+                        view,
+                    )?);
+                }
+                ValidatedMetricView::Histogram { dimensions } => {
+                    singles.push(plan_histogram(
+                        req,
+                        metric,
+                        (metric_index, view_index),
+                        dimensions,
+                    ));
                 }
             }
         }
@@ -208,16 +285,59 @@ pub fn plan_queries(
     }
     for ((_, cohort_key, filters), items) in peer_groups {
         let defs: Vec<&MetricDefinition> = items.iter().map(|item| &item.def).collect();
-        let query = compile_peer_batch_query(&defs, req, &cohort_key, &filters);
+        let query = compile_peer_batch_query(&defs, req, &cohort_key, peer_population, &filters);
         planned.push(PlannedQuery::PeerBatch { items, query });
     }
     planned.extend(singles);
     Ok(planned)
 }
 
+fn plan_rollup(
+    req: &ValidatedMetricResultsRequest,
+    rankings: &RankingResults,
+    metric: &ValidatedMetricRequest,
+    indexes: (usize, usize),
+    view: &ValidatedMetricView,
+) -> Result<PlannedQuery, CanonicalError> {
+    let ValidatedMetricView::Rollup {
+        dimensions,
+        group_limit,
+    } = view
+    else {
+        unreachable!("plan_rollup requires a rollup view")
+    };
+    let resolved =
+        match resolve_group_limit(group_limit.as_ref(), dimensions, &metric.filters, rankings)? {
+            GroupLimitResolution::Ready(resolved) => resolved,
+            GroupLimitResolution::Failed(failure) => {
+                return Ok(PlannedQuery::Failed {
+                    metric_index: indexes.0,
+                    view_index: indexes.1,
+                    failure,
+                });
+            }
+        };
+
+    Ok(PlannedQuery::Single {
+        metric_index: indexes.0,
+        view_index: indexes.1,
+        def: Box::new(metric.def.clone()),
+        view: UnbatchedView::Rollup {
+            dimensions: dimensions.clone(),
+        },
+        query: compile_rollup_query(
+            &metric.def,
+            req,
+            dimensions,
+            &metric.filters,
+            resolved.as_ref(),
+        ),
+    })
+}
+
 fn plan_timeseries(
     req: &ValidatedMetricResultsRequest,
-    rankings: &BTreeMap<RankingPolicyKey, Vec<RankedGroup>>,
+    rankings: &RankingResults,
     metric: &ValidatedMetricRequest,
     indexes: (usize, usize),
     view: &ValidatedMetricView,
@@ -231,7 +351,16 @@ fn plan_timeseries(
         unreachable!("plan_timeseries requires a timeseries view")
     };
     let resolved =
-        resolve_group_limit(group_limit.as_ref(), dimensions, &metric.filters, rankings)?;
+        match resolve_group_limit(group_limit.as_ref(), dimensions, &metric.filters, rankings)? {
+            GroupLimitResolution::Ready(resolved) => resolved,
+            GroupLimitResolution::Failed(failure) => {
+                return Ok(PlannedQuery::Failed {
+                    metric_index: indexes.0,
+                    view_index: indexes.1,
+                    failure,
+                });
+            }
+        };
     Ok(PlannedQuery::Single {
         metric_index: indexes.0,
         view_index: indexes.1,
@@ -243,7 +372,7 @@ fn plan_timeseries(
         query: compile_timeseries_query(
             &metric.def,
             req,
-            *bucket,
+            (*bucket).into(),
             dimensions,
             &metric.filters,
             resolved.as_ref(),
@@ -251,24 +380,34 @@ fn plan_timeseries(
     })
 }
 
+enum GroupLimitResolution {
+    Ready(Option<ResolvedGroupLimit>),
+    Failed(ViewFailure),
+}
+
 fn resolve_group_limit(
     limit: Option<&ValidatedGroupLimit>,
     dimensions: &[String],
     filters: &[ValidatedDimensionFilter],
-    rankings: &BTreeMap<RankingPolicyKey, Vec<RankedGroup>>,
-) -> Result<Option<ResolvedGroupLimit>, CanonicalError> {
-    limit
-        .map(|limit| {
-            let key = ranking_policy_key(limit, dimensions, filters);
-            let groups = rankings.get(&key).cloned().ok_or_else(|| {
-                CanonicalError::internal("missing metric group ranking result").create()
-            })?;
-            Ok(ResolvedGroupLimit {
-                groups,
-                include_remainder: limit.include_remainder,
-            })
-        })
-        .transpose()
+    rankings: &RankingResults,
+) -> Result<GroupLimitResolution, CanonicalError> {
+    let Some(limit) = limit else {
+        return Ok(GroupLimitResolution::Ready(None));
+    };
+
+    let key = ranking_policy_key(limit, dimensions, filters);
+    if let Some(failure) = rankings.failures.get(&key) {
+        return Ok(GroupLimitResolution::Failed(failure.clone()));
+    }
+
+    let groups =
+        rankings.groups.get(&key).cloned().ok_or_else(|| {
+            CanonicalError::internal("missing metric group ranking result").create()
+        })?;
+    Ok(GroupLimitResolution::Ready(Some(ResolvedGroupLimit {
+        groups,
+        include_remainder: limit.include_remainder,
+    })))
 }
 
 fn ranking_policy_key(
@@ -286,6 +425,13 @@ fn ranking_policy_key(
 
 pub(crate) fn period_alias(item_index: usize) -> String {
     format!("m{item_index}")
+}
+
+/// The alias carrying one item's value over the comparison window. The primary
+/// period keeps the bare `period_alias`, so a request without a comparison
+/// window compiles unchanged.
+pub(crate) fn period_compare_alias(item_index: usize) -> String {
+    format!("m{item_index}_compare")
 }
 
 pub(crate) struct PeerAliases {
@@ -327,12 +473,19 @@ pub struct PeerWideRow {
 pub fn demux_period_rows(
     items: &[BatchItem],
     rows: Vec<PeriodWideRow>,
+    compared: bool,
 ) -> Result<Vec<Vec<PeriodQueryRow>>, CanonicalError> {
     let mut per_item: Vec<Vec<PeriodQueryRow>> = items.iter().map(|_| Vec::new()).collect();
     for row in rows {
         for (item_index, item_rows) in per_item.iter_mut().enumerate() {
             let value = wide_field(&row.extra, &period_alias(item_index))?;
-            let narrow = json!({ "entity_id": row.entity_id, "value": value });
+            let compare_to = if compared {
+                Some(wide_field(&row.extra, &period_compare_alias(item_index))?)
+            } else {
+                None
+            };
+            let narrow =
+                json!({ "entity_id": row.entity_id, "value": value, "compare_to": compare_to });
             item_rows.push(decode_narrow_row(narrow)?);
         }
     }
@@ -396,8 +549,8 @@ mod tests {
     use serde_json::json;
 
     use crate::domain::metric_definitions::definition::{
-        ComputationSpec, MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole,
-        ObservationRelation, ObservationSource,
+        AliasCollapse, ComputationSpec, MetricBase, MetricDirection, MetricFormat, MetricInput,
+        MetricInputRole, ObservationRelation, ObservationSource,
     };
     use crate::domain::metric_results::validation::ValidatedMetricRequest;
 
@@ -426,6 +579,7 @@ mod tests {
                     ),
                     source_key: "ai_usage".to_owned(),
                     measure_key: format!("{key}_measure"),
+                    alias_collapse: AliasCollapse::Sum,
                 },
             },
         }
@@ -439,6 +593,7 @@ mod tests {
             },
             from: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap_or_default(),
             to: NaiveDate::from_ymd_opt(2026, 1, 31).unwrap_or_default(),
+            compare_to: None,
             metrics,
             enforce_tenant_scope: true,
         }
@@ -475,7 +630,11 @@ mod tests {
                 })
                 .collect(),
         );
-        let planned = plan_queries(&req, &BTreeMap::new())?;
+        let planned = plan_queries(
+            &req,
+            &RankingResults::default(),
+            PeerPopulation::DeclaredCohort,
+        )?;
         assert_eq!(planned.len(), 5);
         let (mut period_batches, mut peer_batches, mut singles) = (0, 0, 0);
         for query in &planned {
@@ -511,6 +670,7 @@ mod tests {
                     assert!(*metric_index < 3);
                 }
                 PlannedQuery::Single { .. } => panic!("unexpected single view kind"),
+                PlannedQuery::Failed { .. } => panic!("no view should pre-fail here"),
             }
         }
         assert_eq!((period_batches, peer_batches, singles), (1, 1, 3));
@@ -533,7 +693,11 @@ mod tests {
                 "m_b",
             ),
         ]);
-        let planned = plan_queries(&req, &BTreeMap::new())?;
+        let planned = plan_queries(
+            &req,
+            &RankingResults::default(),
+            PeerPopulation::DeclaredCohort,
+        )?;
         assert_eq!(planned.len(), 2);
         assert!(
             planned
@@ -579,6 +743,87 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn rollup_and_timeseries_share_identical_ranking_policy() {
+        let rank_by = def("m_rank", Some("org_unit"));
+        let limit = || ValidatedGroupLimit {
+            count: 10,
+            rank_by: Box::new(rank_by.clone()),
+            include_remainder: true,
+        };
+        let req = request(vec![views(
+            vec![
+                ValidatedMetricView::Timeseries {
+                    bucket: Bucket::Week,
+                    dimensions: vec!["tool".to_owned()],
+                    group_limit: Some(limit()),
+                },
+                ValidatedMetricView::Rollup {
+                    dimensions: vec!["tool".to_owned()],
+                    group_limit: Some(limit()),
+                },
+            ],
+            "m_a",
+        )]);
+
+        assert_eq!(plan_rankings(&req).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_ranking_fails_only_the_views_that_asked_for_it() -> Result<(), CanonicalError> {
+        let rank_by = def("m_rank", Some("org_unit"));
+        let limit = ValidatedGroupLimit {
+            count: 10,
+            rank_by: Box::new(rank_by),
+            include_remainder: true,
+        };
+        let req = request(vec![views(
+            vec![
+                ValidatedMetricView::Period,
+                ValidatedMetricView::Timeseries {
+                    bucket: Bucket::Week,
+                    dimensions: vec!["tool".to_owned()],
+                    group_limit: Some(limit.clone()),
+                },
+                ValidatedMetricView::Rollup {
+                    dimensions: vec!["tool".to_owned()],
+                    group_limit: Some(limit),
+                },
+            ],
+            "m_a",
+        )]);
+        let planned_ranking = plan_rankings(&req);
+        let mut rankings = RankingResults::default();
+        rankings.failures.insert(
+            planned_ranking[0].key.clone(),
+            ViewFailure::from_query_error("Code: 241. Memory limit exceeded"),
+        );
+
+        let planned = plan_queries(&req, &rankings, PeerPopulation::DeclaredCohort)?;
+
+        assert_eq!(planned.len(), 3);
+        assert!(
+            planned
+                .iter()
+                .any(|query| matches!(query, PlannedQuery::PeriodBatch { .. })),
+            "the period view must still plan a real query"
+        );
+        for view_index in [1, 2] {
+            assert!(
+                planned.iter().any(|query| matches!(
+                    query,
+                    PlannedQuery::Failed {
+                        metric_index: 0,
+                        view_index: index,
+                        ..
+                    } if *index == view_index
+                )),
+                "the group-limited view {view_index} must pre-fail in its own slot"
+            );
+        }
+        Ok(())
+    }
+
     fn items(count: usize) -> Vec<BatchItem> {
         (0..count)
             .map(|i| BatchItem {
@@ -600,7 +845,7 @@ mod tests {
             .into_iter()
             .collect(),
         }];
-        let Ok(per_item) = demux_period_rows(&items(2), rows) else {
+        let Ok(per_item) = demux_period_rows(&items(2), rows, false) else {
             panic!("expected demux to succeed");
         };
         assert_eq!(per_item[0][0].value, Some(1.5));
@@ -610,6 +855,36 @@ mod tests {
                 .iter()
                 .all(|rows| rows[0].entity_id == "00000000-0000-0000-0000-00000000000a")
         );
+    }
+
+    #[test]
+    fn demux_period_reads_the_comparison_column() {
+        let rows = vec![PeriodWideRow {
+            entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            extra: [
+                ("m0".to_owned(), json!(4.0)),
+                ("m0_compare".to_owned(), json!(2.0)),
+            ]
+            .into_iter()
+            .collect(),
+        }];
+
+        let Ok(per_item) = demux_period_rows(&items(1), rows, true) else {
+            panic!("expected demux to succeed");
+        };
+
+        assert_eq!(per_item[0][0].value, Some(4.0));
+        assert_eq!(per_item[0][0].compare_to, Some(2.0));
+    }
+
+    #[test]
+    fn demux_period_fails_when_the_comparison_column_is_absent() {
+        let rows = vec![PeriodWideRow {
+            entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            extra: [("m0".to_owned(), json!(4.0))].into_iter().collect(),
+        }];
+
+        assert!(demux_period_rows(&items(1), rows, true).is_err());
     }
 
     #[test]
@@ -645,7 +920,7 @@ mod tests {
             entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
             extra: HashMap::new(),
         }];
-        assert!(demux_period_rows(&items(1), period_rows).is_err());
+        assert!(demux_period_rows(&items(1), period_rows, false).is_err());
 
         let peer_rows = vec![PeerWideRow {
             entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),

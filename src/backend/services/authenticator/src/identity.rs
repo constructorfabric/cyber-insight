@@ -13,8 +13,7 @@
 //!   an empty/absent value, so a login that lacks its external id fails closed
 //!   instead of silently falling through to email resolution;
 //! - the single `tenant_id` is sourced from the validated id_token claim
-//!   (fakeidp supplies
-//!   it; real-IdP tenant-membership resolution is a follow-up —
+//!   (real-IdP tenant-membership resolution is a follow-up —
 //!   constructorfabric/insight#1687);
 //! - an unknown person is denied (the callback returns 403). First-admin
 //!   bootstrap / RBAC are out of step-04 scope (a separate universe-admin
@@ -46,6 +45,15 @@ pub enum ResolveTarget {
     /// Admin `__override` (view-as, #1941): an operator typed an email —
     /// resolve by email, NOT by external id.
     Email(String),
+    /// Normal login on an install configured with `idp.resolve_by = email`:
+    /// resolve by the token's address against the ROSTER's addresses.
+    ///
+    /// A variant of its own rather than reusing [`ResolveTarget::Email`],
+    /// because the two are different questions with different blast radii —
+    /// view-as may match an address any source stated, a login may not. Making
+    /// them one variant would leave the distinction to whoever remembers to
+    /// pick the right route at the call site.
+    RosterEmail(String),
 }
 
 /// The IdP-authenticated principal, distilled from the validated id_token.
@@ -79,6 +87,29 @@ pub trait PersonResolver: Send + Sync {
     /// # Errors
     /// Fails when the Identity Service is unreachable or errors.
     async fn resolve(&self, id: &IdpIdentity) -> anyhow::Result<Option<PersonResolution>>;
+
+    /// Resolve, minting a person when the journal has no binding yet.
+    /// `Ok(None)` = still unknown, and the caller denies the login.
+    ///
+    /// # Errors
+    /// Fails when the Identity Service is unreachable or errors.
+    // INVARIANT: the default refuses, so a resolver without minting power
+    // fails closed rather than by omission.
+    async fn provision(&self, id: &IdpIdentity) -> anyhow::Result<Option<PersonResolution>> {
+        let _ = id;
+        Ok(None)
+    }
+
+    /// The ACTIVE identity role names the person holds in the tenant. An
+    /// empty list means "no grants" — the caller falls back to its
+    /// `default_roles`, so this default keeps the prior behaviour.
+    ///
+    /// # Errors
+    /// Fails when the Identity Service is unreachable or errors.
+    async fn active_roles(&self, person_id: &str, tenant_id: &str) -> anyhow::Result<Vec<String>> {
+        let _ = (person_id, tenant_id);
+        Ok(Vec::new())
+    }
 }
 
 /// `PersonResolver` backed by the Identity Service.
@@ -110,6 +141,18 @@ pub struct IdentityPersonResolver {
 #[derive(serde::Deserialize)]
 struct ResolveProfile {
     insight_source_id: Option<Uuid>,
+}
+
+// INVARIANT: only a normal login may provision. The `__override` view-as
+// resolves by an email its operator typed, and minting there would turn a typo
+// into a person to become.
+fn provisionable_external_id(target: &ResolveTarget) -> Option<&str> {
+    match target {
+        ResolveTarget::ExternalId(external_id) => Some(external_id),
+        // Neither address mode provisions: minting needs the source-native id
+        // the roster observed, and an address is not it.
+        ResolveTarget::Email(_) | ResolveTarget::RosterEmail(_) => None,
+    }
 }
 
 impl IdentityPersonResolver {
@@ -189,53 +232,102 @@ impl IdentityPersonResolver {
         Ok(profile.insight_source_id.filter(|id| !id.is_nil()))
     }
 
-    /// Login-bootstrap lookup: resolve by the configured IdP `source_type` +
-    /// the IdP's source-native external user id.
-    async fn lookup_person_id_by_external_id(
+    /// The route and query a target resolves through.
+    ///
+    /// Pure and separate from the call so the mapping itself is testable:
+    /// sending a login to the override route (or the override to the
+    /// roster-confined one) is precisely the confusion the split routes exist
+    /// to prevent, and no other test in this crate would notice two swapped
+    /// arms. Identity keeps the routes distinct for the same reason.
+    fn resolve_request<'a>(
+        &'a self,
+        target: &'a ResolveTarget,
+    ) -> (&'static str, Vec<(&'static str, &'a str)>) {
+        resolve_request(&self.source_type, target)
+    }
+}
+
+/// See [`IdentityPersonResolver::resolve_request`]. Free so a test needs no
+/// resolver (and therefore no keystore) to pin the mapping.
+fn resolve_request<'a>(
+    source_type: &'a str,
+    target: &'a ResolveTarget,
+) -> (&'static str, Vec<(&'static str, &'a str)>) {
+    {
+        match target {
+            // Login bootstrap, scoped to the configured IdP's source_type and
+            // the IdP's source-native external user id.
+            ResolveTarget::ExternalId(external_id) => (
+                "/internal/persons/by-external-id",
+                vec![("source_type", source_type), ("external_id", external_id)],
+            ),
+            // Login bootstrap for `idp.resolve_by = email`: identity confines
+            // this one to its configured roster source and to the caller's
+            // tenant, and that confinement is the whole reason a login may use
+            // an address at all.
+            ResolveTarget::RosterEmail(email) => {
+                ("/internal/persons/by-roster-email", vec![("email", email)])
+            }
+            // Admin `__override` (view-as): an operator typed an address, which
+            // identity matches against any source in any tenant. Never a login.
+            ResolveTarget::Email(email) => (
+                "/internal/persons/by-email-override",
+                vec![("email", email)],
+            ),
+        }
+    }
+}
+
+impl IdentityPersonResolver {
+    async fn provision_person_by_external_id(
         &self,
         external_id: &str,
         tenant_id: &str,
     ) -> anyhow::Result<Option<Uuid>> {
-        self.resolve_query(
-            "/internal/persons/by-external-id",
-            tenant_id,
-            &[
-                ("source_type", &self.source_type),
-                ("external_id", external_id),
-            ],
-        )
-        .await
+        if self.base_url.is_empty() {
+            return Ok(None);
+        }
+        let url = format!("{}/internal/persons/provision", self.base_url);
+        let token = self.mint_service_token(tenant_id)?;
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "source_type": self.source_type,
+                "external_id": external_id,
+                "tenant_id": tenant_id,
+            }))
+            .send()
+            .await
+            .context("Identity provision request")?;
+        // INVARIANT: only 404 means "no such principal". Folding any other
+        // status into it would dress a broken deployment up as an ordinary
+        // access denial, which is the version nobody diagnoses.
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            status.is_success(),
+            "Identity returned {status} for /internal/persons/provision"
+        );
+        let profile: ResolveProfile = resp.json().await.context("decode ResolveProfile")?;
+        Ok(profile.insight_source_id.filter(|id| !id.is_nil()))
     }
+}
 
-    /// Admin `__override` (view-as) lookup: resolve by email — an operator
-    /// types an email, not an IdP external id. A DISTINCT route from the
-    /// login-bootstrap lookup above (never dispatched from the same call).
-    async fn lookup_person_id_by_email(
-        &self,
-        email: &str,
-        tenant_id: &str,
-    ) -> anyhow::Result<Option<Uuid>> {
-        self.resolve_query(
-            "/internal/persons/by-email-override",
-            tenant_id,
-            &[("email", email)],
-        )
-        .await
-    }
+/// Wire shape of `GET /internal/persons/active-roles` — only the names.
+#[derive(serde::Deserialize)]
+struct ActiveRolesProfile {
+    roles: Vec<String>,
 }
 
 #[async_trait]
 impl PersonResolver for IdentityPersonResolver {
     async fn resolve(&self, id: &IdpIdentity) -> anyhow::Result<Option<PersonResolution>> {
-        let person_id = match &id.resolve_by {
-            ResolveTarget::ExternalId(external_id) => {
-                self.lookup_person_id_by_external_id(external_id, &id.tenant_id)
-                    .await?
-            }
-            ResolveTarget::Email(email) => {
-                self.lookup_person_id_by_email(email, &id.tenant_id).await?
-            }
-        };
+        let (path, query) = self.resolve_request(&id.resolve_by);
+        let person_id = self.resolve_query(path, &id.tenant_id, &query).await?;
         let Some(person_id) = person_id else {
             return Ok(None);
         };
@@ -243,5 +335,145 @@ impl PersonResolver for IdentityPersonResolver {
             person_id: person_id.to_string(),
             tenant_id: id.tenant_id.clone(),
         }))
+    }
+
+    async fn provision(&self, id: &IdpIdentity) -> anyhow::Result<Option<PersonResolution>> {
+        let Some(external_id) = provisionable_external_id(&id.resolve_by) else {
+            return Ok(None);
+        };
+        let person_id = self
+            .provision_person_by_external_id(external_id, &id.tenant_id)
+            .await?;
+        Ok(person_id.map(|person_id| PersonResolution {
+            person_id: person_id.to_string(),
+            tenant_id: id.tenant_id.clone(),
+        }))
+    }
+
+    async fn active_roles(&self, person_id: &str, tenant_id: &str) -> anyhow::Result<Vec<String>> {
+        if self.base_url.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{}/internal/persons/active-roles", self.base_url);
+        let token = self.mint_service_token(tenant_id)?;
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[("person_id", person_id)])
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("Identity active-roles request")?;
+        anyhow::ensure!(
+            resp.status().is_success(),
+            "Identity returned {} for /internal/persons/active-roles",
+            resp.status()
+        );
+        let profile: ActiveRolesProfile = resp.json().await.context("decode ActiveRolesProfile")?;
+        Ok(profile.roles)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A resolver with no minting power at all — the trait default is what a
+    /// future implementation inherits, so it must refuse rather than forget.
+    struct LookupOnly;
+
+    #[async_trait]
+    impl PersonResolver for LookupOnly {
+        async fn resolve(&self, _id: &IdpIdentity) -> anyhow::Result<Option<PersonResolution>> {
+            Ok(None)
+        }
+    }
+
+    fn identity(resolve_by: ResolveTarget) -> IdpIdentity {
+        IdpIdentity {
+            sub: "subject".to_owned(),
+            email: "someone@example.com".to_owned(),
+            tenant_id: Uuid::from_u128(7).to_string(),
+            resolve_by,
+        }
+    }
+
+    #[test]
+    fn only_a_login_is_provisionable_never_the_view_as_override() {
+        assert_eq!(
+            provisionable_external_id(&ResolveTarget::ExternalId("octocat".to_owned())),
+            Some("octocat"),
+        );
+        assert_eq!(
+            provisionable_external_id(&ResolveTarget::Email("typo@example.com".to_owned())),
+            None,
+            "an operator's typed email must never mint the person it names",
+        );
+        assert_eq!(
+            provisionable_external_id(&ResolveTarget::RosterEmail("ivan@vz.com".to_owned())),
+            None,
+            "a login resolved by address cannot mint either — minting needs the \
+             source-native id the roster observed, and an address is not it",
+        );
+    }
+
+    #[test]
+    fn each_target_resolves_through_its_own_route() {
+        // The one assertion the split routes exist for. Swap two arms in
+        // `resolve_request` and, without this, every other test in the change
+        // still passes while a login resolves through the override route —
+        // which matches an address stated by any source in any tenant.
+        let login = ResolveTarget::ExternalId("00000000-oid".to_owned());
+        let (path, query) = resolve_request("ms-entra", &login);
+        assert_eq!(path, "/internal/persons/by-external-id");
+        assert_eq!(
+            query,
+            vec![("source_type", "ms-entra"), ("external_id", "00000000-oid")]
+        );
+
+        let roster_login = ResolveTarget::RosterEmail("ivan@vz.com".to_owned());
+        let (path, query) = resolve_request("bamboohr", &roster_login);
+        assert_eq!(path, "/internal/persons/by-roster-email");
+        assert_eq!(query, vec![("email", "ivan@vz.com")]);
+
+        let override_target = ResolveTarget::Email("ops@vz.com".to_owned());
+        let (path, query) = resolve_request("bamboohr", &override_target);
+        assert_eq!(path, "/internal/persons/by-email-override");
+        assert_eq!(query, vec![("email", "ops@vz.com")]);
+    }
+
+    #[test]
+    fn no_address_target_carries_the_source_type() {
+        // `source_type` scopes the external-id resolve only. Leaking it into an
+        // address lookup would let identity narrow by a source the install's
+        // roster may not even be, silently changing who can sign in.
+        for target in [
+            ResolveTarget::RosterEmail("ivan@vz.com".to_owned()),
+            ResolveTarget::Email("ops@vz.com".to_owned()),
+        ] {
+            let (_, query) = resolve_request("bamboohr", &target);
+            assert!(
+                query.iter().all(|(k, _)| *k != "source_type"),
+                "{target:?} must not send source_type",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resolver_without_a_roles_source_grants_nothing() -> anyhow::Result<()> {
+        let roles = LookupOnly.active_roles("person", "tenant").await?;
+
+        assert!(roles.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_resolver_without_minting_power_fails_closed() -> anyhow::Result<()> {
+        let provisioned = LookupOnly
+            .provision(&identity(ResolveTarget::ExternalId("octocat".to_owned())))
+            .await?;
+
+        assert!(provisioned.is_none());
+        Ok(())
     }
 }

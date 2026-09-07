@@ -13,7 +13,6 @@ env directory, fill in `kubeContext` + the rest, swap the
 `scripts/secret-fetch.sh` stub for your password-manager integration
 when you go past sandbox, and you have a working gitops setup.
 
-> The reference design lives in [`../../docs/components/deployment/`](../../docs/components/deployment/).
 > Below is the operator-facing summary; the linked docs go deeper into
 > rationale (DESIGN, PRD, ADR).
 
@@ -30,11 +29,13 @@ deploy/gitops/
 ├── secrets-store.yaml.template  # template for the sample secret store; copy to secrets-store.yaml and fill in
 ├── bootstrap/
 │   ├── argo-rbac.yaml.template  # supplemental Argo RBAC; rendered + applied by Makefile
-│   └── local/                   # per-cluster L0 prereqs (one dir per env)
-│       ├── ingress-nginx-values.yaml
-│       ├── cert-manager-values.yaml
-│       ├── sealed-secrets-values.yaml
-│       └── selfsigned-issuer.yaml
+│   ├── local/                   # per-cluster L0 prereqs (one dir per env)
+│   │   ├── envoy-gateway-values.yaml
+│   │   ├── gateway.yaml         # shared GatewayClass + Gateway (applied at bootstrap)
+│   │   ├── cert-manager-values.yaml
+│   │   ├── sealed-secrets-values.yaml
+│   │   └── selfsigned-issuer.yaml
+│   └── functional-ci/           # L0 prereqs for the ephemeral k3d smoke env
 ├── system/                      # L2 base values, one dir per service
 │   ├── README.md                # services table + secret layout
 │   ├── mariadb/                 # values.yaml + SECRETS.md
@@ -43,20 +44,29 @@ deploy/gitops/
 │   ├── redpanda/                # values.yaml
 │   ├── redpanda-console/        # values.yaml
 │   ├── airbyte/                 # values.yaml
-│   └── argo-workflows/          # values.yaml
+│   ├── argo-workflows/          # values.yaml
+│   └── victoriametrics/ loki/ tempo/ alloy/ alloy-metrics/
+│       kube-state-metrics/ grafana/   # observability stack values
 ├── environments/
-│   └── local/                   # sandbox env (also the starter template for new envs)
-│       ├── inventory.yaml.template  # what this cluster has (drives bootstrap / system / seal / deploy)
-│       ├── values.yaml.template     # umbrella overlay (L3) — wizard cp's to values.yaml on first `make deploy ENV=local`
-│       └── sealed-secrets/
-│           ├── insight-infra/*.yaml.template  # L2 sealed-secret shape (one folder per Kubernetes namespace)
-│           └── insight/*.yaml.template        # L3 sealed-secret shape
+│   ├── local/                   # sandbox env (also the starter template for new envs)
+│   │   ├── inventory.yaml.template  # what this cluster has (drives bootstrap / system / seal / deploy)
+│   │   ├── values.yaml.template     # umbrella overlay (L3) — wizard cp's to values.yaml on first `make deploy ENV=local`
+│   │   ├── keycloak/realms/         # broker realm content (keycloak-config-cli YAML)
+│   │   └── sealed-secrets/
+│   │       ├── insight-infra/*.yaml.template  # L2 sealed-secret shape (one folder per Kubernetes namespace)
+│   │       └── insight/*.yaml.template        # L3 sealed-secret shape
+│   ├── functional-ci/           # committed env for the k3d deployment smoke (functional-k3s.yml)
+│   └── test-stand/              # the published CI-deployed stand — see its README.md and INFRA.md
 └── scripts/
     ├── doctor.sh                # invoked by `make doctor`
     ├── render-diff.sh           # invoked by `make diff`
+    ├── render-system-values.sh  # substitutes ${NS_*} into L2 values before helm sees them
     ├── secret-fetch.sh          # password-manager stub for `make seal-secret`
-    ├── compose-app-secrets.sh   # derives insight-{analytics,identity-resolution}-config from insight-db-creds
-    └── airbyte-setup.sh         # post-install Airbyte setup-wizard automation
+    ├── compose-app-secrets.sh   # derives the app *-config Secrets from insight-db-creds
+    ├── airbyte-setup.sh         # post-install Airbyte setup-wizard automation
+    ├── provision-ci-deployer.sh # namespace-scoped ServiceAccount for the test-stand CI deploy
+    ├── recreate-test-stand.sh   # tear down + rebuild the test stand
+    └── push-deploy-log.sh       # ships the deploy log into in-cluster Loki
 ```
 
 The wizard at `../compose/insight-init.sh` is shared with the
@@ -70,13 +80,17 @@ and runs each target individually.
 
 | Layer | What | Namespace | Driven by |
 |-------|------|-----------|-----------|
-| L0 | Cluster prereqs (ingress-nginx, cert-manager, sealed-secrets-controller) + the L2/L3 namespaces. | `ingress-nginx`, `cert-manager`, `kube-system` | `make bootstrap ENV=<env>` |
+| L0 | Cluster prereqs (envoy-gateway, cert-manager, sealed-secrets-controller) + the L2/L3 namespaces + the shared `insight` Gateway. | `envoy-gateway-system`, `cert-manager`, `kube-system` | `make bootstrap ENV=<env>` |
 | L2 | Shared stateful infra, one Helm release per service. No top-level chain — each cluster picks which services it self-hosts vs. swaps for managed endpoints. | `insight-infra` | `make system-<svc> ENV=<env>` |
 | L3 | The Insight umbrella chart, app services only. | `insight` | `make deploy ENV=<env>` |
 
 `NS_APP = insight` and `NS_INFRA = insight-infra` on every cluster.
 `ENV` selects the kube-context and the values overlay, **not** the
 namespace.
+
+The cluster entry point is the Envoy data-plane Service that Envoy
+Gateway creates per Gateway in `envoy-gateway-system`, labeled
+`gateway.envoyproxy.io/owning-gateway-name=insight`.
 
 ## Prerequisites
 
@@ -206,11 +220,11 @@ cp environments/local/values.yaml.template    environments/<new>/values.yaml
 #    controllers / L2 services / secrets this env wants, whether it's
 #    protected.
 
-# 3. Edit environments/<new>/values.yaml — hostname, ingress, OIDC,
+# 3. Edit environments/<new>/values.yaml — hostname, routes, OIDC,
 #    image tags, resource requests, etc. for the new cluster.
 
 # 4. Optionally copy bootstrap/local → bootstrap/<new> and adjust if
-#    your cluster needs different ingress/cert-manager/sealed-secrets
+#    your cluster needs different envoy-gateway/cert-manager/sealed-secrets
 #    values. (The bootstrap/<env>/ dir is read by the bootstrap-*
 #    sub-targets; missing = chart defaults.)
 
@@ -222,10 +236,10 @@ make system     ENV=<new>
 make deploy     ENV=<new>           # protected envs need CONFIRM=yes-deploy-<new>
 ```
 
-The `local` env disables OIDC for sandbox convenience. For production
-or staging envs, set `apiGateway.authDisabled: false`, configure an
-OIDC IdP (Okta, Entra, Auth0, Keycloak, …), and seal a corresponding
-`insight-oidc` Secret — see
+Every env runs a real OIDC login — the chart has no auth-off toggle,
+and `local` wires the in-stack Keycloak subchart as its issuer. For
+production or staging envs, configure an OIDC IdP (Okta, Entra, Auth0,
+Keycloak, …) and seal a corresponding `insight-oidc` Secret — see
 [`environments/local/sealed-secrets/insight/insight-oidc-sealedsecret.yaml.template`](environments/local/sealed-secrets/insight/insight-oidc-sealedsecret.yaml.template)
 for the seven required keys.
 
@@ -326,9 +340,7 @@ real `*.yaml` siblings beside them, safe to commit.
 
 1. The public Insight repo's CI publishes umbrella chart versions to
    `oci://ghcr.io/constructorfabric/charts/insight:<semver>` per merge to
-   `main`. See
-   [`../../docs/components/deployment/specs/ADR/0001-chart-publishing-on-merge.md`](../../docs/components/deployment/specs/ADR/0001-chart-publishing-on-merge.md)
-   for the contract.
+   `main`.
 2. The `.insight-version` file in this repo pins one semver. Bump it
    to promote a new chart version. The Makefile reads it as
    `INSIGHT_VERSION` and passes `--version $INSIGHT_VERSION` to every
@@ -336,10 +348,16 @@ real `*.yaml` siblings beside them, safe to commit.
 3. `make deploy` pulls the chart at the pinned semver and runs
    `helm upgrade --install --atomic`.
 
-### Automating the `.insight-version` bump (optional)
+### Automating the `.insight-version` bump
 
-This sample does NOT ship CI for auto-bumping `.insight-version` —
-it's CI-vendor-specific. The pattern is:
+In this repo the bump is automated: the `publish-chart` job in
+`.github/workflows/build-images.yml` writes the newly published semver
+into `deploy/gitops/.insight-version` and commits it at the end of each
+publish. (Consequence: a checkout of the SHA that triggered the publish
+still holds the PREVIOUS release in that file — resolve "latest" from
+the OCI registry, not from the file, when reacting to a publish event.)
+
+A standalone deployment repo has to wire its own bump; the pattern is:
 
 1. List semver tags at the chart registry on a cron schedule (e.g.
    hourly):
@@ -377,24 +395,40 @@ which solver, which email, prod vs staging). HTTP-01 needs port 80
 reachable from the public internet; DNS-01 works through Cloudflare,
 Route 53, etc.
 
-In `environments/<env>/values.yaml`, annotate the umbrella's Ingress
-blocks to consume it:
+TLS terminates at the shared Gateway. In `bootstrap/<env>/gateway.yaml`,
+annotate the `insight` Gateway and add an https listener that references
+the cert Secret:
 
 ```yaml
-ingress:
-  enabled: true
-  className: nginx
-  host: <fqdn>
+metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod   # or letsencrypt-staging
-  tls:
-    enabled: true
-    secretName: insight-<env>-tls
+spec:
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: <fqdn>
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: insight-<env>-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                # Substituted from inventory.yaml `namespaces.*` at apply time;
+                # the previews namespace carries the per-experiment HTTPRoutes.
+                values: [${NS_APP}, ${NS_INFRA}, ${NS_PREVIEWS}]
 ```
 
-cert-manager watches `Ingress` objects, sees the annotation, and
-creates a `Certificate` resource which solves the ACME challenge and
-writes the cert into `tls.secretName`.
+cert-manager (installed with `config.enableGatewayAPI=true`) watches
+`Gateway` objects, sees the annotation, and creates a `Certificate`
+resource which solves the ACME challenge and writes the cert into the
+referenced Secret.
 
 ## Pre-commit hook (recommended)
 

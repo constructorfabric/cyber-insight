@@ -1,11 +1,18 @@
 //! HTTP API layer — routes and handlers.
 
+pub(crate) mod ai;
+mod connector_health;
 pub(crate) mod error;
+mod feedback;
+mod ingestion;
 mod metric_definitions;
 mod metric_drilldown;
 mod metric_results;
 mod metrics;
+mod person_names;
+mod reports;
 mod saved_queries;
+pub(crate) mod usage;
 
 #[cfg(test)]
 mod http_live_tests;
@@ -20,6 +27,7 @@ use std::sync::Arc;
 use toolkit::api::{
     OpenApiInfo, OpenApiRegistry, OpenApiRegistryImpl, OperationBuilder, ResponseSpec,
 };
+use toolkit_canonical_errors::CanonicalError;
 use utoipa::openapi::RefOr;
 use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::header::HeaderBuilder;
@@ -27,10 +35,16 @@ use utoipa::openapi::schema::{
     KnownFormat, ObjectBuilder, Schema, SchemaFormat, SchemaType, Type as OpenApiType,
 };
 
+use tokio::sync::Semaphore;
+
 use crate::config::GearConfig;
+use crate::domain::ai::dto as ai_dto;
+use crate::domain::connector_health as connector_health_domain;
+use crate::domain::external_links::ExternalSourceRegistry;
 use crate::domain::metric_crud;
 use crate::domain::metric_definitions::listing as metric_definitions_listing;
 use crate::domain::saved_query;
+use crate::infra::anthropic::AnthropicClient;
 use crate::infra::identity::IdentityClient;
 
 /// Shared application state.
@@ -39,14 +53,61 @@ pub struct AppState {
     pub db: DatabaseConnection,
     pub ch: insight_clickhouse::Client,
     pub identity: IdentityClient,
-    #[allow(dead_code)] // will be used for runtime config access (rate limits, feature flags)
+    pub anthropic: AnthropicClient,
+    /// Caps explain calls in flight in this process.
+    pub ai_calls: Arc<Semaphore>,
+    pub report_generations: Arc<Semaphore>,
+    pub report_artifacts: Arc<Semaphore>,
     pub config: GearConfig,
+    pub external_links: ExternalSourceRegistry,
 }
 
 pub(crate) fn forwarded_authorization(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
+}
+
+// SAFETY: an identity that is absent or unreachable is a server error, never a
+// permit.
+pub(crate) async fn is_admin_caller(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<bool, CanonicalError> {
+    if !state.identity.is_configured() {
+        tracing::error!("identity service is not configured; admin access cannot be verified");
+        return Err(CanonicalError::internal("failed to verify caller permissions").create());
+    }
+
+    state
+        .identity
+        .is_admin(forwarded_authorization(headers))
+        .await
+        .map_err(|error| {
+            tracing::error!(error = %error, "admin role check failed");
+            CanonicalError::internal("failed to verify caller permissions").create()
+        })
+}
+
+/// What a refused admin surface says. The builder is generic over its own
+/// resource, so each caller constructs the refusal in its namespace and this
+/// gate decides only whether to raise it.
+pub(crate) const ADMIN_ONLY: &str = "admin role required for this operation";
+
+pub(crate) async fn require_admin(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    denied: fn() -> CanonicalError,
+) -> Result<(), CanonicalError> {
+    if is_admin_caller(state, headers).await? {
+        return Ok(());
+    }
+    Err(denied())
+}
+
+/// Clips to a CHARACTER budget: a byte slice would split a multi-byte value.
+pub(crate) fn clip(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
 }
 
 /// Register all analytics routes onto the host's stateless router.
@@ -69,7 +130,9 @@ pub fn register_routes(
     openapi: &dyn OpenApiRegistry,
     state: Arc<AppState>,
 ) -> Router {
-    let api = build_operations(Router::new(), openapi).layer(Extension(state));
+    let api = build_operations(Router::new(), openapi)
+        .layer(Extension(state))
+        .layer(insight_http_metrics::ServerMetricsLayer::new("analytics"));
 
     host_router.merge(api)
 }
@@ -108,8 +171,316 @@ fn openapi_info() -> OpenApiInfo {
 // One `OperationBuilder` chain per endpoint makes this a long-but-flat route
 // table; splitting it further would only obscure the 1:1 route↔handler map.
 #[allow(clippy::too_many_lines)]
-fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+pub(crate) fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     let mut router: Router = router;
+
+    // Usage monitoring (#2573). Ingest is open to any signed-in caller — it is
+    // the SPA's beacon; the read model is admin-gated inside the handler.
+    router = OperationBuilder::post("/v1/usage/events")
+        .operation_id("analytics_api.usage.ingest")
+        .summary("Record usage events")
+        .authenticated()
+        .no_license_required()
+        .json_request::<usage::UsageIngestRequest>(openapi, "Telemetry SDK records")
+        .no_content_response(StatusCode::NO_CONTENT, "Accepted")
+        .error_401(openapi)
+        .error_415(openapi)
+        .handler(usage::ingest_usage_events)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/usage/config")
+        .operation_id("analytics_api.usage.config")
+        .summary("Whether this instance records usage")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<usage::UsageConfigResponse>(
+            openapi,
+            StatusCode::OK,
+            "Usage collection state",
+        )
+        .standard_errors(openapi)
+        .handler(usage::get_usage_config)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/usage/summary")
+        .operation_id("analytics_api.usage.summary")
+        .summary("Usage summary for a date range")
+        .authenticated()
+        .no_license_required()
+        .query_param_typed("since", false, "Inclusive first day, YYYY-MM-DD", "string")
+        .query_param_typed("until", false, "Inclusive last day, YYYY-MM-DD", "string")
+        .json_response_with_schema::<usage::UsageSummaryResponse>(
+            openapi,
+            StatusCode::OK,
+            "Usage summary",
+        )
+        .standard_errors(openapi)
+        .handler(usage::get_usage_summary)
+        .register(router, openapi);
+
+    // Connector health: the operator's view of what the mover reports about
+    // every connector's syncs. Admin-gated inside the handler, like every other
+    // instance-wide read here.
+    router = OperationBuilder::get("/v1/connector-health")
+        .operation_id("analytics_api.connector_health.summary")
+        .summary("Recorded sync state of every connector")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<connector_health_domain::ConnectorHealthResponse>(
+            openapi,
+            StatusCode::OK,
+            "One row per connector, ordered by what needs acting on",
+        )
+        .standard_errors(openapi)
+        .handler(connector_health::get_connector_health)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/connector-health/{connector}/syncs")
+        .operation_id("analytics_api.connector_health.syncs")
+        .summary("Recent syncs of one connector, newest first")
+        .authenticated()
+        .no_license_required()
+        .path_param("connector", "Connector name, as the descriptors spell it")
+        .json_response_with_schema::<connector_health_domain::SyncHistoryResponse>(
+            openapi,
+            StatusCode::OK,
+            "A bounded window of recorded syncs",
+        )
+        .standard_errors(openapi)
+        .handler(connector_health::get_connector_syncs)
+        .register(router, openapi);
+
+    // Ingestion intensity (ops). Admin-gated inside the handler, like the usage
+    // read model: bronze rows carry no tenant, so this surface is
+    // infrastructure-wide and cannot be scoped by the caller's tenant.
+    router = OperationBuilder::get("/v1/ingestion/intensity")
+        .operation_id("analytics_api.ingestion.intensity")
+        .summary("Bronze extraction intensity per bucket")
+        .authenticated()
+        .no_license_required()
+        .query_param_typed("grain", false, "Bucket width: 15m or 1s", "string")
+        .query_param_typed(
+            "scope",
+            false,
+            "Bronze database to scope to, e.g. bronze_bamboohr",
+            "string",
+        )
+        .query_param_typed(
+            "series",
+            false,
+            "What one band counts: connector, stream or total",
+            "string",
+        )
+        .query_param_typed("from", false, "Inclusive lower bound, RFC 3339", "string")
+        .query_param_typed("to", false, "Exclusive upper bound, RFC 3339", "string")
+        .json_response_with_schema::<ingestion::IngestionIntensityResponse>(
+            openapi,
+            StatusCode::OK,
+            "Extraction intensity buckets",
+        )
+        .standard_errors(openapi)
+        .handler(ingestion::get_ingestion_intensity)
+        .register(router, openapi);
+
+    // Sending is open to any signed-in caller; the listing is admin-gated
+    // inside the handler, not here.
+    router = OperationBuilder::post("/v1/feedback")
+        .operation_id("analytics_api.feedback.submit")
+        .summary("Send product feedback")
+        .authenticated()
+        .no_license_required()
+        .json_request::<feedback::FeedbackRequest>(openapi, "A feedback submission")
+        .no_content_response(StatusCode::NO_CONTENT, "Recorded")
+        // Only what a submission can actually answer: it addresses no resource,
+        // so the standard bundle's 404/409/429 would promise cases with no path.
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_415(openapi)
+        .error_500(openapi)
+        .handler(feedback::submit_feedback)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/feedback")
+        .operation_id("analytics_api.feedback.list")
+        .summary("Feedback sent in a date range")
+        .authenticated()
+        .no_license_required()
+        .query_param_typed("since", false, "Inclusive first day, YYYY-MM-DD", "string")
+        .query_param_typed("until", false, "Inclusive last day, YYYY-MM-DD", "string")
+        .json_response_with_schema::<feedback::FeedbackListResponse>(
+            openapi,
+            StatusCode::OK,
+            "Feedback entries, newest first",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .handler(feedback::list_feedback)
+        .register(router, openapi);
+
+    // AI assist. `config` answers on every stand — "off" is the answer the SPA
+    // needs; the rest 404 while the stand switch is off.
+    router = OperationBuilder::get("/v1/ai/config")
+        .operation_id("analytics_api.ai.config")
+        .summary("Whether this instance explains metrics with AI")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<ai_dto::AiConfigResponse>(
+            openapi,
+            StatusCode::OK,
+            "AI assist state",
+        )
+        .standard_errors(openapi)
+        .handler(ai::get_ai_config)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/ai/credentials")
+        .operation_id("analytics_api.ai.credentials.get")
+        .summary("Whether the caller has an Anthropic key stored")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<ai_dto::AiCredentialResponse>(
+            openapi,
+            StatusCode::OK,
+            "Stored-key state",
+        )
+        .standard_errors(openapi)
+        .handler(ai::credentials::get_credential)
+        .register(router, openapi);
+
+    router = OperationBuilder::put("/v1/ai/credentials")
+        .operation_id("analytics_api.ai.credentials.put")
+        .summary("Store or replace the caller's Anthropic key")
+        .authenticated()
+        .no_license_required()
+        .json_request::<ai_dto::PutCredentialRequest>(openapi, "The key to store")
+        .json_response_with_schema::<ai_dto::AiCredentialResponse>(
+            openapi,
+            StatusCode::OK,
+            "Stored-key state",
+        )
+        .standard_errors(openapi)
+        .handler(ai::credentials::put_credential)
+        .register(router, openapi);
+
+    router = OperationBuilder::delete("/v1/ai/credentials")
+        .operation_id("analytics_api.ai.credentials.delete")
+        .summary("Forget the caller's Anthropic key")
+        .authenticated()
+        .no_license_required()
+        .no_content_response(StatusCode::NO_CONTENT, "Key removed")
+        .standard_errors(openapi)
+        .handler(ai::credentials::delete_credential)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/ai/settings")
+        .operation_id("analytics_api.ai.settings.get")
+        .summary("The system prompt in force for this tenant")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<ai_dto::AiSettingsResponse>(
+            openapi,
+            StatusCode::OK,
+            "System prompt",
+        )
+        .standard_errors(openapi)
+        .handler(ai::settings::get_settings)
+        .register(router, openapi);
+
+    router = OperationBuilder::put("/v1/ai/settings")
+        .operation_id("analytics_api.ai.settings.put")
+        .summary("Replace this tenant's system prompt")
+        .authenticated()
+        .no_license_required()
+        .json_request::<ai_dto::PutSettingsRequest>(openapi, "The prompt to store")
+        .json_response_with_schema::<ai_dto::AiSettingsResponse>(
+            openapi,
+            StatusCode::OK,
+            "System prompt",
+        )
+        .standard_errors(openapi)
+        .handler(ai::settings::put_settings)
+        .register(router, openapi);
+
+    router = OperationBuilder::delete("/v1/ai/settings")
+        .operation_id("analytics_api.ai.settings.reset")
+        .summary("Restore the shipped system prompt")
+        .authenticated()
+        .no_license_required()
+        .no_content_response(StatusCode::NO_CONTENT, "Prompt reset")
+        .standard_errors(openapi)
+        .handler(ai::settings::reset_settings)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/ai/context")
+        .operation_id("analytics_api.ai.context.list")
+        .summary("Context entries the caller's explanations read")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<ai_dto::ContextListResponse>(
+            openapi,
+            StatusCode::OK,
+            "Context entries",
+        )
+        .standard_errors(openapi)
+        .handler(ai::context::list_context)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/v1/ai/context")
+        .operation_id("analytics_api.ai.context.create")
+        .summary("Add a context entry")
+        .authenticated()
+        .no_license_required()
+        .json_request::<ai_dto::CreateContextRequest>(openapi, "Entry to add")
+        .json_response_with_schema::<ai_dto::ContextEntryResponse>(
+            openapi,
+            StatusCode::CREATED,
+            "Created entry",
+        )
+        .standard_errors(openapi)
+        .handler(ai::context::create_context)
+        .register(router, openapi);
+
+    router = OperationBuilder::patch("/v1/ai/context/{id}")
+        .operation_id("analytics_api.ai.context.update")
+        .summary("Edit a context entry")
+        .authenticated()
+        .no_license_required()
+        .json_request::<ai_dto::UpdateContextRequest>(openapi, "Fields to change")
+        .json_response_with_schema::<ai_dto::ContextEntryResponse>(
+            openapi,
+            StatusCode::OK,
+            "Updated entry",
+        )
+        .standard_errors(openapi)
+        .handler(ai::context::update_context)
+        .register(router, openapi);
+
+    router = OperationBuilder::delete("/v1/ai/context/{id}")
+        .operation_id("analytics_api.ai.context.delete")
+        .summary("Remove a context entry")
+        .authenticated()
+        .no_license_required()
+        .no_content_response(StatusCode::NO_CONTENT, "Entry removed")
+        .standard_errors(openapi)
+        .handler(ai::context::delete_context)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/v1/ai/explain")
+        .operation_id("analytics_api.ai.explain")
+        .summary("Explain one metric reading")
+        .authenticated()
+        .no_license_required()
+        .json_request::<ai::explain::ExplainRequest>(openapi, "The tile to explain")
+        .json_response_with_schema::<ai::explain::ExplainResponse>(
+            openapi,
+            StatusCode::OK,
+            "The explanation",
+        )
+        .standard_errors(openapi)
+        .handler(ai::explain::explain_metric)
+        .register(router, openapi);
 
     router = OperationBuilder::post("/v1/metric-results")
         .operation_id("analytics_api.metric_results.create")
@@ -131,6 +502,50 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .error_415(openapi)
         .error_500(openapi)
         .handler(metric_results::query_metric_results)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/v1/reports/preview")
+        .operation_id("analytics_api.reports.preview")
+        .summary("Preview a metric report")
+        .authenticated()
+        .no_license_required()
+        .json_request::<crate::domain::reports::dto::ReportPreviewRequest>(openapi, "Report recipe")
+        .json_response_with_schema::<crate::domain::reports::dto::ReportPreviewResponse>(
+            openapi,
+            StatusCode::OK,
+            "Report preview",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_415(openapi)
+        .error_429(openapi)
+        .error_500(openapi)
+        .handler(reports::preview_report)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/v1/reports/export")
+        .operation_id("analytics_api.reports.export")
+        .summary("Export a metric report")
+        .authenticated()
+        .no_license_required()
+        .json_request::<crate::domain::reports::dto::ReportExportRequest>(
+            openapi,
+            "Report export recipe",
+        )
+        .response(ResponseSpec {
+            status: StatusCode::OK.as_u16(),
+            content_type: "text/csv",
+            description: "Complete metric report export".to_owned(),
+            schema: None,
+        })
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_415(openapi)
+        .error_429(openapi)
+        .error_500(openapi)
+        .handler(reports::export_report)
         .register(router, openapi);
 
     // Saved-query CRUD + run (#1965) — the presentation-layer "Data Analytics"
@@ -241,6 +656,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .error_400(openapi)
         .error_401(openapi)
+        .error_403(openapi)
         .error_404(openapi)
         .error_415(openapi)
         .error_429(openapi)
@@ -261,7 +677,7 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             status: StatusCode::OK.as_u16(),
             content_type: "text/csv",
             description: "Complete metric evidence export".to_owned(),
-            schema_name: None,
+            schema: None,
         })
         .standard_errors(openapi)
         .handler(metric_drilldown::export_metric_drilldown)
@@ -405,17 +821,24 @@ pub fn openapi_document() -> anyhow::Result<utoipa::openapi::OpenApi> {
     let mut document = openapi
         .build_openapi(&openapi_info())
         .map_err(|e| anyhow::anyhow!("failed to build analytics OpenAPI document: {e}"))?;
+    add_file_export_response(&mut document, "/v1/metric-drilldown/export")?;
+    add_file_export_response(&mut document, "/v1/reports/export")?;
+    Ok(document)
+}
+
+fn add_file_export_response(
+    document: &mut utoipa::openapi::OpenApi,
+    path: &str,
+) -> anyhow::Result<()> {
     let response = document
         .paths
         .paths
-        .get_mut("/v1/metric-drilldown/export")
+        .get_mut(path)
         .and_then(|path| path.post.as_mut())
         .and_then(|operation| operation.responses.responses.get_mut("200"))
-        .ok_or_else(|| anyhow::anyhow!("metric drilldown export response is missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("file export response is missing for {path}"))?;
     let RefOr::T(response) = response else {
-        return Err(anyhow::anyhow!(
-            "metric drilldown export response must be inline"
-        ));
+        return Err(anyhow::anyhow!("file export response must be inline"));
     };
     let schema = Schema::Object(
         ObjectBuilder::new()
@@ -439,7 +862,7 @@ pub fn openapi_document() -> anyhow::Result<utoipa::openapi::OpenApi> {
             .description(Some("Attachment filename"))
             .build(),
     );
-    Ok(document)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -484,6 +907,36 @@ mod tests {
         assert!(
             response.headers.contains_key("Content-Disposition"),
             "export must advertise the attachment filename header"
+        );
+    }
+
+    #[test]
+    fn report_export_response_advertises_both_file_media_types_and_the_filename_header() {
+        let document =
+            openapi_document().unwrap_or_else(|error| panic!("document must build: {error}"));
+        let response = document
+            .paths
+            .paths
+            .get("/v1/reports/export")
+            .and_then(|path| path.post.as_ref())
+            .and_then(|operation| operation.responses.responses.get("200"))
+            .unwrap_or_else(|| panic!("report export 200 response must be registered"));
+        let RefOr::T(response) = response else {
+            panic!("report export response must be inline, not a $ref");
+        };
+
+        for media_type in [
+            "text/csv",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ] {
+            assert!(
+                response.content.contains_key(media_type),
+                "report export must advertise {media_type}"
+            );
+        }
+        assert!(
+            response.headers.contains_key("Content-Disposition"),
+            "report export must advertise the attachment filename header"
         );
     }
 }

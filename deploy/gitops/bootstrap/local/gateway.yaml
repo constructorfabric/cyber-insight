@@ -1,0 +1,35 @@
+##
+## Shared Gateway API entry point, applied by `make bootstrap-envoy-gateway`.
+## HTTPRoutes from any namespace attach to the `insight` Gateway. Local dev
+## is HTTP-only; envs with a cert add an https listener here.
+##
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: insight
+  namespace: insight-infra
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                # Substituted from inventory.yaml `namespaces.*` by `make
+                # bootstrap-envoy-gateway` — never hardcode namespaces here.
+                # The previews namespace carries the per-experiment
+                # HTTPRoutes (#1981).
+                values: [${NS_APP}, ${NS_INFRA}, ${NS_PREVIEWS}]

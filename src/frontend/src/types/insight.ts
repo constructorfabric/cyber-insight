@@ -7,7 +7,7 @@ export interface TeamMember {
   name: string;
 }
 
-/** Lightweight projection of the C# PersonResponse shape. */
+/** Lightweight projection of the identity profile shape. */
 export interface IdentityPerson {
   person_id: string;
   email: string;
@@ -18,6 +18,7 @@ export interface IdentityPerson {
   division?: string;
   job_title?: string;
   status?: string;
+  username?: string;
   parent_email?: string | null;
   parent_id?: string | null;
   parent_person_id?: string | null;

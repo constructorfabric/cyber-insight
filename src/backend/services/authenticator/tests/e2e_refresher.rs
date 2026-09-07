@@ -8,8 +8,8 @@
 //!   cargo test -p authenticator --test e2e_refresher -- --ignored --nocapture
 //! ```
 //!
-//! Drives the two IdP failure modes through real-IdP seams (tests/common/kc.rs;
-//! what fakeidp's `/_control/*` hooks used to simulate): a paused container —
+//! Drives the two IdP failure modes through real-IdP seams
+//! (tests/common/kc.rs): a paused container —
 //! transient failures must log nobody out; and an admin-disabled user — the
 //! definitive `invalid_grant` verdict must kill the user's sessions on the
 //! next scheduled refresh, while another user's session survives.

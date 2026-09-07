@@ -7,7 +7,7 @@
 //! (`cf-gears-api-gateway`, the HTTP-server framework every gear runs on — NOT
 //! the Insight platform api-gateway service that the nginx edge replaces); the
 //! authenticator functionality is [`gear::AuthenticatorGear`] (`rest` +
-//! `stateful`). Its `/auth/*` and `/internal/authz` endpoints are `.public()`
+//! `stateful`). Its `/auth/*` and `/internal/authz` endpoints are `.anonymous().exposed()`
 //! — the credential is the session cookie, checked in the handler.
 //!
 //! # Usage
@@ -33,6 +33,7 @@ mod issuers;
 mod janitor;
 mod jwt;
 mod local_client;
+mod mcp_oauth;
 mod oidc;
 mod ratelimit;
 mod refresher;

@@ -13,6 +13,7 @@ bronze/silver layer (cpt-bronze-to-api-e2e-dod-yaml-bronze-seed).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -164,7 +165,7 @@ class CHSeeder:
         """Coerce a YAML-parsed value to what clickhouse-connect expects for `ch_type`."""
         if value is None:
             return None
-        base = _strip_nullable(ch_type)
+        base = _strip_wrappers(ch_type)
         if base.startswith("Date"):
             if isinstance(value, (datetime,)):
                 return value
@@ -210,20 +211,37 @@ class CHSeeder:
                     return float(value)
                 except ValueError as e:
                     raise SeederError(f"column {col!r} ({ch_type}): bad float {value!r}") from e
+        # A record-valued field (a connector's `raw_data` payload) lands in a
+        # String column; clickhouse-connect will not serialize a mapping, so
+        # state it as the JSON the destination writes. Keys sorted, matching what
+        # the connector builds the payload from.
+        if isinstance(value, dict) and base == "String":
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
         # String / Array / JSON: pass through. clickhouse-connect accepts
         # str→JSON, list→Array, str→String as-is.
         return value
 
 
-def _strip_nullable(ch_type: str) -> str:
-    if ch_type.startswith("Nullable(") and ch_type.endswith(")"):
-        return ch_type[len("Nullable(") : -1]
+def _strip_wrappers(ch_type: str) -> str:
+    """Peel the wrappers that change storage, not meaning.
+
+    `LowCardinality` is a dictionary encoding and `Nullable` a presence flag;
+    a fixture declaring `string` for a `LowCardinality(String)` column is
+    describing the same values. They nest in either order.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for wrapper in ("Nullable(", "LowCardinality("):
+            if ch_type.startswith(wrapper) and ch_type.endswith(")"):
+                ch_type = ch_type[len(wrapper) : -1]
+                changed = True
     return ch_type
 
 
 def _types_compatible(expected: str, existing: str) -> bool:
-    expected_base = _strip_nullable(expected)
-    existing_base = _strip_nullable(existing)
+    expected_base = _strip_wrappers(expected)
+    existing_base = _strip_wrappers(existing)
     if expected_base == existing_base:
         return True
     if {expected_base, existing_base} == {"Bool", "UInt8"}:
@@ -240,7 +258,7 @@ def _clickhouse_type(definition: dict[str, Any]) -> str:
     types = declared if isinstance(declared, list) else [declared]
     base = next((item for item in types if item != "null"), "string")
     if base == "array":
-        item_type = _strip_nullable(_clickhouse_type(definition.get("items", {})))
+        item_type = _strip_wrappers(_clickhouse_type(definition.get("items", {})))
         return f"Array({item_type})"
     mapped = {"boolean": "Bool", "integer": "Int64", "number": "Float64", "string": "String", "object": "String"}.get(
         base, "String"

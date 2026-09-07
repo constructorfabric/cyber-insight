@@ -10,19 +10,21 @@ out at `pytest_sessionfinish`.
 **The gate** (`python3 coverage.py --observed … --spec …`, stdlib only, no
 stand) reads that ledger back and answers two questions:
 
-  1. Did every operation the CATALOGUE names get exercised, by something other
-     than the anonymous sweep? `api/test_gateway.py` calls all 48 operations
-     without a session, so every one has an observation — and a route whose only
-     observed code is 401 was swept and never tested. Counting it as covered is
-     precisely the mistake this gate exists to prevent.
+  1. Did every operation the CATALOGUE names get exercised by something other
+     than a sweep? Two suites call the whole catalogue: `api/test_gateway.py`
+     without a session (401), and `identity/test_request_contracts.py` without
+     the admin grant (403). So every operation has an observation, and one whose
+     only observed codes are those was swept and never tested. Counting it as
+     covered is precisely the mistake this gate exists to prevent.
   2. Did every status code the analytics CONTRACT declares get observed?
 
-Only analytics is gated on its spec. The committed identity document is the
-retired .NET contract — it declares only `200` on every operation, lists routes
-the service answers 404 for, and omits ones it serves — so gating against it
-would demand codes that cannot exist and miss everything real. Identity is held
-to (1) instead, which needs no trustworthy document. Same judgement, and for the
-same reason, as `Untrusted` in `tests/generate_schemas.py`.
+Only analytics is gated on its spec, though identity emits its own document
+and CI drift-gates it beside analytics. What blocks (2) for identity is the
+other side of the comparison: every status code the
+document declares has to be OBSERVED, and `.standard_errors` stamps the full
+error set onto every operation. Identity stays held to (1) until the suite
+either observes those codes or the gate learns to discount the stamped ones
+(#1669), which is a change to the gate rather than to this note.
 
 This is a port of `src/ingestion/tests/e2e/lib/api_coverage.py`. The universal
 table agrees with it — the rig dropped 401 from its own exclusions once its host
@@ -52,6 +54,18 @@ _HTTP_METHODS = ("get", "put", "post", "delete", "patch", "head", "options", "tr
 #: Server faults are declared for fidelity and cannot be induced deterministically
 #: from outside, so they never count against coverage.
 SERVER_FAULT_FLOOR = 500
+
+#: The statuses a CATALOGUE-WIDE SWEEP stamps on operations it never tested:
+#: `test_gateway.py` calls every operation anonymously (401), and the identity
+#: suite calls every admin-gated one without the grant (403). An operation
+#: observed at nothing else was swept, not tested.
+#:
+#: INVARIANT: membership is "some sweep produces this on every operation it
+#: touches", NOT "this status is a refusal". 404 and 400 are refusals no sweep
+#: produces — they are earned per route, and several operations are exercised
+#: only through them by design (`POST /v1/resolution/detach` at 404, `merge` at
+#: 400). Adding either would report those as gaps and block the merge queue.
+REFUSALS = frozenset({401, 403})
 
 #: Excluded on every analytics route. 429 only — nothing rate-limits this stand.
 #:
@@ -138,6 +152,21 @@ BLOCKED: dict[str, frozenset[int]] = {
     "GET /v1/metrics/{metric_key}": _NO_AUTHZ_OR_CONFLICT,
     "PUT /v1/metrics/{metric_key}": _NO_AUTHZ_OR_CONFLICT,
     "DELETE /v1/metrics/{metric_key}": _NO_AUTHZ_OR_CONFLICT,
+    # Usage monitoring. Neither read model addresses a row, so neither has a
+    # not-found or a conflict path. `/config` subtracts two more: it takes no
+    # input and holds no gate, so 400 and 403 are unreachable there. The summary
+    # reaches both — it is the one analytics operation with an admin gate — and
+    # `test_usage.py` covers them rather than blocking them.
+    "GET /v1/usage/config": frozenset({400, 403, 404, 409}),
+    "GET /v1/usage/summary": frozenset({404, 409}),
+    # Connector health. Neither read addresses a row — an unknown connector is
+    # an empty window, not a not-found — so neither has a 404 or a conflict
+    # path. The summary subtracts 400 as well: it takes no input at all, so
+    # there is nothing about the request to reject. The per-connector window
+    # does have a 400 (a name its parser refuses) and both have a 403, and
+    # `test_connector_health.py` covers those rather than blocking them.
+    "GET /v1/connector-health": frozenset({400, 404, 409}),
+    "GET /v1/connector-health/{connector}/syncs": frozenset({404, 409}),
 }
 
 
@@ -325,8 +354,9 @@ class CatalogueReport:
     """Which catalogued operations were genuinely exercised.
 
     "Genuinely" is the whole content of this report. `api/test_gateway.py`
-    sweeps every operation anonymously, so presence in the ledger proves nothing
-    — an operation whose only observed status is 401 was swept and never tested.
+    sweeps every operation anonymously and `identity/test_admin.py` sweeps every
+    admin-gated one without the grant, so presence in the ledger proves nothing —
+    an operation observed only at a refusal was swept and never tested.
     """
 
     catalogue: Sequence[Operation]
@@ -341,7 +371,7 @@ class CatalogueReport:
             codes = folded.get(operation.key)
             if not codes:
                 self.unobserved.append(operation.key)
-            elif codes <= {401}:
+            elif codes <= REFUSALS:
                 self.swept_only.append(operation.key)
             else:
                 self.exercised.append(operation.key)
@@ -468,8 +498,9 @@ def violations(catalogue: CatalogueReport, spec: SpecReport | None) -> list[str]
         for label in catalogue.unobserved
     ]
     out += [
-        f"SWEPT ONLY: {label} was called anonymously and never with a session, so the "
-        "only thing proven about it is that the edge refuses it"
+        f"SWEPT ONLY: {label} was only ever refused — by the anonymous sweep, the "
+        "admin-gate sweep, or both — so nothing is proven about what it does when it "
+        "answers"
         for label in catalogue.swept_only
     ]
     if spec is not None:
@@ -515,7 +546,7 @@ def render(catalogue: CatalogueReport, spec: SpecReport | None) -> str:
         "# Stand API coverage",
         "",
         f"**Gate: {verdict}.** {len(catalogue.exercised)}/{len(catalogue.catalogue)} catalogued "
-        f"operations exercised with a session"
+        f"operations answered something other than a refusal"
         + (f" · {len(catalogue.swept_only)} swept only" if catalogue.swept_only else "")
         + (f" · {len(catalogue.unobserved)} never called" if catalogue.unobserved else ""),
     ]
@@ -526,8 +557,8 @@ def render(catalogue: CatalogueReport, spec: SpecReport | None) -> str:
         )
     lines += [
         "",
-        "_Blocking: a catalogued operation never called, or called only by the anonymous "
-        "sweep, or a documented operation no test exercises. Per-status-code coverage is "
+        "_Blocking: a catalogued operation never called, or only ever refused, or a "
+        "documented operation no test exercises. Per-status-code coverage is "
         "reported, not enforced._",
         "",
     ]

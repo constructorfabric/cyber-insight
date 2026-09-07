@@ -17,9 +17,11 @@ protected: false              # true → `make deploy` requires
 namespaces:
   services: insight           # L3 app subcharts
   infra:    insight-infra     # L2 shared stateful
+  previews: insight-previews  # preview experiments (#1981); feeds the
+                              # Gateway allowedRoutes + the previews chart
   # Controller namespaces accept upstream-chart defaults; uncomment
   # only to override.
-  # ingressNginx:  ingress-nginx
+  # envoyGateway:  envoy-gateway-system
   # certManager:   cert-manager
   # sealedSecrets: kube-system
 
@@ -29,9 +31,13 @@ release: insight
 # ─── L0 — cluster prereqs (drives `make bootstrap`) ────────────────────
 bootstrap:
   namespaces:    true
-  ingressNginx:  true
+  envoyGateway:  true
   certManager:   true
   sealedSecrets: true
+  # cert-manager's Gateway API shim. Defaults true when omitted; set false on
+  # a cluster with no Gateway API CRDs, where the shim would keep the
+  # controller from starting.
+  # certManagerGatewayShim: true
 
 # ─── L2 — shared infra (drives `make system`) ──────────────────────────
 system:
@@ -43,11 +49,17 @@ system:
   airbyte:         true
   argoWorkflows:   true
   # Observability (LGTM). Off for local dev — flip on to self-host
-  # Loki/Alloy/Grafana, and point the umbrella's observability.otlp.endpoint
-  # (environments/<env>/values.yaml) at this stack's Alloy. See
-  # system/README.md "Observability".
+  # VictoriaMetrics/Loki/Tempo/Alloy/Grafana, and point the umbrella's
+  # global.observability.otlp.endpoint (environments/<env>/values.yaml) at this
+  # stack's Alloy. See system/README.md "Observability".
+  victoriametrics: false
   loki:            false
+  tempo:           false
   alloy:           false
+  # Infra metrics (kubelet/cAdvisor + kube-state-metrics → VictoriaMetrics).
+  # Needs victoriametrics on.
+  kubeStateMetrics: false
+  alloyMetrics:     false
   grafana:         false
 
 # ─── Secrets (drives `make seal`) ──────────────────────────────────────
@@ -61,7 +73,7 @@ secrets:
     # ES256 gateway-JWT signing key (current.pem) mounted by the authenticator.
     - { name: insight-authenticator-signing-keys, enabled: true }
     # Real-IdP OIDC secret. Off for local — the authenticator logs in against the
-    # in-cluster fakeidp; its leaf config is composed at deploy time by
+    # in-cluster Keycloak; its leaf config is composed at deploy time by
     # compose-app-secrets.sh, not sealed here.
     - { name: insight-oidc,                      enabled: false }
     # config-cli login + realm placeholder values (ADR-0003 broker realms).

@@ -31,6 +31,7 @@ mod live_tests;
 /// edge so one request cannot fan out into an unbounded write.
 const MAX_MEASURES: usize = 64;
 const MAX_DIMENSIONS: usize = 64;
+const MAX_TAGS: usize = 64;
 const MAX_INPUTS: usize = 2;
 const MAX_OBSERVATION_SQL_BYTES: usize = 64 * 1024;
 
@@ -54,6 +55,10 @@ pub struct CustomMetric {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub short_label: Option<String>,
+    /// The single topic this metric groups under within its family; a
+    /// lowercase snake-case slug. Optional for custom metrics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +79,10 @@ pub struct CustomMetric {
     pub observation_sql: String,
     pub measures: Vec<String>,
     pub dimensions: Vec<String>,
+    /// Cross-cutting filter labels; lowercase snake-case slugs, unique per
+    /// metric. Optional — defaults to empty.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub inputs: Vec<CustomMetricInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -91,6 +100,10 @@ pub struct CustomMetricInput {
 pub struct CustomMetricSummary {
     pub metric_key: String,
     pub label: String,
+    /// Grouping subject, so the management list can partition custom metrics
+    /// by topic like the definitions listing; absent when none is declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub computation: MetricComputation,
     pub entity_type: String,
 }
@@ -184,12 +197,39 @@ pub fn validate_graph(graph: &CustomMetric) -> Result<(), GraphViolation> {
     {
         return Err(violation("peer_cohort_key", "must match ^[a-z][a-z0-9_]*$"));
     }
+    if graph
+        .subject
+        .as_deref()
+        .is_some_and(|subject| !is_simple_key(subject))
+    {
+        return Err(violation("subject", "must match ^[a-z][a-z0-9_]*$"));
+    }
 
     validate_measures(graph)?;
     validate_dimensions(graph)?;
+    validate_tags(graph)?;
     validate_observation_sql(graph)?;
     validate_inputs(graph)?;
 
+    Ok(())
+}
+
+fn validate_tags(graph: &CustomMetric) -> Result<(), GraphViolation> {
+    if graph.tags.len() > MAX_TAGS {
+        return Err(violation(
+            "tags",
+            format!("at most {MAX_TAGS} tags are allowed"),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for tag in &graph.tags {
+        if !is_simple_key(tag) {
+            return Err(violation("tags", "must match ^[a-z][a-z0-9_]*$"));
+        }
+        if !seen.insert(tag.as_str()) {
+            return Err(violation("tags", "tag keys must be unique"));
+        }
+    }
     Ok(())
 }
 
@@ -263,15 +303,45 @@ fn validate_inputs(graph: &CustomMetric) -> Result<(), GraphViolation> {
 
     let roles: Vec<MetricInputRole> = graph.inputs.iter().map(|input| input.role).collect();
     match graph.computation {
-        MetricComputation::Sum | MetricComputation::Median | MetricComputation::DistinctCount => {
+        MetricComputation::Sum
+        | MetricComputation::Median
+        | MetricComputation::Stddev
+        | MetricComputation::DistinctCount => {
             if roles != [MetricInputRole::Value] {
                 return Err(violation(
                     "inputs",
-                    "sum/median/distinct_count take exactly one value input",
+                    "sum/median/stddev/distinct_count take exactly one value input",
                 ));
             }
             if graph.scale.is_some() {
-                return Err(violation("scale", "only ratio metrics carry a scale"));
+                return Err(violation(
+                    "scale",
+                    "only ratio and percentile metrics carry a scale",
+                ));
+            }
+        }
+        MetricComputation::Percentile => {
+            if roles != [MetricInputRole::Value] {
+                return Err(violation(
+                    "inputs",
+                    "percentile takes exactly one value input",
+                ));
+            }
+            // `scale` doubles as the quantile for percentile metrics.
+            match graph.scale {
+                None => {
+                    return Err(violation(
+                        "scale",
+                        "percentile metrics require the quantile in scale",
+                    ));
+                }
+                Some(q) if !(0.0..=1.0).contains(&q) => {
+                    return Err(violation(
+                        "scale",
+                        "percentile quantile must be within [0, 1]",
+                    ));
+                }
+                Some(_) => {}
             }
         }
         MetricComputation::Ratio => {
@@ -429,7 +499,7 @@ async fn insert_graph<C: ConnectionTrait>(
     let source_id = Uuid::now_v7();
     let definition_id = Uuid::now_v7();
 
-    conn.execute(Statement::from_sql_and_values(
+    conn.execute_raw(Statement::from_sql_and_values(
         conn.get_database_backend(),
         "INSERT INTO metric_sources \
             (id, tenant_id, source_key, source_kind, source_ref, observation_sql, origin, is_enabled, schema_status) \
@@ -451,7 +521,7 @@ async fn insert_graph<C: ConnectionTrait>(
     for measure in &graph.measures {
         let measure_id = Uuid::now_v7();
         measure_ids.insert(measure.as_str(), measure_id);
-        conn.execute(Statement::from_sql_and_values(
+        conn.execute_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             "INSERT INTO metric_source_measures (id, source_id, measure_key, is_enabled) \
              VALUES (?, ?, ?, TRUE)",
@@ -468,7 +538,7 @@ async fn insert_graph<C: ConnectionTrait>(
     for (order, dimension) in graph.dimensions.iter().enumerate() {
         let dimension_id = Uuid::now_v7();
         dimension_ids.insert(dimension.as_str(), dimension_id);
-        conn.execute(Statement::from_sql_and_values(
+        conn.execute_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             "INSERT INTO metric_source_dimensions (id, source_id, dimension_key, display_order) \
              VALUES (?, ?, ?, ?)",
@@ -482,20 +552,21 @@ async fn insert_graph<C: ConnectionTrait>(
         .await?;
     }
 
-    conn.execute(Statement::from_sql_and_values(
+    conn.execute_raw(Statement::from_sql_and_values(
         conn.get_database_backend(),
         "INSERT INTO metric_definitions \
-            (id, tenant_id, metric_key, label, short_label, description, explanation, unit, \
+            (id, tenant_id, metric_key, label, short_label, subject, description, explanation, unit, \
              format, direction, entity_type, computation_type, scale, transform_multiplier, \
              transform_offset, transform_clamp_min, transform_clamp_max, peer_cohort_key, \
              origin, is_enabled, schema_status) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', TRUE, 'unchecked')",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom', TRUE, 'unchecked')",
         [
             uuid_value(definition_id),
             uuid_value(tenant_id),
             Value::from(graph.metric_key.as_str()),
             Value::from(graph.label.as_str()),
             nullable_str(graph.short_label.as_deref()),
+            nullable_str(graph.subject.as_deref()),
             nullable_str(graph.description.as_deref()),
             nullable_str(graph.explanation.as_deref()),
             nullable_str(graph.unit.as_deref()),
@@ -503,6 +574,8 @@ async fn insert_graph<C: ConnectionTrait>(
             Value::from(graph.direction.as_db()),
             Value::from(graph.entity_type.as_str()),
             Value::from(graph.computation.as_db()),
+            // The scale column is the definition's one numeric computation
+            // parameter: the ratio multiplier, or the percentile quantile.
             nullable_f64(graph.scale),
             nullable_f64(graph.transform.and_then(|t| t.multiplier)),
             nullable_f64(graph.transform.and_then(|t| t.offset)),
@@ -520,7 +593,7 @@ async fn insert_graph<C: ConnectionTrait>(
                 input.measure_key
             ))
         })?;
-        conn.execute(Statement::from_sql_and_values(
+        conn.execute_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             "INSERT INTO metric_definition_inputs \
                 (id, metric_definition_id, input_role, source_measure_id) \
@@ -541,7 +614,7 @@ async fn insert_graph<C: ConnectionTrait>(
                 "dimension {dimension} missing from source dimensions"
             ))
         })?;
-        conn.execute(Statement::from_sql_and_values(
+        conn.execute_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             "INSERT INTO metric_definition_dimensions \
                 (id, metric_definition_id, source_dimension_id, display_order) \
@@ -550,6 +623,22 @@ async fn insert_graph<C: ConnectionTrait>(
                 uuid_value(Uuid::now_v7()),
                 uuid_value(definition_id),
                 uuid_value(*dimension_id),
+                Value::from(order_value(order)),
+            ],
+        ))
+        .await?;
+    }
+
+    for (order, tag) in graph.tags.iter().enumerate() {
+        conn.execute_raw(Statement::from_sql_and_values(
+            conn.get_database_backend(),
+            "INSERT INTO metric_definition_tags \
+                (id, metric_definition_id, tag, display_order) \
+             VALUES (?, ?, ?, ?)",
+            [
+                uuid_value(Uuid::now_v7()),
+                uuid_value(definition_id),
+                Value::from(tag.as_str()),
                 Value::from(order_value(order)),
             ],
         ))
@@ -579,14 +668,14 @@ async fn delete_graph<C: ConnectionTrait>(
         .await?
         .map(|source| source.source_id);
 
-    conn.execute(Statement::from_sql_and_values(
+    conn.execute_raw(Statement::from_sql_and_values(
         conn.get_database_backend(),
         "DELETE FROM metric_definitions WHERE id = ?",
         [uuid_value(definition_id)],
     ))
     .await?;
     if let Some(source_id) = source_id {
-        conn.execute(Statement::from_sql_and_values(
+        conn.execute_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             "DELETE FROM metric_sources WHERE id = ? AND origin = 'custom'",
             [uuid_value(source_id)],
@@ -609,13 +698,14 @@ pub async fn list_custom_metrics(
     struct Row {
         metric_key: String,
         label: String,
+        subject: Option<String>,
         computation_type: String,
         entity_type: String,
     }
 
     let rows = Row::find_by_statement(Statement::from_sql_and_values(
         db.get_database_backend(),
-        "SELECT metric_key, label, computation_type, entity_type \
+        "SELECT metric_key, label, subject, computation_type, entity_type \
          FROM metric_definitions \
          WHERE origin = 'custom' AND tenant_id = ? \
          ORDER BY metric_key \
@@ -632,6 +722,7 @@ pub async fn list_custom_metrics(
         items.push(CustomMetricSummary {
             metric_key: row.metric_key,
             label: row.label,
+            subject: row.subject,
             computation,
             entity_type: row.entity_type,
         });
@@ -658,9 +749,12 @@ pub async fn fetch_custom_metric(
     };
     let measures = fetch_measure_keys(db, source.source_id).await?;
     let dimensions = fetch_dimension_keys(db, row.definition_id).await?;
+    let tags = fetch_tag_keys(db, row.definition_id).await?;
     let inputs = fetch_input_rows(db, row.definition_id).await?;
 
-    Ok(Some(row.into_graph(source, measures, dimensions, inputs)?))
+    Ok(Some(
+        row.into_graph(source, measures, dimensions, tags, inputs)?,
+    ))
 }
 
 /// The tenant's full custom metric graphs (for export).
@@ -692,6 +786,7 @@ struct DefinitionRow {
     metric_key: String,
     label: String,
     short_label: Option<String>,
+    subject: Option<String>,
     description: Option<String>,
     explanation: Option<String>,
     unit: Option<String>,
@@ -724,6 +819,7 @@ impl DefinitionRow {
         source: SourceRow,
         measures: Vec<String>,
         dimensions: Vec<String>,
+        tags: Vec<String>,
         inputs: Vec<CustomMetricInput>,
     ) -> Result<CustomMetric, DbErr> {
         let transform = ValueTransform {
@@ -747,6 +843,7 @@ impl DefinitionRow {
             metric_key: self.metric_key,
             label: self.label,
             short_label: self.short_label,
+            subject: self.subject,
             description: self.description,
             explanation: self.explanation,
             entity_type: self.entity_type,
@@ -761,6 +858,7 @@ impl DefinitionRow {
             observation_sql,
             measures,
             dimensions,
+            tags,
             inputs,
             origin: Some("custom".to_owned()),
         })
@@ -781,7 +879,7 @@ async fn fetch_definition_row<C: ConnectionTrait>(
     DefinitionRow::find_by_statement(Statement::from_sql_and_values(
         conn.get_database_backend(),
         "SELECT \
-            id AS definition_id, metric_key, label, short_label, description, explanation, unit, \
+            id AS definition_id, metric_key, label, short_label, subject, description, explanation, unit, \
             format, direction, entity_type, computation_type, \
             CAST(scale AS DOUBLE) AS scale, \
             CAST(transform_multiplier AS DOUBLE) AS transform_multiplier, \
@@ -855,6 +953,27 @@ async fn fetch_dimension_keys<C: ConnectionTrait>(
     .map(|rows| rows.into_iter().map(|row| row.dimension_key).collect())
 }
 
+async fn fetch_tag_keys<C: ConnectionTrait>(
+    conn: &C,
+    definition_id: Uuid,
+) -> Result<Vec<String>, DbErr> {
+    #[derive(FromQueryResult)]
+    struct Row {
+        tag: String,
+    }
+    Row::find_by_statement(Statement::from_sql_and_values(
+        conn.get_database_backend(),
+        "SELECT t.tag AS tag \
+         FROM metric_definition_tags t \
+         WHERE t.metric_definition_id = ? \
+         ORDER BY t.display_order, t.tag",
+        [uuid_value(definition_id)],
+    ))
+    .all(conn)
+    .await
+    .map(|rows| rows.into_iter().map(|row| row.tag).collect())
+}
+
 async fn fetch_input_rows<C: ConnectionTrait>(
     conn: &C,
     definition_id: Uuid,
@@ -921,7 +1040,7 @@ async fn exists<C: ConnectionTrait>(
     values: Vec<Value>,
 ) -> Result<bool, DbErr> {
     Ok(conn
-        .query_one(Statement::from_sql_and_values(
+        .query_one_raw(Statement::from_sql_and_values(
             conn.get_database_backend(),
             sql,
             values,
@@ -931,7 +1050,7 @@ async fn exists<C: ConnectionTrait>(
 }
 
 fn uuid_value(id: Uuid) -> Value {
-    Value::Bytes(Some(Box::new(id.as_bytes().to_vec())))
+    Value::Bytes(Some(id.as_bytes().to_vec()))
 }
 
 fn order_value(idx: usize) -> i32 {
@@ -961,6 +1080,7 @@ mod tests {
             metric_key: "custom.example".to_owned(),
             label: "Example".to_owned(),
             short_label: None,
+            subject: Some("activity".to_owned()),
             description: None,
             explanation: None,
             entity_type: "person".to_owned(),
@@ -977,6 +1097,7 @@ mod tests {
                 .to_owned(),
             measures: vec!["events".to_owned()],
             dimensions: vec!["tool".to_owned()],
+            tags: vec!["example".to_owned()],
             inputs: vec![CustomMetricInput {
                 role: MetricInputRole::Value,
                 measure_key: "events".to_owned(),
@@ -1038,6 +1159,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_subject_and_tags() {
+        let mut graph = sum_graph();
+        graph.subject = Some("Bad Subject".to_owned());
+        assert_eq!(rejected_field(&graph), "subject");
+
+        let mut graph = sum_graph();
+        graph.tags = vec!["Bad-Tag".to_owned()];
+        assert_eq!(rejected_field(&graph), "tags");
+
+        let mut graph = sum_graph();
+        graph.tags = vec!["dup".to_owned(), "dup".to_owned()];
+        assert_eq!(rejected_field(&graph), "tags");
+    }
+
+    #[test]
+    fn accepts_absent_subject_and_empty_tags() {
+        let mut graph = sum_graph();
+        graph.subject = None;
+        graph.tags = vec![];
+        assert!(validate_graph(&graph).is_ok());
+    }
+
+    #[test]
     fn rejects_non_single_select_observation_sql() {
         let mut graph = sum_graph();
         graph.observation_sql = "SELECT 1; DROP TABLE t".to_owned();
@@ -1073,6 +1217,45 @@ mod tests {
     }
 
     #[test]
+    fn percentile_requires_a_probability_quantile_in_scale() {
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Percentile;
+        graph.scale = None;
+        assert_eq!(rejected_field(&graph), "scale");
+
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Percentile;
+        graph.scale = Some(1.5);
+        assert_eq!(rejected_field(&graph), "scale");
+
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Percentile;
+        graph.scale = Some(0.9);
+        assert!(validate_graph(&graph).is_ok());
+
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Percentile;
+        graph.scale = Some(0.9);
+        graph.inputs.push(CustomMetricInput {
+            role: MetricInputRole::Numerator,
+            measure_key: "events".to_owned(),
+        });
+        assert_eq!(rejected_field(&graph), "inputs");
+    }
+
+    #[test]
+    fn stddev_rejects_a_scale_like_every_single_value_computation() {
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Stddev;
+        assert!(validate_graph(&graph).is_ok());
+
+        let mut graph = sum_graph();
+        graph.computation = MetricComputation::Stddev;
+        graph.scale = Some(0.9);
+        assert_eq!(rejected_field(&graph), "scale");
+    }
+
+    #[test]
     fn input_measure_must_be_declared() {
         let mut graph = sum_graph();
         graph.inputs = vec![CustomMetricInput {
@@ -1088,6 +1271,7 @@ mod tests {
             metric_key: "custom.example".to_owned(),
             label: "Example".to_owned(),
             short_label: None,
+            subject: Some("activity".to_owned()),
             description: None,
             explanation: None,
             unit: None,
@@ -1115,11 +1299,19 @@ mod tests {
     #[test]
     fn into_graph_rebuilds_a_valid_row_and_stamps_origin() {
         let graph = definition_row()
-            .into_graph(source_row(), vec!["events".to_owned()], vec![], vec![])
+            .into_graph(
+                source_row(),
+                vec!["events".to_owned()],
+                vec![],
+                vec!["rate".to_owned()],
+                vec![],
+            )
             .unwrap_or_else(|error| panic!("valid row must rebuild: {error}"));
         assert_eq!(graph.origin.as_deref(), Some("custom"));
         assert_eq!(graph.observation_sql, "SELECT 1");
         assert_eq!(graph.measures, vec!["events".to_owned()]);
+        assert_eq!(graph.subject.as_deref(), Some("activity"));
+        assert_eq!(graph.tags, vec!["rate".to_owned()]);
     }
 
     #[test]
@@ -1132,7 +1324,7 @@ mod tests {
             let mut row = definition_row();
             mutate(&mut row);
             assert!(
-                row.into_graph(source_row(), vec![], vec![], vec![])
+                row.into_graph(source_row(), vec![], vec![], vec![], vec![])
                     .is_err(),
                 "a corrupt enum must not be silently reshaped"
             );
@@ -1142,7 +1334,7 @@ mod tests {
         source.observation_sql = None;
         assert!(
             definition_row()
-                .into_graph(source, vec![], vec![], vec![])
+                .into_graph(source, vec![], vec![], vec![], vec![])
                 .is_err(),
             "a NULL observation_sql on a custom source is corrupt"
         );

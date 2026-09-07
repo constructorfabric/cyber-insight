@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { useViewer } from "@/auth";
+import type { PeopleListItem } from "@/api/identity-client";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import { Badge } from "@/components/ui/badge";
@@ -15,11 +15,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  usePortalNavActions,
-} from "@/lib/portal/portal-nav";
-import { useIcPerson } from "@/queries/ic-dashboard";
-import type { IdentityPerson } from "@/types/insight";
+import { personName } from "@/lib/identities/person-display";
+import { usePortalNavActions } from "@/lib/portal/portal-nav";
+import { useVisibilityPolicy } from "@/queries/identity-me";
+import { useVisibleRoster } from "@/queries/visible-roster";
 import { cn } from "@/lib/utils";
 
 // Mirrors the rail: a person with neither display name nor email is still a row.
@@ -35,49 +34,38 @@ interface EmployeeRow {
   status: string;
 }
 
-/** Flatten the org tree (root + every descendant) into a de-duplicated roster. */
-function collectEmployees(root: IdentityPerson): EmployeeRow[] {
-  // Keyed by person id, not email: the identity contract admits people with no
-  // email, and their row still has to be listed and clickable.
-  const byId = new Map<string, EmployeeRow>();
-  const walk = (node: IdentityPerson) => {
-    if (node.person_id) {
-      const key = node.person_id.toLowerCase();
-      if (!byId.has(key)) {
-        byId.set(key, {
-          personId: node.person_id,
-          displayName: node.display_name || node.email || UNNAMED_PERSON,
-          jobTitle: node.job_title ?? "",
-          department: node.department ?? "",
-          division: node.division ?? "",
-          supervisorName: node.supervisor_name ?? "",
-          status: node.status ?? "",
-        });
-      }
-    }
-    node.subordinates.forEach(walk);
-  };
-  walk(root);
-  return [...byId.values()].sort((a, b) =>
-    a.displayName.localeCompare(b.displayName),
+function rosterEmployees(roster: readonly PeopleListItem[]): EmployeeRow[] {
+  const byId = new Map(
+    roster.map((person) => [person.person_id.toLowerCase(), person]),
   );
+  return roster
+    .map((person) => ({
+      personId: person.person_id,
+      displayName: personName(person) ?? UNNAMED_PERSON,
+      jobTitle: person.attributes.job_title ?? "",
+      department: person.attributes.department ?? "",
+      division: person.attributes.division ?? "",
+      supervisorName: person.manager_person_id
+        ? personName(byId.get(person.manager_person_id.toLowerCase()) ?? {}) ?? ""
+        : "",
+      status: person.attributes.status ?? "",
+    }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 /**
- * Employees directory — every person in the viewer's org (flattened org tree),
- * searchable, each row linking into their Person view. Sourced entirely from
- * the identity profile tree (`getPerson` recurses), so no metric queries and no
- * new endpoint: it's a live people index, not a scaffold.
+ * Employees directory — every canonical person visible to the viewer,
+ * searchable and linked to their Person view.
  */
 export function EmployeesView() {
   const { setZone } = usePortalNavActions();
-  const { personId: viewerPersonId } = useViewer();
-  const { data, isPending, isError, refetch } = useIcPerson(viewerPersonId ?? "");
+  const { isFlat } = useVisibilityPolicy();
+  const visibleRoster = useVisibleRoster(true);
   const [query, setQuery] = useState("");
 
   const employees = useMemo(
-    () => (data ? collectEmployees(data) : []),
-    [data],
+    () => rosterEmployees(visibleRoster.roster),
+    [visibleRoster.roster],
   );
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -90,11 +78,17 @@ export function EmployeesView() {
     );
   }, [employees, query]);
 
-  if (isPending) return <CenteredSpinner className="min-h-[60vh]" />;
-  if (isError || !data)
+  const loading = visibleRoster.isPending;
+  const failed = visibleRoster.isError;
+  if (loading) return <CenteredSpinner className="min-h-[60vh]" />;
+  if (failed)
     return (
       <div className="mx-auto w-full max-w-md p-8">
-        <ComingSoon variant="card" state="error" onRetry={refetch} />
+        <ComingSoon
+          variant="card"
+          state="error"
+          onRetry={visibleRoster.retry}
+        />
       </div>
     );
 
@@ -102,7 +96,9 @@ export function EmployeesView() {
     <div className="flex flex-col gap-3 p-4 md:p-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Employees</h1>
+          <h1 className="text-lg font-semibold tracking-tight">
+            {isFlat ? "Roster" : "Employees"}
+          </h1>
           <p className="text-sm text-muted-foreground">
             {filtered.length}
             {filtered.length !== employees.length ? ` of ${employees.length}` : ""}{" "}
@@ -126,9 +122,15 @@ export function EmployeesView() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Title</TableHead>
-              <TableHead>Department</TableHead>
-              <TableHead>Division</TableHead>
-              <TableHead>Manager</TableHead>
+              {/* A flat organisation fills none of these: no reporting line,
+                  and the roster carries no org attributes. */}
+              {isFlat ? null : (
+                <>
+                  <TableHead>Department</TableHead>
+                  <TableHead>Division</TableHead>
+                  <TableHead>Manager</TableHead>
+                </>
+              )}
               <TableHead>Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -150,15 +152,19 @@ export function EmployeesView() {
                 <TableCell className="text-muted-foreground">
                   {e.jobTitle || "—"}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {e.department || "—"}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {e.division || "—"}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {e.supervisorName || "—"}
-                </TableCell>
+                {isFlat ? null : (
+                  <>
+                    <TableCell className="text-muted-foreground">
+                      {e.department || "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {e.division || "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {e.supervisorName || "—"}
+                    </TableCell>
+                  </>
+                )}
                 <TableCell>
                   {e.status ? (
                     <Badge

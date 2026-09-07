@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 
 import { AttentionList } from "@/components/portal/attention-list";
+import { personDisplayName } from "@/lib/identities/person-display";
 import { orgScopeGate } from "@/components/portal/org-scope-gate";
 import { MembersGrid } from "@/components/widgets/dashboard/members-grid";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,6 +30,8 @@ import type { TeamMember } from "@/types/insight";
 import { useCohortLabel } from "@/lib/portal/use-cohort-label";
 import { useOrgScope } from "@/lib/portal/use-org-scope";
 import { useMemberGridData } from "@/queries/member-grid";
+import { TEXT_FIGURE } from "@/lib/type-scale";
+import { cn } from "@/lib/utils";
 
 const EMPTY_COLLECTION: MetricCollectionConfig = { metrics: [] };
 
@@ -49,17 +52,18 @@ export function TeamStateView() {
   const orgScope = useOrgScope();
   const { pivot, roster } = orgScope;
 
-  // The roster IS the member list: identity owns who is on the team and
-  // every metric for them comes from `/v1/metric-results`. There is no second
-  // source to reconcile — the legacy per-member batch this used to call was
-  // removed upstream with the rest of the old metric UI.
+  // INVARIANT: People evaluates the selected manager with the reports-only org scope.
   const members = useMemo<TeamMember[]>(
-    () =>
-      (roster ?? []).map((entry) => ({
+    () => [
+      ...(pivot
+        ? [{ person_id: pivot.person_id, name: personDisplayName(pivot) }]
+        : []),
+      ...(roster ?? []).map((entry) => ({
         person_id: entry.person_id,
-        name: entry.display_name,
+        name: personDisplayName(entry),
       })),
-    [roster],
+    ],
+    [pivot, roster],
   );
   const memberIds = useMemo(
     () => members.map((m) => normalizePersonId(m.person_id)),
@@ -195,7 +199,7 @@ export function TeamStateView() {
     memberCount: members.length,
     gridPending: grid.isPending,
     gridError: grid.isError,
-    emptyLabel: "No people in the current scope — pick a different scope in the topbar.",
+    emptyLabel: "No people in the current scope. Pick a different scope at the top of the page.",
     onRetry: () => {
       orgScope.refetch();
       grid.refetch();
@@ -208,11 +212,11 @@ export function TeamStateView() {
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-lg font-semibold tracking-tight">
           {teamName ? `${teamName}'s team` : "Team"}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {orgScope.count} people · state &amp; attention
+          {members.length} people · state &amp; attention
         </p>
       </div>
 
@@ -223,7 +227,7 @@ export function TeamStateView() {
             <Card key={s.key}>
               <CardContent className="p-4">
                 <div className="text-xs font-medium text-muted-foreground">{s.label}</div>
-                <div className="mt-1 text-2xl font-semibold tabular-nums">{s.text}</div>
+                <div className={cn("mt-1", TEXT_FIGURE)}>{s.text}</div>
                 <div className="text-xs text-muted-foreground">{s.kind}</div>
               </CardContent>
             </Card>
@@ -235,9 +239,6 @@ export function TeamStateView() {
       <AttentionList
         flags={flags}
         summary={attentionSummary(flags, flaggedPeople, members.length)}
-        peopleLabel={
-          flags.length > 0 ? `${flaggedPeople} of ${members.length} people` : undefined
-        }
       />
 
       {/* Detailed scan */}
@@ -256,7 +257,7 @@ export function TeamStateView() {
               metricKeys={shownKeys}
               byKey={heatByKey}
               previousByKey={grid.previousByKey}
-              caption={`${teamName || "Team"} — members × metrics`}
+              caption={`${teamName || "Team"} — people × metrics`}
               cohortLabel={cohortLabel}
             />
           </CardContent>

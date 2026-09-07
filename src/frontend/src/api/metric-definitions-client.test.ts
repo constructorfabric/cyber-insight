@@ -18,6 +18,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 
 const METRIC: MetricDefinition = {
   metric_key: "git.commits",
+  entity_type: "person",
   label: "Commits",
   short_label: null,
   description: "Commits authored in the period.",
@@ -27,6 +28,7 @@ const METRIC: MetricDefinition = {
   direction: "higher_is_better",
   dimensions: ["repo"],
   is_enabled: true,
+  origin: "builtin" as const,
   schema_status: "ok",
   schema_error_code: null,
   last_observed_date: "2026-07-20",

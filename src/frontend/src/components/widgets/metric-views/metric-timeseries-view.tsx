@@ -1,10 +1,17 @@
 import { useMemo, useState } from "react";
-import { Database, ListFilter, X } from "lucide-react";
+import {
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Database,
+  ListFilter,
+  X,
+} from "lucide-react";
 
 import { evidenceSelection } from "@/api/metric-drilldown-client";
 import type { DateRange } from "@/api/period-to-date-range";
 import {
   useMetricEvidenceOptional,
+  withOwnTarget,
   type EvidenceDialogTarget,
 } from "@/components/metric-evidence-context";
 import { Button } from "@/components/ui/button";
@@ -43,6 +50,11 @@ import {
   type MetricCollectionConfig,
   type MetricTimeseriesGroupLimitConfig,
 } from "@/lib/metrics/collection";
+import {
+  breakdownHeading,
+  dimensionDescription,
+  dimensionName,
+} from "@/lib/metrics/dimension-labels";
 import type { MetricTimeseriesTableConfig } from "@/lib/metrics/timeseries-table";
 import type { MetricTimeseriesChartConfig } from "@/lib/metrics/timeseries-chart";
 import { cn } from "@/lib/utils";
@@ -87,15 +99,6 @@ export interface MetricTimeseriesViewProps {
 }
 
 type Presentation = TimeseriesPresentation;
-
-function dimensionName(dimension: string): string {
-  const label = dimension.replaceAll("_", " ");
-  return label.charAt(0).toUpperCase() + label.slice(1);
-}
-
-function dimensionDescription(dimension: string): string {
-  return dimension.replaceAll("_", " ");
-}
 
 function DimensionControls({
   dimensions,
@@ -240,6 +243,10 @@ export function MetricTimeseriesView({
   const [selectedMetricKey, setSelectedMetricKey] = useState(
     metricKeys[0] ?? ""
   );
+  // Not persisted, unlike the presentation: a card remembered at full height
+  // would greet the next visit as a wall.
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
   const dimensionOptions = useMemo(
     () =>
       groupBy
@@ -332,6 +339,16 @@ export function MetricTimeseriesView({
   const selectedMetric =
     model.metrics.find((metric) => metric.metric_key === selectedMetricKey) ??
     model.metrics[0];
+  // Reset during render rather than in an effect, which the lint rule forbids.
+  // A chart reports no overflow, so both flags have to be cleared on the way
+  // out of the table.
+  const [overflowOf, setOverflowOf] = useState(presentation);
+  if (overflowOf !== presentation) {
+    setOverflowOf(presentation);
+    setOverflows(false);
+    setExpanded(false);
+  }
+
   const shouldCombineMetrics =
     presentation === "chart" &&
     shouldCombineTimeseriesMetrics(model, chart?.multiMetric ?? "selectable");
@@ -341,21 +358,29 @@ export function MetricTimeseriesView({
       : selectedMetric
         ? [selectedMetric]
         : [];
-  const evidenceTargets = evidenceMetrics.flatMap<EvidenceDialogTarget>(
-    (metric) => {
+  /**
+   * Every metric the dialog can offer, over one period. Switching metric in the
+   * dialog must not switch period with it, so the caller's period reaches all
+   * of them rather than only the one that was opened.
+   */
+  const evidenceTargetsOver = (
+    period: DateRange,
+    exactFilters: typeof filters
+  ): EvidenceDialogTarget[] =>
+    evidenceMetrics.flatMap<EvidenceDialogTarget>((metric) => {
       if (!metric.drilldown) return [];
       const selection = evidenceSelection(
         metric.selection,
         entityId,
-        range,
-        filters,
+        period,
+        exactFilters,
         metric.computation !== "ratio" && selectedGroupBy
           ? [selectedGroupBy]
           : []
       );
       return selection ? [{ selection, label: metric.label }] : [];
-    }
-  );
+    });
+  const evidenceTargets = evidenceTargetsOver(range, filters);
   const filterModels = dimensionOptions
     .filter((dimension) => dimension !== selectedGroupBy)
     .map((dimension) => {
@@ -415,20 +440,21 @@ export function MetricTimeseriesView({
 
   function openTimeseriesEvidence(
     metricKey: string,
-    columnKey: string,
+    columnKey: string | null,
     bucketStart: string | null
   ): void {
     const metric = model.metrics.find(
       (candidate) => candidate.metric_key === metricKey
     );
+    if (!metric?.drilldown) return;
     const column = model.columns.find(
       (candidate) => candidate.key === columnKey
     );
-    if (!metric?.drilldown || !column || column.remainder) return;
+    if (columnKey !== null && (!column || column.remainder)) return;
     const exactFilters = new Map(
       filters.map((filter) => [filter.dimension, filter])
     );
-    for (const dimension of column.dimensions ?? []) {
+    for (const dimension of column?.dimensions ?? []) {
       exactFilters.set(dimension.key, {
         dimension: dimension.key,
         values: [dimension.value],
@@ -449,16 +475,25 @@ export function MetricTimeseriesView({
           : range.to,
       };
     }
+    const narrowed = [...exactFilters.values()].sort((left, right) =>
+      left.dimension.localeCompare(right.dimension)
+    );
     const selection = evidenceSelection(
       metric.selection,
       entityId,
       period,
-      [...exactFilters.values()].sort((left, right) =>
-        left.dimension.localeCompare(right.dimension)
-      ),
+      narrowed,
       metric.computation !== "ratio" && selectedGroupBy ? [selectedGroupBy] : []
     );
-    if (selection) evidenceContext?.openEvidence(selection, metric.label);
+    if (selection) {
+      evidenceContext?.openEvidenceTargets(
+        withOwnTarget(evidenceTargetsOver(period, narrowed), {
+          selection,
+          label: metric.label,
+        }),
+        { activeMetricKey: selection.metric_key }
+      );
+    }
   }
 
   return (
@@ -468,11 +503,14 @@ export function MetricTimeseriesView({
         data.isFetching && "opacity-60"
       )}
     >
-      <div className="flex items-center justify-between gap-2 border-b p-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 border-b p-2">
+        {/* INVARIANT: a fixed basis, because a flex line breaks on content
+            size — with none, the untruncated title decides the width at which
+            the controls drop to their own line. */}
+        <div className="flex min-w-0 flex-[1_1_8rem] flex-wrap items-center gap-2">
           {selectedMetric ? (
             shouldCombineMetrics ? (
-              <h3 className="px-2 text-sm font-semibold">
+              <h3 className="min-w-0 truncate px-2 text-sm font-semibold">
                 {model.metrics.map((metric) => metric.label).join(" & ")}
               </h3>
             ) : model.metrics.length > 1 && presentation === "chart" ? (
@@ -485,7 +523,7 @@ export function MetricTimeseriesView({
                 <SelectTrigger
                   size="sm"
                   aria-label="Metric"
-                  className="border-transparent bg-transparent ps-2 pe-2 font-semibold shadow-none hover:bg-muted/50 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring/40 data-popup-open:bg-muted/50 dark:bg-transparent dark:hover:bg-muted/50"
+                  className="min-w-0 max-w-full border-transparent bg-transparent ps-2 pe-2 font-semibold shadow-none hover:bg-muted/50 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring/40 data-popup-open:bg-muted/50 dark:bg-transparent dark:hover:bg-muted/50 [&>span]:truncate"
                 >
                   <SelectValue>{selectedMetric.label}</SelectValue>
                 </SelectTrigger>
@@ -500,14 +538,27 @@ export function MetricTimeseriesView({
                   ))}
                 </SelectContent>
               </Select>
+            ) : presentation === "table" && model.dimensions.length > 0 ? (
+              // Named by its grouping, since the metrics are already on the
+              // columns. The count is load-bearing: such a table is usually
+              // wider than the screen, and the grand total below covers groups
+              // the reader cannot see.
+              <h3 className="flex min-w-0 items-baseline px-2 text-sm font-semibold">
+                <span className="truncate">
+                  {breakdownHeading([selectedGroupBy])}
+                </span>
+                <span className="shrink-0 ps-1.5 font-normal text-muted-foreground">
+                  · {model.columns.length}
+                </span>
+              </h3>
             ) : model.metrics.length === 1 ? (
-              <h3 className="px-2 text-sm font-semibold">
+              <h3 className="min-w-0 truncate px-2 text-sm font-semibold">
                 {selectedMetric.label}
               </h3>
             ) : null
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center justify-end gap-2">
+        <div className="ms-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {dimensionOptions.length > 1 || filterModels.length > 0 ? (
             <DimensionControls
               dimensions={dimensionOptions}
@@ -526,10 +577,11 @@ export function MetricTimeseriesView({
               aria-label="View supporting data"
               title="View supporting data"
               onClick={() =>
-                evidenceContext?.openEvidenceTargets(
-                  evidenceTargets,
-                  evidenceTargets.map((target) => target.label).join(" & ")
-                )
+                evidenceContext?.openEvidenceTargets(evidenceTargets, {
+                  title: evidenceTargets
+                    .map((target) => target.label)
+                    .join(" & "),
+                })
               }
             >
               <Database className="size-4" />
@@ -541,6 +593,24 @@ export function MetricTimeseriesView({
             range={range}
             disabled={empty || data.isFetching || data.isError}
           />
+          {/* `expanded` keeps it: once out, it no longer overflows. */}
+          {presentation === "table" && (overflows || expanded) ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              aria-label={expanded ? "Scroll the table" : "Show every row"}
+              title={expanded ? "Scroll the table" : "Show every row"}
+              aria-pressed={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? (
+                <ChevronsDownUp className="size-4" />
+              ) : (
+                <ChevronsUpDown className="size-4" />
+              )}
+            </Button>
+          ) : null}
           <TimeseriesPresentationToggle
             presentation={presentation}
             onChange={setPresentation}
@@ -548,7 +618,11 @@ export function MetricTimeseriesView({
         </div>
       </div>
       <CardContent
-        className="relative flex h-96 min-h-0 flex-col px-0"
+        className={cn(
+          "relative flex min-h-0 flex-col px-0",
+          // A chart has no height of its own to fall back on; a table does.
+          presentation === "chart" ? "h-96" : expanded ? undefined : "max-h-96"
+        )}
         aria-busy={data.isFetching}
       >
         {presentation === "chart" ? (
@@ -569,6 +643,7 @@ export function MetricTimeseriesView({
           selectedMetricKey={selectedMetric?.metric_key ?? ""}
           multiMetric={shouldCombineMetrics ? "combined" : "selectable"}
           table={table}
+          onVerticalOverflow={setOverflows}
           onEvidence={openTimeseriesEvidence}
         />
       </CardContent>

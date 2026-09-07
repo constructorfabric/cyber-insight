@@ -1,5 +1,12 @@
 replicaCount: 1
 
+global:
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    publicUrl: ""
+
 podAnnotations: {}
 
 image:
@@ -11,13 +18,47 @@ service:
   type: ClusterIP
   port: 8081
 
+sqlApi:
+  tokenSecret: insight-sql-api-creds
+  tokenKey: token
+
+mcp:
+  port: 8086
+  maxConcurrentQueries: 16
+  # Pre-create this Secret with the dedicated ClickHouse password.
+  credentialsSecret: insight-mcp-creds
+  clickhouseUser: insight_mcp
+  clickhousePasswordKey: clickhouse-password
+
 resources:
   requests:
     cpu: 100m
     memory: 128Mi
+    ephemeral-storage: 128Mi
   limits:
     cpu: 500m
     memory: 512Mi
+    ephemeral-storage: 512Mi
+
+metricCatalog:
+  tenantMetricsEnabled: false
+
+reports:
+  tempDir: /app/data/reports
+  storageSizeLimit: 256Mi
+
+externalSources: []
+
+# OpenTelemetry export. Off by default; the umbrella overrides these via
+# APP__opentelemetry__* env vars when `global.observability.otlp.endpoint` is set.
+opentelemetry:
+  metrics:
+    enabled: false
+  tracing:
+    enabled: false
+  exporter:
+    kind: otlp_grpc # otlp_grpc | otlp_http
+    endpoint: "" # e.g. http://alloy.insight-infra.svc.cluster.local:4317
 
 # Pre-provisioned Secret carrying the gears-rust host's leaf-config overrides
 # (injected via envFrom; they override the mounted config ConfigMap):
@@ -30,6 +71,14 @@ resources:
 # standalone installs the operator pre-creates an equivalent Secret and
 # sets `existingSecret` to its name.
 existingSecret: ""
+
+# Optional Secret read ONLY by the migrate hook Job, listed after
+# `existingSecret` so its keys win. The umbrella renders it as a pre-install
+# hook so migrations can run before the release's own Secrets exist. Empty
+# disables the extra ref.
+migrateEnvSecret: ""
+
+visibilityPolicy: "org_chart"
 
 # Gateway-JWT verification (cf-gears-oidc-authn-plugin, NGINX_BFF R1). These
 # render into the plugin's `jwt.trusted_issuers` / `expected_audience` in the

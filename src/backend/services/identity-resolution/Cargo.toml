@@ -1,7 +1,7 @@
 [package]
 name = "identity-resolution"
 version = "0.1.0"
-description = "Identity Resolution — read API (Rust port of the .NET identity service)"
+description = "Identity Resolution — read API"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -44,6 +44,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
 
 # MariaDB via SeaORM — connection pool + entities + raw resolve queries.
 sea-orm = { workspace = true }
@@ -52,15 +53,31 @@ sea-orm-migration = { workspace = true }
 uuid = { workspace = true }
 # Timestamps: `now` for the in-memory 202 body + the zombie-sweep cutoff.
 chrono = { workspace = true }
+# Opaque page cursors for the list endpoints (URL-safe, no padding).
+base64 = { workspace = true }
 
 # ClickHouse: read the raw `identity_inputs` stream (persons-seed input source).
 # `insight-clickhouse` wraps the client; the direct `clickhouse` dep is for the
 # `Row` derive on the query row struct.
 insight-clickhouse = { workspace = true }
+insight-http-metrics = { workspace = true }
+insight-migration = { workspace = true }
 clickhouse = { workspace = true }
+
+# Domain instruments (#2891). The seed/sync CLI jobs run outside the toolkit
+# server bootstrap, so they build and flush their own meter provider — hence the
+# sdk/otlp deps beyond the bare `opentelemetry` facade.
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 
 # HTTP surface: tenant SecurityContext, RFC-9457 canonical errors, OpenAPI schemas.
 toolkit-security = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 # utoipa pinned to match the `ToSchema` the toolkit OperationBuilder compiles against.
 utoipa = { version = "5.5", features = ["chrono", "uuid"] }
+
+[dev-dependencies]
+# `tower::ServiceExt::oneshot` for driving the Axum router in the HTTP
+# integration tests. Same dev-dep pattern as the analytics service.
+tower = { version = "0.5", features = ["util"] }

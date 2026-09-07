@@ -18,11 +18,28 @@ from __future__ import annotations
 import pytest
 from insight_stand import Manifest, PersonaSession, identity_path
 
-from ..schemas import ProblemDocument, Profile
+from ..schemas import BatchProfilesResponse, ProblemDocument, Profile
 
 PROFILES = identity_path("/v1/profiles")
+PROFILE_BATCH = identity_path("/v1/profiles/batch")
 
 
+@pytest.mark.reliability
+def test_batch_profiles_returns_the_visible_requested_person(
+    lead_session: PersonaSession, stand_manifest: Manifest
+) -> None:
+    person = stand_manifest.fixture("dev_lead")
+
+    response = lead_session.client.post(
+        PROFILE_BATCH, json_body={"person_ids": [person.uuid]}
+    )
+
+    assert response.status_code == 200, f"status={response.status_code} {response.text[:300]}"
+    profiles = response.parse(BatchProfilesResponse).profiles
+    assert [str(profile.person_id) for profile in profiles] == [person.uuid]
+
+
+@pytest.mark.reliability
 def test_resolve_by_email_200(lead_session: PersonaSession, stand_manifest: Manifest) -> None:
     """A seeded address resolves to the person the manifest names, in this tenant."""
     expected = stand_manifest.fixture("dev_lead")
@@ -40,6 +57,7 @@ def test_resolve_by_email_200(lead_session: PersonaSession, stand_manifest: Mani
     )
 
 
+@pytest.mark.reliability
 def test_resolve_by_email_404_unknown(lead_session: PersonaSession) -> None:
     response = lead_session.client.post(
         PROFILES, json_body={"value_type": "email", "value": "nobody@example.com"}
@@ -48,6 +66,7 @@ def test_resolve_by_email_404_unknown(lead_session: PersonaSession) -> None:
     assert response.parse(ProblemDocument).status == 404
 
 
+@pytest.mark.reliability
 def test_resolve_400_unknown_value_type(lead_session: PersonaSession) -> None:
     """`value_type` is a closed set, and an unknown one is rejected as an argument.
 
@@ -62,6 +81,7 @@ def test_resolve_400_unknown_value_type(lead_session: PersonaSession) -> None:
     assert response.parse(ProblemDocument).status == 400
 
 
+@pytest.mark.reliability
 def test_resolve_by_id_400_without_a_source(
     lead_session: PersonaSession, stand_manifest: Manifest
 ) -> None:
@@ -81,6 +101,7 @@ def test_resolve_by_id_400_without_a_source(
 
 
 @pytest.mark.requires_seed("dev_lead", "sales_ic")
+@pytest.mark.security
 def test_a_person_outside_the_callers_scope_is_404_not_403(
     lead_session: PersonaSession, stand_manifest: Manifest
 ) -> None:
@@ -115,6 +136,7 @@ def test_a_person_outside_the_callers_scope_is_404_not_403(
 
 
 @pytest.mark.requires_seed("dev_lead", "other_tenant_lead")
+@pytest.mark.security
 def test_an_email_in_another_tenant_is_404(
     lead_session: PersonaSession, stand_manifest: Manifest
 ) -> None:
@@ -138,6 +160,7 @@ def test_an_email_in_another_tenant_is_404(
 
 
 @pytest.mark.requires_seed("dev_lead")
+@pytest.mark.reliability
 def test_person_id_and_email_are_two_spellings_of_one_identity(
     lead_session: PersonaSession, stand_manifest: Manifest
 ) -> None:
@@ -167,6 +190,7 @@ def test_person_id_and_email_are_two_spellings_of_one_identity(
 
 
 @pytest.mark.requires_seed("dev_lead", "sales_ic")
+@pytest.mark.security
 def test_a_person_id_outside_the_callers_scope_is_404(
     lead_session: PersonaSession, stand_manifest: Manifest
 ) -> None:

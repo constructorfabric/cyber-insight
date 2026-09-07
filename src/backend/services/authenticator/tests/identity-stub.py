@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Minimal Identity stub for the authenticator e2e runner (dev/CI only).
 
-Answers the authenticator's TWO internal person-resolve lookups — kept as
-separate routes so login and admin `__override` can never be confused for one
-another (mirrors identity-resolution's real handlers):
+Answers the authenticator's internal identity lookups (mirrors
+identity-resolution's real handlers):
 
 - `GET /internal/persons/by-external-id?source_type=...&external_id=...`
   (login bootstrap)
 - `GET /internal/persons/by-email-override?email=...` (admin `__override`)
+- `GET /internal/persons/active-roles?person_id=...` (live authorization)
 
 Each answers with a deterministic `insight_source_id`, so the login loop and
 the `__override` view-as loop can resolve a person without standing up the
@@ -32,11 +32,27 @@ def person_id_for(*parts: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     BY_EXTERNAL_ID_PATH = "/internal/persons/by-external-id"
+    BY_ROSTER_EMAIL_PATH = "/internal/persons/by-roster-email"
     BY_EMAIL_OVERRIDE_PATH = "/internal/persons/by-email-override"
+    ACTIVE_ROLES_PATH = "/internal/persons/active-roles"
 
     def do_GET(self):  # noqa: N802
         split = urlsplit(self.path)
         query = parse_qs(split.query)
+
+        if split.path == self.ACTIVE_ROLES_PATH:
+            person_id = (query.get("person_id") or [""])[0]
+            if not person_id:
+                self.send_response(400)
+                self.end_headers()
+                return
+            body = json.dumps({"roles": ["user", "admin"]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if split.path == self.BY_EXTERNAL_ID_PATH:
             source_type = (query.get("source_type") or [""])[0]
@@ -53,6 +69,22 @@ class Handler(BaseHTTPRequestHandler):
             # non-email external id still gets a deterministic path-specific id.
             key = ("email", external_id) if "@" in external_id else ("id", source_type, external_id)
             value_type, value = "id", external_id
+        elif split.path == self.BY_ROSTER_EMAIL_PATH:
+            # The login bootstrap of an install running `idp.resolve_by: email`.
+            # Keyed on the address like the override path, so a rig that logs in
+            # through either resolves the same person — the real service does
+            # too, from the same `value_type='email'` observations. What it does
+            # NOT model is the confinement (tenant, roster source, live account):
+            # those are the database's answer and belong to identity's own live
+            # tests, not to a stub whose job is to keep the authenticator's e2e
+            # honest about which route it called.
+            email = (query.get("email") or [""])[0]
+            if not email:
+                self.send_response(400)
+                self.end_headers()
+                return
+            key = ("email", email)
+            value_type, value = "email", email
         elif split.path == self.BY_EMAIL_OVERRIDE_PATH:
             email = (query.get("email") or [""])[0]
             if not email:

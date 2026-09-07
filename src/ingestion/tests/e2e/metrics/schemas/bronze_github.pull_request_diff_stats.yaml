@@ -1,0 +1,29 @@
+schemas:
+  bronze_github.pull_request_diff_stats:
+    $schema: http://json-schema.org/draft-07/schema#
+    type: object
+    additionalProperties: false
+    properties:
+      _airbyte_raw_id: {type: string}
+      _airbyte_extracted_at: {type: string, format: date-time}
+      _airbyte_meta: {type: string}
+      _airbyte_generation_id: {type: integer}
+      tenant_id: {type: string}
+      source_id: {type: string}
+      unique_key: {type: string}
+      repo_full_name: {type: string}
+      pull_number: {type: integer}
+      additions: {type: integer}
+      deletions: {type: integer}
+      changed_files: {type: integer}
+      updated_at: {type: string}
+      author_email: {type: [string, "null"]}
+      data_source: {type: [string, "null"]}
+      collected_at: {type: [string, "null"]}
+      author_login: {type: [string, "null"]}
+      author_id: {type: [integer, "null"]}
+      merged_by_login: {type: [string, "null"]}
+      merged_by_id: {type: [integer, "null"]}
+      review_decision: {type: [string, "null"]}
+      total_comments_count: {type: [integer, "null"]}
+      is_cross_repository: {type: [boolean, "null"]}

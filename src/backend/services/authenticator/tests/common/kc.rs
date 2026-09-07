@@ -1,5 +1,6 @@
 //! Keycloak-side helpers for the e2e rig: drive the realm's login form and
-//! the admin API — the seams fakeidp's `/_control/*` hooks used to provide.
+//! the admin API — the seams the suites use to provoke IdP-side events
+//! (logout, revocation, outage) that no client-side call can trigger.
 //!
 //! `run-e2e.sh` provides the coordinates: `E2E_KC_BASE` (the container's
 //! published origin), `E2E_KC_REALM`, `E2E_KC_CONTAINER` (for the docker
@@ -197,8 +198,8 @@ async fn user_representation(
 
 /// Log the user out at the IdP (every session). With the client's
 /// back-channel logout URL registered, Keycloak fires a signed
-/// `logout_token` per session at the authenticator — the real-IdP
-/// equivalent of fakeidp's `/_control/backchannel/{email}` hook.
+/// `logout_token` per session at the authenticator — the IdP-initiated
+/// event the back-channel suite needs to provoke.
 pub async fn logout_user(email: &str) {
     let http = http();
     let token = admin_token(&http).await;
@@ -222,9 +223,8 @@ pub async fn logout_user(email: &str) {
 }
 
 /// Enable or disable the user at the IdP. A disabled user's next refresh
-/// gets a definitive `invalid_grant` — the real-IdP equivalent of
-/// fakeidp's `/_control/revoke/{user}` hook, without the back-channel
-/// side-channel an admin logout would also fire.
+/// gets a definitive `invalid_grant` — a revocation verdict without the
+/// back-channel side-channel an admin logout would also fire.
 pub async fn set_user_enabled(email: &str, enabled: bool) {
     let http = http();
     let token = admin_token(&http).await;
@@ -247,7 +247,7 @@ pub async fn set_user_enabled(email: &str, enabled: bool) {
 
 /// Freeze the IdP container until the returned guard drops: requests hang
 /// until the client's own timeout and fail as transport errors — a transient
-/// outage, the real-IdP equivalent of fakeidp's `/_control/outage` hook.
+/// IdP outage, indistinguishable from a network partition.
 /// The guard thaws on drop, panic included, so a failed assertion mid-outage
 /// cannot leave the shared container paused for whoever runs next.
 pub fn idp_outage() -> IdpOutage {

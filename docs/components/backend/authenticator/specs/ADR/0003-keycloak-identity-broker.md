@@ -9,6 +9,10 @@ date: 2026-08-04
 
 **Status history**:
 
+- 2026-08-07: NOTE -- fakeidp retirement COMPLETED (issue #2198): the fakeidp crate, subchart
+  and compose service are deleted; the functional-CI environment and the gateway e2e rigs run
+  the in-stack Keycloak with the seed-generated roster realm (imported via keycloak-config-cli /
+  `--import-realm`). Compose and the authenticator e2e were already Keycloak-only.
 - 2026-08-06: AMENDED -- claim-value-to-tenant translation (the advanced claim-to-group mapper
   sketched in the Decision Outcome) is REJECTED: the tenant is always the fixed per-registration
   pin from environment values, an IdP's own tenancy assertions are never consulted, and a
@@ -123,6 +127,20 @@ for multi-customer (cloud) installations (see realm selection below).
   `email`, one string `tenant_id`, `idp_sub` -- and deliberately does NOT aggregate attributes
   over groups, so a group-sourced tenant is mechanically impossible; a CI guard asserts the
   contract on every committed realm file and against a live import.
+- **Where the upstream has no connector of its own, logins resolve by address instead**
+  (amended 2026-08-26, #2860). `idp_sub` is worth carrying only when something seeds Insight with
+  the upstream's account ids -- a directory connector for that same provider. An install that
+  brokers an IdP no connector observes holds zero `value_type='id'` rows for it, so the
+  external-id resolve matches nobody and every sign-in is refused, roster or no roster. Such an
+  install sets `authenticator.oidc.resolveBy: email`: the login resolves by the token's standard
+  `email` claim, matched only against the addresses the roster states
+  (`identityResolution.rosterSourceType`). A declared mode, never a fallback -- a token carrying
+  no address is refused rather than quietly resolved another way -- and the confinement to the
+  roster is what stops an address some chat or issue tracker once observed from admitting anyone.
+  The broker needs no extra mapper: `email` is already in the client's allow-list above,
+  and the `idp_sub` mapper above simply goes unread on such a realm. The mode is one
+  setting for the whole authenticator, not per host: an install that brokers one upstream
+  a connector observes and another it does not cannot serve both from one deployment.
 - **Topology: one realm per customer**, holding that customer's brokered IdPs and one
   confidential client. The single-`tenant_id` rule holds because each provider registration (or
   upstream tenancy claim) maps to exactly one Insight tenant. Realm-per-tenant remains available
@@ -283,7 +301,8 @@ findings notes and the reproducible realm YAML live on the Phase 0 issue, #2194)
 - Migration order: provision broker realms as code first; move social providers and new customer
   IdPs behind the broker immediately; re-point each environment's `issuerUrl` from its directly
   wired IdP to the broker realm as it is onboarded -- per environment, no flag day; retire
-  fakeidp last, once compose and CI default to the Keycloak realm.
+  fakeidp last, once compose and CI default to the Keycloak realm. **Done 2026-08-07 (#2198)**:
+  fakeidp is deleted; compose, CI and the e2e rigs all run the Keycloak roster realm.
 
 ## Traceability
 

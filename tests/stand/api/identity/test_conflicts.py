@@ -25,6 +25,7 @@ import pytest
 from insight_stand import ApiClient, Manifest, PersonaSession, identity_path
 
 from ..schemas import PersonRole, PersonRoleList, ProblemDocument, Role, RoleList
+from .views import in_force
 
 #: identity's own role, in `person_roles` — NOT `insight_stand.ADMIN_ROLE`,
 #: which is the KEYCLOAK REALM role (`insight-admin`). They are different
@@ -34,11 +35,9 @@ from ..schemas import PersonRole, PersonRoleList, ProblemDocument, Role, RoleLis
 #: and deleted the row this file had just made.
 IDENTITY_ADMIN_ROLE = "admin"
 
-#: The Rust service answers 409; its retired .NET predecessor answered 422 for
-#: the two "still in use" cases. Both are accepted so the assertion is about
-#: the REFUSAL rather than about which service is deployed — a 204 is what
-#: must never happen.
-REFUSED = frozenset({409, 422})
+#: The service answers 409 for the two "still in use" cases — the gears
+#: canonical-error model has no 422. What must never happen is a 204.
+REFUSED = frozenset({409})
 
 
 def _roles(client: ApiClient) -> RoleList:
@@ -64,11 +63,12 @@ def _active_admin_assignments(client: ApiClient) -> list[PersonRole]:
     return [
         item
         for item in response.parse(PersonRoleList).items
-        if str(item.role_id) == role_id and item.in_force
+        if str(item.role_id) == role_id and in_force(item)
     ]
 
 
 @pytest.mark.requires_seed("admin_operator")
+@pytest.mark.reliability
 def test_a_role_name_already_in_the_catalogue_is_409(
     admin_operator_session: PersonaSession,
 ) -> None:
@@ -98,6 +98,7 @@ def test_a_role_name_already_in_the_catalogue_is_409(
 
 
 @pytest.mark.requires_seed("admin_operator")
+@pytest.mark.reliability
 def test_deleting_a_role_somebody_still_holds_is_refused(
     admin_operator_session: PersonaSession,
 ) -> None:
@@ -119,6 +120,7 @@ def test_deleting_a_role_somebody_still_holds_is_refused(
 
 
 @pytest.mark.requires_seed("admin_operator")
+@pytest.mark.security
 def test_revoking_the_last_active_admin_is_refused(
     admin_operator_session: PersonaSession, stand_manifest: Manifest
 ) -> None:

@@ -1,16 +1,70 @@
 import { http, HttpResponse } from "msw";
 
+import { FEEDBACK_MESSAGE_MAX } from "@/api/feedback-client";
+import type { MetricDrilldownRequest } from "@/api/metric-drilldown-client";
 import type { MetricResultsRequest } from "@/api/metric-results-client";
-import type {
-  CustomMetric,
-  CustomMetricGraph,
-} from "@/api/metrics-client";
+import type { CustomMetric, CustomMetricGraph } from "@/api/metrics-client";
 import { isPersonId } from "@/lib/metrics/entity";
 
+import { buildMetricDefinitions } from "./metric-definitions-factory";
+import {
+  buildMetricDrilldownCsv,
+  buildMetricDrilldownResponse,
+} from "./metric-drilldown-factory";
 import { buildMetricResultsResponse } from "./metric-results-factory";
+import { buildIngestionIntensity } from "./ingestion-factory";
 import { buildIdentityTree, PEOPLE, PEOPLE_BY_EMAIL } from "./registry";
 
 const defaultPerson = PEOPLE[0];
+
+function peopleItem(person: (typeof PEOPLE)[number]) {
+  const [firstName, ...lastName] = person.name.split(" ");
+  return {
+    person_id: person.person_id,
+    display_name: person.name,
+    first_name: firstName ?? null,
+    last_name: lastName.join(" ") || null,
+    username: null,
+    email: person.email,
+    attributes: {
+      department: person.department,
+      division: person.department,
+      job_title: person.role,
+      status: "Active",
+    },
+    manager_person_id: person.supervisor_person_id,
+  };
+}
+
+/**
+ * A mock page holds far fewer rows than a real one. The synthetic roster is
+ * smaller than the console's page size, so honouring `?limit=` would put every
+ * row on page one and leave "show more" unreachable in mock mode — the affordance
+ * would have no dev or Storybook path at all.
+ */
+const MOCK_PAGE_SIZE = 8;
+
+/**
+ * One page of a listing, cursor and all — the mock pages the way the service
+ * does so the console's "show more" is exercised in mock mode too. The cursor
+ * carries the query it was issued for, and a mismatched one restarts, which is
+ * the behaviour the real cursor enforces by refusing.
+ */
+function pageOf<T>(items: T[], params: URLSearchParams, query: string) {
+  const limit = Math.min(Number(params.get("limit") ?? 20), MOCK_PAGE_SIZE);
+  const cursor = params.get("cursor");
+  const decoded = cursor ? JSON.parse(atob(cursor)) : null;
+  const offset = decoded?.q === query ? Number(decoded.at) : 0;
+
+  const slice = items.slice(offset, offset + limit);
+  const next = offset + slice.length;
+  const more = next < items.length;
+
+  return {
+    items: slice,
+    next_cursor: more ? btoa(JSON.stringify({ q: query, at: next })) : null,
+  };
+}
 
 // Stable synthetic session for mock/Storybook runs. The old in-code
 // MOCKS_ENABLED viewer path is gone; an authenticated viewer now comes from
@@ -32,82 +86,6 @@ function mockSessionTiming(): { expires_at: number; refresh_at: number } {
   const now = Math.floor(Date.now() / 1000);
   return { expires_at: now + 600, refresh_at: now + 510 };
 }
-
-export const handlers = [
-  http.get("/auth/me", () =>
-    HttpResponse.json({ ...MOCK_SESSION, ...mockSessionTiming() }),
-  ),
-  http.post("/auth/refresh", () => HttpResponse.json(mockSessionTiming())),
-  http.post("/auth/logout", () => HttpResponse.json({ rp_logout_url: null })),
-  http.post("/api/analytics/v1/metric-results", async ({ request }) => {
-    const body = (await request
-      .json()
-      .catch(() => null)) as MetricResultsRequest | null;
-    if (
-      !body ||
-      !Array.isArray(body.entity?.ids) ||
-      !Array.isArray(body.metrics)
-    ) {
-      return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
-    }
-    // Mirror the real endpoint since the identity cutover: entity ids are
-    // person UUIDs and an email is a 400. Without this the mock would happily
-    // answer a stale email fixture and hide the very regression it exists to
-    // catch.
-    if (!body.entity.ids.every((id) => typeof id === "string" && isPersonId(id))) {
-      return HttpResponse.json(
-        { error: "invalid_argument", field: "entity.ids" },
-        { status: 400 },
-      );
-    }
-    return HttpResponse.json(buildMetricResultsResponse(body));
-  }),
-  http.post(
-    "/api/identity/v1/profiles",
-    async ({ request }) => {
-      const body = (await request.json().catch(() => null)) as
-        | { value_type?: string; value?: string }
-        | null;
-      const value = (body?.value ?? "").trim();
-      // The service resolves `person_id` (the SPA's key) and `email` (legacy
-      // URL migration only); anything else is a client error.
-      if (body?.value_type !== "email" && body?.value_type !== "person_id") {
-        return HttpResponse.json(
-          { type: "urn:insight:error:invalid_argument" },
-          { status: 400 },
-        );
-      }
-      // A malformed person_id is a 400, not a 404 — matching the service, where
-      // "does not parse" and "resolves to nobody" are different answers.
-      if (body.value_type === "person_id" && !isPersonId(value)) {
-        return HttpResponse.json(
-          { type: "urn:insight:error:invalid_argument" },
-          { status: 400 },
-        );
-      }
-      const personId =
-        body.value_type === "email"
-          ? PEOPLE_BY_EMAIL[value.toLowerCase()]?.person_id
-          : value.toLowerCase();
-      if (!personId) {
-        return HttpResponse.json(
-          { type: "urn:insight:error:person_not_found" },
-          { status: 404 },
-        );
-      }
-      const tree = buildIdentityTree(personId);
-      if (!tree) {
-        return HttpResponse.json(
-          { type: "urn:insight:error:person_not_found" },
-          { status: 404 },
-        );
-      }
-      return HttpResponse.json(tree);
-    },
-  ),
-  ...savedQueryHandlers(),
-  ...customMetricHandlers(),
-];
 
 // ── Saved queries (`/v1/queries`) ────────────────────────────
 // A tiny in-memory store so the console's CRUD + run round-trip in mock,
@@ -150,7 +128,7 @@ function savedQueryHandlers() {
           name: q.name,
           description: q.description,
         })),
-      }),
+      })
     ),
     http.post(QUERIES_BASE, async ({ request }) => {
       const body = (await request.json().catch(() => null)) as {
@@ -159,7 +137,10 @@ function savedQueryHandlers() {
         sql?: string;
       } | null;
       if (!body?.name || !body?.sql) {
-        return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
       }
       const now = new Date().toISOString();
       const created: MockSavedQuery = {
@@ -279,7 +260,9 @@ function stripOrigin(metric: CustomMetric): CustomMetricGraph {
 /** A graph is well-formed enough to persist: identity, source, SQL, at least
  *  one measure, and the input wiring its computation requires. Mirrors the
  *  backend's create/update validation so FE tests exercise real behavior. */
-function isValidGraph(graph: CustomMetricGraph | null): graph is CustomMetricGraph {
+function isValidGraph(
+  graph: CustomMetricGraph | null
+): graph is CustomMetricGraph {
   if (
     !graph?.metric_key ||
     !graph.label ||
@@ -319,14 +302,17 @@ function customMetricHandlers() {
     http.get(METRICS_BASE, () =>
       HttpResponse.json({
         items: [...customMetricStore.values()].map(toSummary),
-      }),
+      })
     ),
     http.post(METRICS_BASE, async ({ request }) => {
       const body = (await request
         .json()
         .catch(() => null)) as CustomMetricGraph | null;
       if (!isValidGraph(body)) {
-        return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
       }
       // A duplicate key is a conflict, not an overwrite — leave the store
       // untouched and mirror the backend's 409.
@@ -334,7 +320,10 @@ function customMetricHandlers() {
         return HttpResponse.json({ error: "already_exists" }, { status: 409 });
       }
       if (sourceKeyTakenByOther(body.source_key, body.metric_key)) {
-        return HttpResponse.json({ error: "source_key_conflict" }, { status: 409 });
+        return HttpResponse.json(
+          { error: "source_key_conflict" },
+          { status: 409 }
+        );
       }
       const created: CustomMetric = { ...body, origin: "custom" };
       customMetricStore.set(created.metric_key, created);
@@ -345,7 +334,7 @@ function customMetricHandlers() {
     http.get(`${METRICS_BASE}/export`, () =>
       HttpResponse.json({
         metrics: [...customMetricStore.values()].map(stripOrigin),
-      }),
+      })
     ),
     http.post(`${METRICS_BASE}/import`, async ({ request }) => {
       const body = (await request.json().catch(() => null)) as {
@@ -355,7 +344,10 @@ function customMetricHandlers() {
       // nothing if any member is malformed. Only after the batch is known good
       // do we apply it, skipping keys that already exist.
       if (!Array.isArray(body?.metrics) || !body.metrics.every(isValidGraph)) {
-        return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
       }
       const skipped: string[] = [];
       let imported = 0;
@@ -386,12 +378,18 @@ function customMetricHandlers() {
       const candidate = body ? { ...body, metric_key: key } : null;
       // Reject an incomplete/invalid graph instead of persisting it.
       if (!isValidGraph(candidate)) {
-        return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
       }
       // A source_key already claimed by a different metric is a 409, matching
       // the backend's new collision check.
       if (sourceKeyTakenByOther(candidate.source_key, key)) {
-        return HttpResponse.json({ error: "source_key_conflict" }, { status: 409 });
+        return HttpResponse.json(
+          { error: "source_key_conflict" },
+          { status: 409 }
+        );
       }
       const updated: CustomMetric = { ...candidate, origin: "custom" };
       customMetricStore.set(key, updated);
@@ -400,6 +398,1048 @@ function customMetricHandlers() {
     http.delete(`${METRICS_BASE}/:metricKey`, ({ params }) => {
       customMetricStore.delete(String(params.metricKey));
       return new HttpResponse(null, { status: 204 });
+    }),
+  ];
+}
+
+// Assembled last: the sections above declare module-level stores/consts the
+// handler factories close over, and the factories are CALLED right here —
+// an earlier array literal hits the temporal dead zone (seen live as
+// `Cannot access 'QUERIES_BASE' before initialization`).
+/** Whoever the person mode has open holds the two accounts it lists for them. */
+const HELD_BY = "2517cd48-4961-52b3-a401-b0e5a03858a4";
+
+/**
+ * AI assist (`/v1/ai/*`) — on in mock so the sparkle, the settings screen and
+ * an answer all have a dev and Storybook path. Synthetic data only; no request
+ * leaves the browser.
+ */
+const AI_BASE = "/api/analytics/v1/ai";
+
+let mockCredential = { configured: true, hint: "wxyz" };
+let mockContextSeq = 0;
+let mockSystemPrompt: string | null = null;
+
+const DEFAULT_SYSTEM_PROMPT = [
+  "You explain one workplace metric to the person it describes.",
+  "",
+  "Say what the number is, how it moved, and how it sits against the team median. Offer the most likely reading, and name what would confirm or rule it out. Describe the system, never judge the person. If the data is too thin to support a reading, say so and stop.",
+  "",
+  "Four sentences at most. No headings, no bullet lists.",
+].join("\n");
+
+const mockContext = new Map<
+  string,
+  {
+    id: string;
+    scope: "tenant" | "person";
+    title: string;
+    body: string;
+    updated_at: string;
+  }
+>([
+  [
+    "ctx-org-1",
+    {
+      id: "ctx-org-1",
+      scope: "tenant",
+      title: "How Example Corp reads these metrics",
+      body: "Numbers describe systems, not people. Never rank a person against a peer; explain what a movement could mean and what would confirm it.",
+      updated_at: "2026-08-12T09:00:00Z",
+    },
+  ],
+  [
+    "ctx-me-1",
+    {
+      id: "ctx-me-1",
+      scope: "person",
+      title: "How my week is shaped",
+      body: "Tuesdays and Thursdays are meeting-heavy by design, so focus time dips there and it is not a problem to flag.",
+      updated_at: "2026-08-14T09:00:00Z",
+    },
+  ],
+]);
+
+export const handlers = [
+  http.get("/auth/me", () =>
+    HttpResponse.json({ ...MOCK_SESSION, ...mockSessionTiming() })
+  ),
+  http.post("/auth/refresh", () => HttpResponse.json(mockSessionTiming())),
+  http.post("/auth/logout", () => HttpResponse.json({ rp_logout_url: null })),
+  http.post("/api/analytics/v1/metric-results", async ({ request }) => {
+    const body = (await request
+      .json()
+      .catch(() => null)) as MetricResultsRequest | null;
+    if (!body || !body.entity || !Array.isArray(body.metrics)) {
+      return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+    }
+
+    const entityType: unknown = (body.entity as { type?: unknown }).type;
+    if (entityType !== "person" && entityType !== "tenant") {
+      return HttpResponse.json(
+        { error: "invalid_argument", field: "entity.type" },
+        { status: 400 }
+      );
+    }
+
+    // Mirror the real endpoint since the identity cutover: entity ids are
+    // person UUIDs and an email is a 400. Without this the mock would happily
+    // answer a stale email fixture and hide the very regression it exists to
+    // catch.
+    if (
+      body.entity.type === "person" &&
+      (!Array.isArray(body.entity.ids) ||
+        !body.entity.ids.every(
+          (id) => typeof id === "string" && isPersonId(id)
+        ))
+    ) {
+      return HttpResponse.json(
+        { error: "invalid_argument", field: "entity.ids" },
+        { status: 400 }
+      );
+    }
+    if (
+      body.entity.type === "tenant" &&
+      body.metrics.some((metric) =>
+        metric.views.some((view) => view.view === "peer")
+      )
+    ) {
+      return HttpResponse.json(
+        { error: "invalid_argument", field: "metrics.views" },
+        { status: 400 }
+      );
+    }
+    return HttpResponse.json(buildMetricResultsResponse(body));
+  }),
+  // The records behind a figure. Order and narrowing are the server's since
+  // #2470, so the factory does both — a mock that answered every request with
+  // the same page would hide the whole change.
+  http.post("/api/analytics/v1/metric-drilldown", async ({ request }) => {
+    const body = (await request
+      .json()
+      .catch(() => null)) as MetricDrilldownRequest | null;
+    if (!body?.metric_key || !body.entity || !body.period) {
+      return HttpResponse.json({ error: "invalid_argument" }, { status: 400 });
+    }
+    return HttpResponse.json(buildMetricDrilldownResponse(body));
+  }),
+  http.post(
+    "/api/analytics/v1/metric-drilldown/export",
+    async ({ request }) => {
+      const body = (await request
+        .json()
+        .catch(() => null)) as MetricDrilldownRequest | null;
+      if (!body?.metric_key || !body.entity || !body.period) {
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
+      }
+      return new HttpResponse(buildMetricDrilldownCsv(body), {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${body.metric_key}.csv"`,
+        },
+      });
+    }
+  ),
+  // The demo viewer is an identity admin, so mock mode exercises the admin
+  // surfaces (Manage → Identities). The role id is the backend's seeded
+  // `roles_repo::ADMIN_ROLE_ID` migration constant.
+  http.get("/api/identity/v1/me", () =>
+    HttpResponse.json({
+      person_id:
+        defaultPerson?.person_id ?? "00000000-0000-0000-0000-0000000000bb",
+      insight_tenant_id: "00000000-0000-4000-8000-00000000c0de",
+      roles: [
+        {
+          role_id: "a4d11000-0000-4000-8000-000000000001",
+          name: "admin",
+        },
+      ],
+      // Mock mode demos the reporting-line product; the flat roster below is
+      // served anyway, so switching this to "flat" exercises that shell.
+      visibility_policy: "org_chart",
+    })
+  ),
+  // Minimal, honest empty catalog: without this handler the request falls
+  // through to the network, and in a proxy-configured dev run the resulting
+  // 401 bounces the whole mock session to the real IdP.
+  http.get("/api/analytics/v1/metric-definitions", () =>
+    HttpResponse.json({ metrics: buildMetricDefinitions() })
+  ),
+  // One account's binding + decision trail. dev-42 carries a small history so
+  // the panel has something to show; any other account answers 200 with no
+  // binding and no history — the real endpoint has no 404: an account nobody
+  // ever observed or decided reads as an empty journal, and THAT is what a
+  // stale shared link lands on. Timestamps are zone-less UTC on the wire — a
+  // `Z` here would train the panel on a shape the service never sends.
+  http.get(
+    "/api/identity/v1/resolution/accounts/:source/:sourceId/:accountId",
+    ({ params }) => {
+      // The roster mint: bound, by the batch, with nothing but its own
+      // creation on the trail — the state an operator is asked to confirm.
+      if (params.accountId === "874") {
+        const minted = {
+          person_id: "01900000-0000-7000-8000-0000000000d0",
+          display_name: "Ravi Menon",
+          job_title: "Facilities Lead",
+        };
+        return HttpResponse.json({
+          source: params.source,
+          source_id: params.sourceId,
+          account_id: params.accountId,
+          person_id: minted.person_id,
+          history: [
+            {
+              person_id: minted.person_id,
+              // No `provisional` here: the server builds trail cards from the
+              // journal alone and never marks them, so claiming it would have
+              // the console verified against a shape it will not receive.
+              person: minted,
+              author_person_id: "00000000-0000-0000-0000-000000000000",
+              by_operator: false,
+              reason: "roster-mint",
+              recorded_at: "2026-08-14T06:30:00.000000",
+            },
+          ],
+          operations: [],
+        });
+      }
+      // The two accounts the person listing above claims for whoever is open:
+      // reporting them as unbound here would have the console demonstrate a
+      // state the service cannot produce — an account in a person's own list
+      // that the binding read says nobody holds.
+      if (params.accountId === "gh-main" || params.accountId === "gl-alt") {
+        return HttpResponse.json({
+          source: params.source,
+          source_id: params.sourceId,
+          account_id: params.accountId,
+          person_id: HELD_BY,
+          history: [
+            {
+              person_id: HELD_BY,
+              author_person_id: "00000000-0000-0000-0000-000000000000",
+              by_operator: params.accountId === "gl-alt",
+              reason: "seed",
+              recorded_at: "2026-08-14T06:30:00.000000",
+            },
+          ],
+          operations: [],
+        });
+      }
+      if (params.accountId !== "dev-42") {
+        return HttpResponse.json({
+          source: params.source,
+          source_id: params.sourceId,
+          account_id: params.accountId,
+          person_id: null,
+          history: [],
+        });
+      }
+      const [bob, carol] = PEOPLE;
+      return HttpResponse.json({
+        source: params.source,
+        source_id: params.sourceId,
+        account_id: params.accountId,
+        person_id: bob?.person_id,
+        history: [
+          {
+            person_id: bob?.person_id,
+            person: bob
+              ? {
+                  person_id: bob.person_id,
+                  email: bob.email,
+                  display_name: bob.name,
+                  job_title: bob.role,
+                }
+              : null,
+            author_person_id: carol?.person_id,
+            author: carol
+              ? {
+                  person_id: carol.person_id,
+                  email: carol.email,
+                  display_name: carol.name,
+                  job_title: carol.role,
+                }
+              : null,
+            by_operator: true,
+            reason: "operator-bind",
+            recorded_at: "2026-08-01T10:15:00.000000",
+          },
+          {
+            person_id: carol?.person_id,
+            author_person_id: "00000000-0000-0000-0000-000000000000",
+            by_operator: false,
+            // The resolver's own rows carry an EMPTY reason, never null —
+            // mirroring the real column, which a nullish fallback misses.
+            reason: "",
+            recorded_at: "2026-07-15T08:00:00.000000",
+          },
+          {
+            person_id: carol?.person_id,
+            author_person_id: "00000000-0000-0000-0000-000000000000",
+            by_operator: false,
+            reason: "login-bootstrap",
+            recorded_at: "2026-07-01T06:30:00.000000",
+          },
+        ],
+        // The call behind the operator's row above: who ran it, how far it
+        // reached, and the one thing no other record holds — why.
+        operations: [
+          {
+            operation_id: "01900000-0000-7000-8000-0000000000f1",
+            verb: "operator-bind",
+            author_person_id: carol?.person_id,
+            author: carol
+              ? {
+                  person_id: carol.person_id,
+                  email: carol.email,
+                  display_name: carol.name,
+                  job_title: carol.role,
+                }
+              : null,
+            comment:
+              "Checked with HR — same person, the chat handle is theirs.",
+            accounts_touched: 3,
+            outcome: "applied",
+            recorded_at: "2026-08-01T10:15:00.000000",
+          },
+        ],
+      });
+    }
+  ),
+  // The person listing: a blank query is the whole roster, terms narrow it,
+  // and both are paged the way the service pages them.
+  http.get("/api/identity/v1/persons", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const q = params.get("q")?.trim() ?? "";
+    const terms = q ? q.toLowerCase().split(/\s+/) : [];
+    // A term that parses as an id names a person, mirroring the service: it is
+    // the only way to reach someone the journal holds no values for.
+    const items = PEOPLE.filter((p) =>
+      terms.every((term) =>
+        isPersonId(term)
+          ? p.person_id.toLowerCase() === term
+          : [p.name, p.email, p.role].some((v) =>
+              v.toLowerCase().includes(term)
+            )
+      )
+    )
+      .map((p) => ({
+        person_id: p.person_id,
+        email: p.email,
+        username: null,
+        display_name: p.name,
+        job_title: p.role,
+        status: "active",
+      }))
+      .sort((left, right) =>
+        (left.display_name ?? "").localeCompare(right.display_name ?? "")
+      );
+    return HttpResponse.json(pageOf(items, params, q));
+  }),
+  // Who the caller may see. Mock mode has one tenant and one roster, so this
+  // answers the same people the operator listing does — the difference on a real
+  // stand is the visible-set filter, which a mock cannot have an opinion about.
+  http.get("/api/identity/v1/visible-persons", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const q = params.get("q")?.trim().toLowerCase() ?? "";
+    const items = PEOPLE.filter(
+      (p) =>
+        !q || [p.name, p.email, p.role].some((v) => v.toLowerCase().includes(q))
+    )
+      .map((p) => ({
+        person_id: p.person_id,
+        email: p.email,
+        username: null,
+        display_name: p.name,
+        job_title: p.role,
+        status: "active",
+      }))
+      .sort((left, right) =>
+        (left.display_name ?? "").localeCompare(right.display_name ?? "")
+      );
+    return HttpResponse.json(pageOf(items, params, q));
+  }),
+  http.get("/api/identity/v1/people", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const q = params.get("q")?.trim().toLowerCase() ?? "";
+    const terms = q ? q.split(/\s+/) : [];
+    const items = PEOPLE.filter((person) =>
+      terms.every((term) =>
+        [person.name, person.email, person.role, person.department].some(
+          (value) => value.toLowerCase().includes(term)
+        )
+      )
+    )
+      .map(peopleItem)
+      .sort((left, right) =>
+        left.display_name.localeCompare(right.display_name)
+      );
+    return HttpResponse.json(pageOf(items, params, q));
+  }),
+  http.get("/api/identity/v1/people/:personId", ({ params }) => {
+    const personId = String(params.personId).toLowerCase();
+    const person = PEOPLE.find(
+      (candidate) => candidate.person_id.toLowerCase() === personId
+    );
+    return person
+      ? HttpResponse.json(peopleItem(person))
+      : HttpResponse.json(
+          { type: "urn:insight:error:person_not_found" },
+          { status: 404 }
+        );
+  }),
+  // The account listing: the same roster seen as accounts; blank lists them all.
+  http.get("/api/identity/v1/resolution/accounts", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const q = params.get("q")?.trim() ?? "";
+    const needle = q.toLowerCase();
+    const items = PEOPLE.filter(
+      (p) =>
+        !needle ||
+        [p.name, p.email].some((v) => v.toLowerCase().includes(needle))
+    ).map((p, index) => ({
+      source: index % 2 === 0 ? "github" : "gitlab",
+      source_id: "01900000-0000-7000-8000-00000000aa01",
+      account_id: `acct-${index + 1}`,
+      email: p.email,
+      username: null,
+      display_name: p.name,
+      person: {
+        person_id: p.person_id,
+        email: p.email,
+        display_name: p.name,
+        job_title: p.role,
+      },
+      bound_by_operator: index % 3 === 0,
+    }));
+    // The service orders by the label each row shows; the mock mirrors it so a
+    // mock run does not demonstrate an order the real listing never produces.
+    items.sort((left, right) =>
+      (left.email ?? left.account_id).localeCompare(
+        right.email ?? right.account_id
+      )
+    );
+    return HttpResponse.json(pageOf(items, params, q));
+  }),
+  // A merge preview's substance: two synthetic accounts for anyone.
+  http.get(
+    "/api/identity/v1/resolution/persons/:personId/accounts",
+    ({ params }) =>
+      HttpResponse.json({
+        person_id: params.personId,
+        accounts: [
+          {
+            source: "github",
+            source_id: "01900000-0000-7000-8000-00000000aa01",
+            account_id: "gh-main",
+            email: "main@example.com",
+            username: "gh-main",
+            bound_by_operator: false,
+          },
+          {
+            source: "gitlab",
+            source_id: "01900000-0000-7000-8000-00000000aa02",
+            account_id: "gl-alt",
+            email: null,
+            username: "gl-alt",
+            bound_by_operator: true,
+          },
+        ],
+      })
+  ),
+  // The four correction verbs: happy-path outcomes, no state kept — the queue
+  // mock is static, so the demo shows the flow rather than a simulation.
+  ...["bind", "merge", "detach", "exclude"].map((verb) =>
+    http.post(`/api/identity/v1/resolution/${verb}`, () =>
+      HttpResponse.json({
+        applied: 1,
+        already_decided: 0,
+        items: [
+          {
+            source: "github",
+            source_id: "01900000-0000-7000-8000-00000000aa01",
+            account_id: "dev-42",
+            outcome: "applied",
+          },
+        ],
+        ...(verb === "detach"
+          ? { new_person_id: "01900000-0000-7000-8000-00000000dead" }
+          : {}),
+      })
+    )
+  ),
+  // The review queue, exercising all three kinds. Candidates reuse the seeded
+  // roster so names/emails stay consistent with every other mock surface.
+  http.get("/api/identity/v1/resolution/attention", () => {
+    const [bob, carol, alice] = PEOPLE;
+    const card = (p: (typeof PEOPLE)[number], extra?: object) => ({
+      person_id: p.person_id,
+      email: p.email,
+      username: null,
+      display_name: p.name,
+      job_title: p.role ?? null,
+      status: "active",
+      ...extra,
+    });
+    return HttpResponse.json({
+      items: [
+        {
+          kind: "contested",
+          source: "github",
+          source_id: "01900000-0000-7000-8000-00000000aa01",
+          account_id: "dev-42",
+          email: "dev42@example.com",
+          username: "dev42",
+          // Contested means unbound: nobody holds it, which is why two people
+          // can claim it.
+          bound_to: null,
+          candidates: [card(bob), card(carol)],
+        },
+        {
+          kind: "binding_conflict",
+          source: "gitlab",
+          source_id: "01900000-0000-7000-8000-00000000aa02",
+          account_id: "a.kim",
+          email: alice?.email ?? "alice.kim@example.com",
+          username: null,
+          bound_to: alice?.person_id,
+          candidates: [card(alice)],
+        },
+        {
+          kind: "no_evidence",
+          source: "github",
+          source_id: "01900000-0000-7000-8000-00000000aa01",
+          account_id: "ci-bot-7",
+          email: null,
+          username: "ci-bot-7",
+          candidates: [],
+        },
+        {
+          // Minted during a sign-in so its owner could get in: bound, and
+          // still nobody's decision. It may duplicate a person the roster
+          // already knows, which only an operator can settle.
+          kind: "provisioned_at_login",
+          source: "github",
+          source_id: "01900000-0000-7000-8000-00000000aa01",
+          account_id: "new-joiner",
+          email: null,
+          username: "new-joiner",
+          bound_to: carol?.person_id,
+          candidates: [card(carol, { provisional: true })],
+        },
+        {
+          // Added because the roster lists the account, not because anything
+          // matched: no address, so the person may already be on the roster
+          // under a different account. Bound, and still nobody's decision.
+          kind: "minted_from_roster",
+          source: "hr",
+          source_id: "01900000-0000-7000-8000-00000000aa03",
+          account_id: "874",
+          email: null,
+          username: null,
+          display_name: "Ravi Menon",
+          job_title: "Facilities Lead",
+          department: "Operations",
+          status: "Active",
+          manager_email: "carol.chen@example.com",
+          bound_to: "01900000-0000-7000-8000-0000000000d0",
+          candidates: [
+            {
+              person_id: "01900000-0000-7000-8000-0000000000d0",
+              email: null,
+              username: null,
+              display_name: "Ravi Menon",
+              job_title: "Facilities Lead",
+              status: "active",
+              // Minted for this very account, so nothing else is known about
+              // them and they may be someone the roster already lists.
+              provisional: true,
+            },
+          ],
+        },
+        {
+          // Neither address nor handle — nothing automation can match on. The
+          // source still describes the human, which is what the fold reads for
+          // the operator and what makes this row bindable by hand.
+          kind: "no_evidence",
+          source: "hr",
+          source_id: "01900000-0000-7000-8000-00000000aa03",
+          account_id: "921",
+          email: null,
+          username: null,
+          display_name: "Nadia Orlov",
+          job_title: "Office Manager",
+          department: "Operations",
+          status: "Inactive",
+          manager_email: "carol.chen@example.com",
+          candidates: [],
+        },
+      ],
+      rates: {
+        observed: 60,
+        bound: 55,
+        pending: 3,
+        no_source_id: 0,
+        no_evidence: 2,
+        excluded: 1,
+      },
+      truncated: false,
+      items_truncated: false,
+    });
+  }),
+  http.post("/api/identity/v1/profiles", async ({ request }) => {
+    const body = (await request.json().catch(() => null)) as {
+      value_type?: string;
+      value?: string;
+    } | null;
+    const value = (body?.value ?? "").trim();
+    // The service resolves `person_id` (the SPA's key) and `email` (legacy
+    // URL migration only); anything else is a client error.
+    if (body?.value_type !== "email" && body?.value_type !== "person_id") {
+      return HttpResponse.json(
+        { type: "urn:insight:error:invalid_argument" },
+        { status: 400 }
+      );
+    }
+    // A malformed person_id is a 400, not a 404 — matching the service, where
+    // "does not parse" and "resolves to nobody" are different answers.
+    if (body.value_type === "person_id" && !isPersonId(value)) {
+      return HttpResponse.json(
+        { type: "urn:insight:error:invalid_argument" },
+        { status: 400 }
+      );
+    }
+    const personId =
+      body.value_type === "email"
+        ? PEOPLE_BY_EMAIL[value.toLowerCase()]?.person_id
+        : value.toLowerCase();
+    if (!personId) {
+      return HttpResponse.json(
+        { type: "urn:insight:error:person_not_found" },
+        { status: 404 }
+      );
+    }
+    const tree = buildIdentityTree(personId);
+    if (!tree) {
+      return HttpResponse.json(
+        { type: "urn:insight:error:person_not_found" },
+        { status: 404 }
+      );
+    }
+    return HttpResponse.json(tree);
+  }),
+  ...savedQueryHandlers(),
+  ...customMetricHandlers(),
+  ...connectorHealthHandlers(),
+  ...usageHandlers(),
+  ...ingestionHandlers(),
+  ...feedbackHandlers(),
+  ...aiAssistHandlers(),
+];
+
+// ── Ingestion intensity (`/v1/ingestion/intensity`) ────────────
+// The admin ops lens has no mock path otherwise: its data comes from a
+// merge() over every bronze database, which no seeded stand carries (compose
+// seeds silver/gold directly and runs no connector). Without this the surface
+// can only be seen against a warehouse that has actually ingested something.
+//
+// The grain/series sets are closed server-side, so they are refused here too —
+// a 200 for a value the service would reject would hide a client-side bug.
+const INGESTION_GRAINS = new Set(["15m", "1s"]);
+const INGESTION_SERIES = new Set(["connector", "stream", "total"]);
+const BRONZE_SLUG = /^bronze_[a-z0-9_]{1,120}$/;
+
+function ingestionHandlers() {
+  return [
+    http.get("/api/analytics/v1/ingestion/intensity", ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const grain = params.get("grain") ?? "15m";
+      const series = params.get("series");
+      const scope = params.get("scope");
+
+      const bad =
+        !INGESTION_GRAINS.has(grain) ||
+        (series !== null && !INGESTION_SERIES.has(series)) ||
+        (scope !== null && scope !== "" && !BRONZE_SLUG.test(scope));
+      if (bad) {
+        return HttpResponse.json(
+          {
+            status: 400,
+            title: "Bad Request",
+            detail: "unsupported ingestion parameter",
+          },
+          { status: 400 }
+        );
+      }
+
+      return HttpResponse.json(
+        buildIngestionIntensity({
+          grain: grain as "15m" | "1s",
+          series: (series ?? undefined) as never,
+          scope,
+          from: params.get("from"),
+          to: params.get("to"),
+        })
+      );
+    }),
+  ];
+}
+
+// ── Product feedback (`/v1/feedback`) ──────────────────────────
+// An in-memory store, so the dialog's send and the usage surface's listing
+// round-trip in mock, Storybook, and `VITE_ENABLE_MOCKS=true` dev runs.
+
+interface MockFeedback {
+  feedback_id: string;
+  ts: string;
+  person_id: string;
+  display_name: string;
+  username: string;
+  message: string;
+  path: string;
+}
+
+/** Mirrors the service's own cap. */
+const MOCK_FEEDBACK_LIMIT = 200;
+
+function mockSender(person: (typeof PEOPLE)[number] | undefined) {
+  return {
+    person_id: person?.person_id ?? "",
+    display_name: person?.name ?? "",
+    username: person?.email.split("@")[0] ?? "",
+  };
+}
+
+const feedbackStore: MockFeedback[] = [
+  {
+    feedback_id: "22222222-2222-2222-2222-222222222222",
+    ts: "2026-08-20 09:14:00",
+    ...mockSender(PEOPLE[1]),
+    message: "The cohort control does not say what it compares against.",
+    path: "/portal/overview",
+  },
+  {
+    feedback_id: "33333333-3333-3333-3333-333333333333",
+    ts: "2026-08-19 16:02:00",
+    ...mockSender(PEOPLE[2]),
+    message: "Let me export the people table to a spreadsheet.",
+    path: "/portal/people",
+  },
+];
+
+function feedbackHandlers() {
+  return [
+    http.post("/api/analytics/v1/feedback", async ({ request }) => {
+      const body = (await request.json().catch(() => null)) as {
+        message?: string;
+        path?: string;
+      } | null;
+      const message = body?.message?.trim();
+      if (!message || [...message].length > FEEDBACK_MESSAGE_MAX) {
+        return HttpResponse.json(
+          { error: "invalid_argument" },
+          { status: 400 }
+        );
+      }
+      feedbackStore.unshift({
+        feedback_id: `mock-${feedbackStore.length + 1}`,
+        ts: new Date().toISOString().replace("T", " ").slice(0, 19),
+        ...mockSender(defaultPerson),
+        message,
+        path: body?.path ?? "",
+      });
+      return new HttpResponse(null, { status: 204 });
+    }),
+    http.get("/api/analytics/v1/feedback", ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const since = params.get("since") ?? "";
+      const until = params.get("until") ?? "";
+      // Answering the window the caller asked for, as the service does: a mock
+      // that ignores it hides every date-range regression from mock runs.
+      const items = feedbackStore
+        .filter((row) => {
+          const day = row.ts.slice(0, 10);
+          return (!since || day >= since) && (!until || day <= until);
+        })
+        .slice(0, MOCK_FEEDBACK_LIMIT);
+
+      return HttpResponse.json({ since, until, items });
+    }),
+  ];
+}
+
+// ── Platform usage (`/v1/usage/*`) ─────────────────────────────
+
+function syntheticDays(count: number) {
+  const days = [];
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const day = new Date();
+    day.setUTCDate(day.getUTCDate() - i);
+    days.push({
+      day: day.toISOString().slice(0, 10),
+      visits: 2 + ((i * 7) % 9),
+      visitors: 1 + ((i * 3) % 5),
+    });
+  }
+  return days;
+}
+
+/**
+ * Connector health in mock mode.
+ *
+ * Deliberately not all-green: one failing connector, one queued, one never
+ * synced and one no longer configured, so the demo shows what the page is for
+ * rather than a wall of successes. `records_reported: 0` on the failed sync and
+ * a missing count on the queued one keep the absence-versus-zero distinction
+ * visible in the mock too.
+ */
+function connectorHealthHandlers() {
+  // The fixtures are anchored once, so a sync keeps the moment it started
+  // across requests. Only the answer's own clock is read per request — below,
+  // in the handler — because a fixed `as_of` would freeze the elapsed time the
+  // page derives from it and the running row would never advance while polling.
+  const anchor = new Date();
+  const minutesAgo = (minutes: number) =>
+    new Date(anchor.getTime() - minutes * 60_000).toISOString();
+
+  const sync = (
+    job_id: string,
+    status: string,
+    startedMinutesAgo: number | null,
+    duration_ms: number | null,
+    records_reported: number | null
+  ) => ({
+    job_id,
+    status,
+    started_at:
+      startedMinutesAgo === null ? null : minutesAgo(startedMinutesAgo),
+    duration_ms,
+    records_reported,
+  });
+
+  // One history per connector, newest first, so each connector's expansion
+  // agrees with the row above it. A demo whose drill-down contradicts its own
+  // summary teaches the reader to distrust both.
+  const histories: Record<string, ReturnType<typeof sync>[]> = {
+    "example-tracker": [
+      sync("8414", "failed", 18, 142_000, 0),
+      sync("8409", "succeeded", 78, 138_500, 12_400),
+    ],
+    "example-directory": [sync("8415", "pending", null, null, null)],
+    "example-messaging": [
+      sync("8402", "succeeded", 24, 41_000, 903),
+      sync("8388", "succeeded", 84, 39_100, 874),
+    ],
+    // A sync still in flight carries no duration — the mover reports one only
+    // for a job it has finished — so the row states how long it has been going
+    // instead.
+    "example-inbox": [
+      sync("8420", "running", 37, null, null),
+      sync("8391", "succeeded", 97, 61_000, 2_140),
+    ],
+    "example-warehouse": [],
+    "example-retired": [sync("7801", "succeeded", 60 * 26, 90_000, 55)],
+  };
+
+  const summaryRow = (connector: string, configured: boolean) => ({
+    connector,
+    configured,
+    last_sync: histories[connector]?.[0] ?? null,
+  });
+
+  return [
+    http.get("/api/analytics/v1/connector-health", () => {
+      const now = new Date();
+      return HttpResponse.json({
+        as_of: now.toISOString(),
+        checked_at: new Date(now.getTime() - 6 * 60_000).toISOString(),
+        typical_read_interval_ms: 15 * 60_000,
+        history_available: true,
+        connectors: [
+          summaryRow("example-tracker", true),
+          summaryRow("example-directory", true),
+          summaryRow("example-messaging", true),
+          summaryRow("example-inbox", true),
+          summaryRow("example-warehouse", true),
+          summaryRow("example-retired", false),
+        ],
+      });
+    }),
+    http.get("/api/analytics/v1/connector-health/:connector/syncs", ({ params }) => {
+      const connector = String(params.connector);
+      return HttpResponse.json({
+        connector,
+        window: 50,
+        syncs: histories[connector] ?? [],
+      });
+    }),
+  ];
+}
+
+function usageHandlers() {
+  return [
+    http.get("/api/analytics/v1/usage/config", () =>
+      HttpResponse.json({ enabled: true })
+    ),
+    http.post(
+      "/api/analytics/v1/usage/events",
+      () => new HttpResponse(null, { status: 204 })
+    ),
+    http.get("/api/analytics/v1/usage/summary", () => {
+      const by_day = syntheticDays(30);
+      return HttpResponse.json({
+        since: by_day[0]?.day ?? "",
+        until: by_day.at(-1)?.day ?? "",
+        totals: {
+          visits: by_day.reduce((sum, d) => sum + d.visits, 0),
+          visitors: 4,
+          page_views: 214,
+        },
+        by_day,
+        by_person: [
+          {
+            person_id: defaultPerson?.person_id ?? "",
+            display_name: defaultPerson?.name ?? "",
+            username: defaultPerson?.email.split("@")[0] ?? "",
+            visits: 31,
+            page_views: 96,
+            last_seen: `${by_day.at(-1)?.day ?? ""} 09:12`,
+          },
+          {
+            person_id: PEOPLE[1]?.person_id ?? "",
+            display_name: PEOPLE[1]?.name ?? "",
+            username: PEOPLE[1]?.email.split("@")[0] ?? "",
+            visits: 18,
+            page_views: 64,
+            last_seen: `${by_day.at(-1)?.day ?? ""} 08:40`,
+          },
+          {
+            person_id: PEOPLE[2]?.person_id ?? "",
+            display_name: PEOPLE[2]?.name ?? "",
+            username: PEOPLE[2]?.email.split("@")[0] ?? "",
+            visits: 7,
+            page_views: 54,
+            last_seen: `${by_day.at(-2)?.day ?? ""} 17:05`,
+          },
+        ],
+        by_event: [
+          {
+            event_name: "drill",
+            target: "pr_cycle_time",
+            opens: 34,
+            people: 3,
+          },
+          { event_name: "drill", target: "review_load", opens: 21, people: 3 },
+          { event_name: "drill", target: "ai_share", opens: 12, people: 2 },
+          { event_name: "session_start", target: "", opens: 57, people: 4 },
+        ],
+        by_page: [
+          { path: "/portal/overview", views: 88, visitors: 4 },
+          { path: "/portal/people", views: 61, visitors: 3 },
+          { path: "/portal/manage/metric-catalog", views: 42, visitors: 2 },
+          { path: "/portal/manage/platform-usage", views: 23, visitors: 1 },
+        ],
+      });
+    }),
+  ];
+}
+
+function aiAssistHandlers() {
+  return [
+    http.get(`${AI_BASE}/config`, () =>
+      HttpResponse.json({ enabled: true, model: "claude-sonnet-5" })
+    ),
+    http.get(`${AI_BASE}/credentials`, () => HttpResponse.json(mockCredential)),
+    http.put(`${AI_BASE}/credentials`, async ({ request }) => {
+      const body = (await request.json()) as { token?: string };
+      const token = body.token ?? "";
+      mockCredential = { configured: true, hint: token.slice(-4) };
+      return HttpResponse.json(mockCredential);
+    }),
+    http.delete(`${AI_BASE}/credentials`, () => {
+      mockCredential = { configured: false, hint: "" };
+      return new HttpResponse(null, { status: 204 });
+    }),
+    http.get(`${AI_BASE}/settings`, () =>
+      HttpResponse.json({
+        system_prompt: mockSystemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+        is_default: mockSystemPrompt === null,
+      })
+    ),
+    http.put(`${AI_BASE}/settings`, async ({ request }) => {
+      const body = (await request.json()) as { system_prompt?: string };
+      mockSystemPrompt = body.system_prompt ?? "";
+      return HttpResponse.json({
+        system_prompt: mockSystemPrompt,
+        is_default: false,
+      });
+    }),
+    http.delete(`${AI_BASE}/settings`, () => {
+      mockSystemPrompt = null;
+      return new HttpResponse(null, { status: 204 });
+    }),
+    http.get(`${AI_BASE}/context`, () =>
+      HttpResponse.json({ items: [...mockContext.values()] })
+    ),
+    http.post(`${AI_BASE}/context`, async ({ request }) => {
+      const body = (await request.json()) as {
+        scope: "tenant" | "person";
+        title: string;
+        body: string;
+      };
+      mockContextSeq += 1;
+      const entry = {
+        id: `ctx-${mockContextSeq}`,
+        scope: body.scope,
+        title: body.title,
+        body: body.body,
+        updated_at: new Date().toISOString(),
+      };
+      mockContext.set(entry.id, entry);
+      return HttpResponse.json(entry, { status: 201 });
+    }),
+    http.patch(`${AI_BASE}/context/:id`, async ({ params, request }) => {
+      const id = String(params.id);
+      const existing = mockContext.get(id);
+      if (!existing) return new HttpResponse(null, { status: 404 });
+      const body = (await request.json()) as { title?: string; body?: string };
+      const updated = {
+        ...existing,
+        ...(body.title === undefined ? {} : { title: body.title }),
+        ...(body.body === undefined ? {} : { body: body.body }),
+        updated_at: new Date().toISOString(),
+      };
+      mockContext.set(id, updated);
+      return HttpResponse.json(updated);
+    }),
+    http.delete(`${AI_BASE}/context/:id`, ({ params }) => {
+      mockContext.delete(String(params.id));
+      return new HttpResponse(null, { status: 204 });
+    }),
+    http.post(`${AI_BASE}/explain`, async ({ request }) => {
+      const snapshot = (await request.json()) as {
+        label?: string;
+        value?: string;
+        peer?: string;
+      };
+      return HttpResponse.json({
+        text: [
+          `${snapshot.label ?? "This metric"} reads ${snapshot.value ?? "—"} for the period, and the line under it has been flat for three buckets rather than moving in one go.`,
+          `${snapshot.peer ?? "There is no cohort comparison"} — treat that as a direction, not a target, since the cohort is small.`,
+          "Your own context says meeting-heavy days are deliberate, so part of this shape was chosen rather than drifted into.",
+          "Worth checking before concluding anything: the window holds fewer working days than a full month.",
+        ].join("\n\n"),
+        model: "claude-sonnet-5",
+        tenant_context_entries: [...mockContext.values()].filter(
+          (e) => e.scope === "tenant"
+        ).length,
+        person_context_entries: [...mockContext.values()].filter(
+          (e) => e.scope === "person"
+        ).length,
+      });
     }),
   ];
 }

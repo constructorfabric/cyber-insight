@@ -12,9 +12,13 @@ import { sessionAuthorizationScope } from "@/auth/session-scope";
 import { useAuth } from "@/auth/use-auth";
 import {
   EvidenceDialogContext,
+  type EvidenceDialogOptions,
   type EvidenceDialogState,
+  type EvidenceDialogTarget,
+  type EvidencePeopleView,
 } from "@/components/metric-evidence-context";
 import { MetricEvidenceDialog } from "@/components/metric-evidence-dialog";
+import { recordUsageEvent } from "@/telemetry";
 
 type ScopedEvidenceDialogState = EvidenceDialogState & {
   sessionScope: string | null;
@@ -40,8 +44,8 @@ export function MetricEvidenceDialogProvider({
   }, [queryClient, sessionScope]);
   const openEvidenceTargets = useCallback(
     (
-      targets: readonly EvidenceDialogState["targets"][number][],
-      title?: EvidenceDialogState["title"]
+      targets: readonly EvidenceDialogTarget[],
+      options?: EvidenceDialogOptions
     ) => {
       const uniqueTargets = [
         ...new Map(
@@ -50,10 +54,18 @@ export function MetricEvidenceDialogProvider({
       ];
       const first = uniqueTargets[0];
       if (!first) return;
+      const requested = options?.activeMetricKey;
+      const active = uniqueTargets.some(
+        (target) => target.selection.metric_key === requested
+      )
+        ? requested!
+        : first.selection.metric_key;
+      recordUsageEvent("drill", active);
       setState({
+        kind: "records",
         targets: [first, ...uniqueTargets.slice(1)],
-        activeMetricKey: first.selection.metric_key,
-        title,
+        activeMetricKey: active,
+        title: options?.title,
         sessionScope,
       });
     },
@@ -61,23 +73,33 @@ export function MetricEvidenceDialogProvider({
   );
   const openEvidence = useCallback(
     (
-      selection: EvidenceDialogState["targets"][number]["selection"],
+      selection: EvidenceDialogTarget["selection"],
       label: string
     ) => openEvidenceTargets([{ selection, label }]),
     [openEvidenceTargets]
   );
+  const openEvidencePeople = useCallback(
+    (view: EvidencePeopleView) => {
+      if (!view.rows.length) return;
+      // Same usage event as a records drill: it counts a reader going one step
+      // down from a figure, and under the same metric key, so the series stays
+      // comparable whether or not the metric can be drilled to records.
+      recordUsageEvent("drill", view.metricKey);
+      setState({ kind: "people", view, sessionScope });
+    },
+    [sessionScope]
+  );
   const selectEvidenceMetric = useCallback((metricKey: string) => {
     setState((current) =>
-      current?.targets.some(
-        (target) => target.selection.metric_key === metricKey
-      )
+      current?.kind === "records" &&
+      current.targets.some((target) => target.selection.metric_key === metricKey)
         ? { ...current, activeMetricKey: metricKey }
         : current
     );
   }, []);
   const value = useMemo(
-    () => ({ openEvidence, openEvidenceTargets }),
-    [openEvidence, openEvidenceTargets]
+    () => ({ openEvidence, openEvidenceTargets, openEvidencePeople }),
+    [openEvidence, openEvidenceTargets, openEvidencePeople]
   );
   const visibleState = state?.sessionScope === sessionScope ? state : null;
   return (

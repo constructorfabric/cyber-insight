@@ -93,6 +93,12 @@ credentials:
 global:
   imagePullSecrets: [] # pull-secrets for a private registry
   storageClass: "" # empty = default StorageClass of the cluster
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    # Public origin of this Insight instance, for example https://insight.example.com.
+    publicUrl: ""
   security:
     # bitnami charts check that the image belongs to their "secure images"
     # list. We use bitnamilegacy (see mariadb.image / redis.image) so we
@@ -104,36 +110,41 @@ global:
   # analytics metric-catalog fallback + identity-resolution's bootstrap-admin
   # seed. Empty (default) = no default anywhere; a missing tenant fails closed.
   tenantDefaultId: ""
-# ═══════════════════════════════════════════════════════════════════════════
-#  OBSERVABILITY — logs & traces EMISSION (the product contract)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Insight ALWAYS emits structured JSON to stdout — that is the product
-# contract and is not toggleable. WHETHER it ALSO exports OTLP, and WHERE,
-# is driven entirely by `otlp.endpoint`:
-#
-#   endpoint: ""   — stdout only. No OTEL_* vars are published; whoever
-#                    runs the cluster collects stdout (the host's own node
-#                    agent, or the Loki/Alloy/Grafana stack installed via
-#                    the deploy pipeline's system layer). SAFE DEFAULT for
-#                    a drop into an unknown existing cluster.
-#   endpoint: set  — services additionally export OTLP there: the
-#                    in-cluster Alloy for a self-hosted stack
-#                    (http://alloy.insight-infra.svc.cluster.local:4317),
-#                    or the customer's own collector.
-#
-# The umbrella NEVER installs the collector stack — like Airbyte and Argo
-# it is separate releases, driven by the deploy pipeline (inventory
-# toggles; see deploy/gitops/system/README.md). This block only governs what
-# services EMIT. The values are published into the `{release}-platform`
-# ConfigMap as INSIGHT_LOG_LEVEL / OTEL_* env vars, so every pod that does
-# `envFrom` picks them up uniformly — no per-service wiring.
-observability:
-  logs:
-    level: info # debug|info|warn|error — default level for all services
-  otlp:
-    endpoint: "" # empty = stdout only; set = services export OTLP here
-    protocol: grpc # grpc | http/protobuf
+  # ═════════════════════════════════════════════════════════════════════════
+  #  OBSERVABILITY — logs & traces EMISSION (the product contract)
+  # ═════════════════════════════════════════════════════════════════════════
+  #
+  # Insight ALWAYS emits structured JSON to stdout — that is the product
+  # contract and is not toggleable. WHETHER it ALSO exports OTLP, and WHERE,
+  # is driven entirely by `otlp.endpoint`:
+  #
+  #   endpoint: ""   — stdout only. No OTEL_* vars are published; whoever
+  #                    runs the cluster collects stdout (the host's own node
+  #                    agent, or the Loki/Alloy/Grafana stack installed via
+  #                    the deploy pipeline's system layer). SAFE DEFAULT for
+  #                    a drop into an unknown existing cluster.
+  #   endpoint: set  — services additionally export OTLP there: the
+  #                    in-cluster Alloy for a self-hosted stack
+  #                    (http://alloy.insight-infra.svc.cluster.local:4317),
+  #                    or the customer's own collector. Gears services then
+  #                    export OTel metrics and traces too.
+  #
+  # The umbrella NEVER installs the collector stack — like Airbyte and Argo
+  # it is separate releases, driven by the deploy pipeline (inventory
+  # toggles; see deploy/gitops/system/README.md). This block only governs what
+  # services EMIT. The values are published into the `{release}-platform`
+  # ConfigMap as INSIGHT_LOG_LEVEL / INSIGHT_LOG_FORMAT / OTEL_* env vars (plus the gears-rust
+  # dialect, APP__opentelemetry__*), so every pod that does `envFrom` picks
+  # them up uniformly. Lives under `global` so the service subcharts can hash
+  # it into a pod-template annotation and roll on change (a top-level
+  # `observability:` block is still honoured, but cannot roll pods).
+  observability:
+    logs:
+      level: info # debug|info|warn|error — default level for all services
+      format: json # json|text — console line shape for the gears services
+    otlp:
+      endpoint: "" # empty = stdout only; set = services export OTLP here
+      protocol: grpc # grpc | http/protobuf
 # ═══════════════════════════════════════════════════════════════════════════
 #  EXTERNAL — Airbyte (installed as a separate Helm release)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -191,7 +202,14 @@ ingestion:
   # `serviceaccount "argo-workflow" not found`.
   templates:
     enabled: true
-  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.08.06.12.26-aef33a6" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
+  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.09.07.03.09-91b9da8" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
+  # The sample-data seeder's image, for TEST stands only. Nothing in the chart
+  # runs it: `src/ingestion/tools/seed/seed-stand.sh` reads this value to render
+  # a one-shot Job. Its own image rather than the toolbox on purpose — the
+  # toolbox runs migrations on real stands and does not carry demo data. Empty
+  # (the default) means the stand cannot be seeded until an operator names an
+  # image, either here or with the script's `--image` flag.
+  seedImage: "ghcr.io/constructorfabric/insight-seed:2026.09.07.03.09-91b9da8" # e.g. "ghcr.io/constructorfabric/insight-seed:2026.04.28.10.34-b08b460"
   # airbyte-sync poll-job tunables — see templates/ingestion/airbyte-sync.yaml.
   # The poll loop replaces a wall-clock deadline with a progress watchdog:
   # it tracks (status, bytesEmitted, recordsEmitted, stateMessagesEmitted)
@@ -201,6 +219,21 @@ ingestion:
   airbyteSync:
     pollIntervalSeconds: 30
     idleThresholdSeconds: 1800 # 30 min without any byte/record/state movement → fail
+  # jira-enrich (templates/ingestion/tt-enrich-jira-run.yaml). Phase 1 of the
+  # binary holds the whole reference set in memory — field metadata, every
+  # issue snapshot, and the last known value of each field it must diff
+  # against — before the first row is written, so its peak scales with the
+  # size of the Jira corpus rather than with the run's backlog. An instance
+  # whose journal has outgrown the default OOM-kills in that phase, having
+  # written nothing; raise the limit here rather than editing the template.
+  jiraEnrich:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "8Gi"
   # Data-quality checks: a CronWorkflow runs the dbt check catalog (the
   # `data_quality` selector — tests tagged data_quality, not every dbt test) on
   # a schedule, independent of the per-connector pipeline. See
@@ -242,7 +275,7 @@ ingestion:
 # ClickHouse, MariaDB, Redis and Redpanda are NOT bundled by this chart.
 # They run as separate releases in `insight-infra` (gitops `make system-*`).
 # See CONTRIBUTING.md ("Deployment paths" → Kubernetes) and
-# docs/components/deployment/specs/DESIGN.md for the layered L0/L2/L3 model.
+# deploy/gitops/README.md for the layered L0/L2/L3 model.
 # The blocks below are pure WIRING — the host/port/creds the app services
 # and the pre-install init-DB Hook Jobs use to reach them:
 #   <dep>.host / .port     — connection target (host MUST be set)
@@ -275,6 +308,9 @@ clickhouse:
     # user are provisioned by the clickhouse-migrate Hook (apply-ch-migrations
     # -> provision-presentation-access.sh).
     - presentation
+    # Adoption events (#2573). Here rather than in the migration alone because
+    # the presentation_ro grant references it before that migration runs.
+    - product_usage
   # When true (default), a post-install/post-upgrade Hook Job
   # (clickhouse-migrate-job) applies the gold-view migrations
   # (src/ingestion/scripts/migrations/*.sql) + ADR-0007 placeholders against
@@ -328,14 +364,18 @@ gateway:
   resources:
     requests: {cpu: 25m, memory: 32Mi}
     limits: {cpu: 500m, memory: 128Mi}
-  # The gateway is the cluster ingress target; it routes "/" internally.
-  ingress:
+  # nginx-prometheus-exporter sidecar; enable per-stand where it is scraped.
+  metrics:
+    enabled: false
+  # The gateway's route attaches to the shared Gateway; it routes "/" internally.
+  route:
     enabled: true
-    className: nginx
+    parentRef:
+      name: insight
+      namespace: insight-infra
+      # Target listener on the Gateway (e.g. https). Empty = all listeners.
+      sectionName: ""
     host: ""
-    tls:
-      enabled: false
-      secretName: ""
 # ─── Authenticator (OIDC login + Redis sessions + gateway-JWT mint) ─────────
 authenticator:
   replicaCount: 1
@@ -363,36 +403,76 @@ authenticator:
       name: local-ca
       kind: ClusterIssuer
   # OIDC upstream + browser callback, folded into insight-authenticator-config.
-  # Values may be Helm templates (rendered with `tpl`); local points at fakeidp.
+  # Values may be Helm templates (rendered with `tpl`); local points at Keycloak.
   oidc:
-    issuerUrl: "" # the IdP issuer (local: the in-cluster fakeidp FQDN)
+    issuerUrl: "" # the IdP issuer (local: the in-stack Keycloak realm URL)
     clientId: "insight-authenticator"
     clientSecret: ""
     redirectUri: "" # browser-facing callback, through the gateway edge
+    # How a login finds its person. Two modes, declared — never a fallback
+    # chain, so a token that cannot answer the configured question is refused
+    # rather than quietly answered a different way:
+    #
+    #   external_id (default) — by the IdP's own stable user id under
+    #     `sourceType`. Right whenever a connector observes the provider's
+    #     accounts: the id is immutable and belongs to the directory the
+    #     person authenticated against.
+    #   email — by the token's standard `email` claim, matched against the
+    #     addresses the ROSTER states (identityResolution.rosterSourceType).
+    #     For installs whose IdP has no directory connector of its own:
+    #     nothing seeds an id binding for the provider, so external_id matches
+    #     nobody and EVERY sign-in is refused. Needs no claim mapping — the
+    #     `email` claim rides the standard `email` scope — and reads neither
+    #     `sourceType` nor `externalIdClaim`. Requires rosterSourceType to be
+    #     set; identity refuses the lookup without one rather than matching an
+    #     address any source at all happened to state.
+    #
+    # What `email` mode additionally requires, both enforced at render:
+    #   - `provisionOnLogin: false` — minting needs a source-native id, so no
+    #     login provisions in this mode;
+    #   - identityResolution.rosterSourceType set.
+    # NOT enforced: that `scopes` names `email`. The claim need not be
+    # requested to arrive — an IdP may emit it from an always-on client scope,
+    # and Keycloak 26 errors on a scope the client is not assigned, so
+    # demanding it here refuses working installs.
+    # It also refuses a token whose `email_verified` is explicitly false: in
+    # this mode the address IS the credential. An IdP that lets a user edit
+    # their own address unverified must be fixed at the IdP.
+    # ROLLING BACK to a chart that predates this key: put `sourceType` back in
+    # the same commit — the older chart requires it unconditionally and will
+    # refuse to render without it.
+    resolveBy: external_id
     # The identity-resolution source_type this IdP is seeded under (e.g.
-    # "ms-entra") — required; the login-bootstrap person lookup is scoped to
-    # it. No default: an empty value fails config validation at boot.
+    # "ms-entra") — the login-bootstrap person lookup is scoped to it. Required
+    # when resolveBy is external_id (an empty value fails config validation at
+    # boot); unread when resolveBy is email.
     sourceType: ""
     # id_token claim carrying the IdP's stable external user id for
-    # sourceType (e.g. Entra's "oid"). Defaults to "sub".
+    # sourceType (e.g. Entra's "oid"). Defaults to "sub". Unread when
+    # resolveBy is email.
     externalIdClaim: "sub"
+    # Provision a person on first successful login instead of refusing one the
+    # journal has no binding for yet.
+    #
+    # The login-bootstrap row is otherwise written only by the nightly
+    # persons-seed, which links a person by e-mail — so a roster member whose
+    # directory publishes no address (a GitHub member with a hidden e-mail, for
+    # one) cannot enter until an operator binds them by hand.
+    #
+    # Off by default because it widens who may ENTER. It does not widen who
+    # EXISTS: identity mints only for an account a connector has already
+    # observed, refuses one the source has closed, refuses one an operator
+    # excluded, and writes only under the tenant its own journal is keyed by.
+    provisionOnLogin: false
   # Honor `/auth/login?__override=<email>` (view-as, #1941): the session is
   # minted for that person instead of the authenticated one. Dev/demo
   # environments ONLY — MUST stay false anywhere real users log in.
   overrideEnabled: false
-# ─── fakeidp (dev/e2e OIDC provider — NEVER a real environment) ─────────────
-fakeidp:
-  deploy: false
-  image:
-    repository: ghcr.io/constructorfabric/insight-fakeidp
-    tag: "" # MUST be set (e.g. "0.1.0")
-    pullPolicy: IfNotPresent
-  # In-cluster URL the authenticator validates the id_token `iss` against. Set
-  # to the fakeidp Service FQDN (a Helm template, rendered with `tpl`). MUST
-  # equal `authenticator.oidc.issuerUrl`.
-  issuer: ""
-  defaultAudience: "insight-authenticator"
-  devUserEmail: "dev@company.nonpresent"
+  # Honor a post-login return into the `/exp/<name>` preview subtree (#1973):
+  # only when true is a login return under that prefix accepted. Dev/demo
+  # preview stands ONLY — a production stand leaves this false so it cannot
+  # host experimental frontends against its data.
+  experimentsEnabled: false
 # ─── keycloak ────────────────────────────────────────────────────────────────
 # The stack's Keycloak (identity broker, ADR-0003): start, MariaDB-backed,
 # admin from a Secret; realm content via keycloakConfig only.
@@ -400,12 +480,12 @@ keycloak:
   deploy: false
   image:
     repository: quay.io/keycloak/keycloak
-    tag: "26.4"
+    tag: "26.7"
     pullPolicy: IfNotPresent
   # Advertised issuer BASE (must end in /kc) — the URL browser AND
   # authenticator reach, e.g. https://<host>/kc.
   hostname: ""
-  # Admin console base. The ingress exposes only /kc/realms + /kc/resources;
+  # Admin console base. The route exposes only /kc/realms + /kc/resources;
   # the console rides a port-forward (empty = http://localhost:<port>/kc).
   adminHostname: ""
   # Bootstrap-admin Secret (keys username/password) and DB connection.
@@ -417,8 +497,15 @@ keycloak:
     name: "keycloak"
     username: ""
     passwordSecret: {name: "", key: ""}
-  ingress:
+  route:
     enabled: false
+  # Login theme, shipped with this Keycloak. Inert until a realm sets
+  # `loginTheme: insight` — never set that when keycloakConfig points at a
+  # Keycloak this chart does not deploy. `returnUrl` is where the overridden
+  # page hands the browser back to (relative to the Gateway host the SPA and
+  # Keycloak share).
+  theme:
+    returnUrl: "/?auth_error=kc_page_expired"
 # ─── keycloakConfig (broker realms as code — ADR-0003, EPIC #2193) ──────────
 # Hook Job applying the env's versioned realm YAML (pre-created ConfigMap from
 # the gitops `keycloak-broker-realms` target) with keycloak-config-cli on every
@@ -428,7 +515,7 @@ keycloakConfig:
   image:
     repository: adorsys/keycloak-config-cli
     # Release line must match the Keycloak server major.
-    tag: "6.5.1-26.1.0"
+    tag: "6.5.1-26.5.5"
     pullPolicy: IfNotPresent
   # Keycloak base URL (tpl-rendered). Must be https; plain http only with
   # allowInsecureUrl=true (in-cluster dev/CI Keycloak only).
@@ -467,11 +554,51 @@ analytics:
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {cpu: 500m, memory: 512Mi}
+  metricCatalog:
+    # Tenant-grain metrics (the ci.* family, #2803) are opt-in per
+    # installation; when off, the catalog omits them and the CI lens renders
+    # its honest not-enabled state.
+    tenantMetricsEnabled: false
+  mcp:
+    port: 8086
+    maxConcurrentQueries: 16
+    # Operator-managed Secret carrying the dedicated ClickHouse user's password.
+    credentialsSecret: insight-mcp-creds
+    clickhouseUser: insight_mcp
+    clickhousePasswordKey: clickhouse-password
+  sqlApi:
+    tokenSecret: insight-sql-api-creds
+    tokenKey: token
+  externalSources: []
+  # Explaining a metric with an LLM. Off everywhere until an operator turns it
+  # on, and turning it on without `tokenEncryptionKey` stops the service at
+  # boot rather than accepting keys it cannot seal.
+  aiAssist:
+    enabled: false
+    # Base64 of 32 random bytes: `openssl rand -base64 32`. Seals the Anthropic
+    # keys people store. Rotating it makes every stored key unreadable, and
+    # each person has to paste theirs again.
+    tokenEncryptionKey: ""
+    # One Anthropic key for the whole stand. Set it and nobody stores their
+    # own: every explanation is paid for by this key, and the SPA offers no
+    # place to paste a personal one.
+    apiKey: ""
+    # Restrict asking for an explanation to admins. On by default, because
+    # the common setup is a stand key and then every call spends the
+    # deployment's own money. Off for a stand where people bring their own.
+    adminOnly: true
+    model: "claude-sonnet-5"
   # The umbrella generates `insight-analytics-config` with every
   # APP__gears__analytics__config__* env var filled in from the
   # auto-generated credentials (see templates/secrets.yaml). The subchart
   # consumes it via envFrom (overriding its mounted config ConfigMap).
   existingSecret: "insight-analytics-config"
+  # Hook-rendered twin the pre-install migrate Job reads (templates/
+  # secrets.yaml): `existingSecret` is a release resource a pre-install hook
+  # cannot see on a fresh install. Composed only when
+  # `credentials.autoGenerate: true`; on the gitops path the config Secret
+  # pre-exists and this ref stays an inert optional.
+  migrateEnvSecret: "insight-analytics-migrate-env"
   # Metric Catalog single-tenant fallback comes from
   # `global.tenantDefaultId` (DESIGN §2.2 cpt-metric-cat-constraint-tenant-
   # default). The session-bound tenant from the gateway ALWAYS wins; this
@@ -489,21 +616,96 @@ analytics:
     caCertPaths:
       - /etc/insight/authn-ca/ca.crt
 # ─── Identity Resolution (Rust identity service, epic #1602) ─────────────
-# The persons-store API. Reads from MariaDB `persons` written by the seed
-# pipeline (src/backend/services/identity-resolution/seed/seed-persons-from-identity-input.py)
-# fed off ClickHouse `identity.identity_inputs`. NOT an OIDC provider.
+# The persons-store API. Reads from MariaDB `persons`, written by the seed
+# CronJob (the service's own `seed` subcommand) fed off ClickHouse
+# `identity.identity_inputs`. NOT an OIDC provider.
 # Consumers reach it at `http://<release>-identity-resolution:8082`.
 # `deploy: true` is mandatory: the authenticator's login-bootstrap resolve
 # (GET /internal/persons/by-external-id / by-email-override) lives here
 # (constructorfabric/insight#1960), and the authenticator is always installed
 # (its "no deploy flag" app-service contract); `insight.validate` fails the
 # render otherwise.
-# SCHEMA OWNER: identity-resolution's migrate initContainer applies the
-# migrations + first-admin bootstrap against `databaseName` — see ADR-0006
+# SCHEMA OWNER: identity-resolution's pre-install/pre-upgrade migrate hook
+# Job applies the migrations + first-admin bootstrap against `databaseName`
 # (service-owned migrations).
+# Git CLI Proxy — clone-based commit extraction for the nocode git connectors.
+# Airbyte-only consumer: no gateway route, no platform-config entry (other
+# services must not discover it), ingress restricted by its own NetworkPolicy.
+# Deployed by default: every nocode git connector reads its commits, file
+# changes and commit authors through this service, so an instance without it can
+# sync no git source at all. The cost is one PVC (`persistence.size`) on an
+# instance that syncs none — set deploy=false there.
+# Two prerequisites an environment must meet before this renders for it:
+#   * under `credentials.deploymentMode: gitops`, set `proxyToken` (or
+#     pre-create insight-git-cli-proxy-config) — a template-time token would
+#     differ on every sync, so secrets.yaml refuses to generate one;
+#   * the deploy credential must hold a persistentvolumeclaims rule for the
+#     cache claim (test-stand: ci-deployer-rbac.yaml).
+gitCliProxy:
+  deploy: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/constructorfabric/insight-git-cli-proxy
+    tag: ""
+    pullPolicy: IfNotPresent
+  # The git subprocesses run in this pod's cgroup and dominate its memory,
+  # and page serves over blob-heavy windows legitimately run for minutes of
+  # CPU each — the CPU limit paces how long their buffers coexist, so it is
+  # sized to drain rather than to average load. Memory is the serve cap times
+  # the heaviest window plus headroom, and it must also fit the node's budget
+  # beside the warehouse and the platform pods — limits do not reserve, so a
+  # limit the node cannot honour under load takes the container runtime down
+  # with it. Lower cache.serveConcurrency before raising it.
+  resources:
+    requests: {cpu: 200m, memory: 1Gi}
+    limits: {cpu: "4", memory: 8Gi}
+  persistence:
+    size: 50Gi
+    storageClass: ""
+  cache:
+    # Budget defaults to 85% of persistence.size (subchart-computed); the
+    # headroom absorbs transient packs and git temp files. Override with
+    # diskBudgetBytes (must stay within 50-90% of the volume).
+    maxRepoBytes: 10737418240
+    # Under a daily sync cadence so every sync reads fresh refs, above any
+    # steady-state run length so no walk refetches mid-flight.
+    defaultMaxStalenessSeconds: 43200
+    # A fetch holds its entry's write lock while queued for a slot, so one
+    # slow clone must not convoy every other repository's refresh.
+    heavyOpsConcurrency: 2
+    caCertPath: ""
+  caCertSecret: ""
+  # Bearer token the proxy requires on every /v1 request. Empty = generated on
+  # first install and reused on every upgrade; reconcile hands it to the
+  # connectors, so an operator never needs to see or copy it. Set it only to
+  # pin a specific value.
+  #
+  # Under `credentials.autoGenerate: false` — which every gitops overlay runs —
+  # the chart emits no Secret at all and this value is unused: pre-create
+  # `existingSecret` below with the key
+  # APP__gears__git_cli_proxy__config__proxy_token, the same contract as
+  # `insight-db-creds`. Never inline the token here in a committed overlay.
+  proxyToken: ""
+  # Composed by templates/secrets.yaml (carries the bearer token).
+  existingSecret: "insight-git-cli-proxy-config"
+  networkPolicy:
+    # Off by default, as on the authenticator: the /v1 bearer token is the
+    # control, and requiring every deployment to declare where Airbyte runs
+    # before the chart will install is friction the token already covers.
+    # Enable it per deployment — the clone cache serves private source, so
+    # hiding it from the rest of the cluster is worth the one value.
+    enabled: false
+    # Namespaces whose pods may call the proxy: the one running Airbyte
+    # connector jobs, which is `airbyte.namespace` above when that is set.
+    # Required whenever enabled=true — the subchart refuses to render an
+    # allow-list that would deny every caller.
+    allowedNamespaceLabels:
+      - key: kubernetes.io/metadata.name
+        values: []
 identityResolution:
   deploy: true
   replicaCount: 1
+  visibilityPolicy: "org_chart"
   image:
     repository: ghcr.io/constructorfabric/insight-identity-resolution
     tag: "" # MUST be set (e.g. "0.1.0")
@@ -518,24 +720,67 @@ identityResolution:
   # `global.tenantDefaultId`, idempotently. The person row must already
   # exist in `persons` for that tenant. Empty string disables the runner.
   bootstrapAdminPersonId: ""
+  # The ONE source trusted to say who exists: the persons-seed mints a person for
+  # its accounts even with no address to match on, and the identities console
+  # asks an operator to confirm each one. Empty (the default) mints from an
+  # address only, and enabling it is not undone by disabling it — `persons` is
+  # append-only. A `source_type` as the connectors emit it, and it must be a
+  # source that can report deactivation, or leavers stay minted and queued. See
+  # the identity DESIGN §4.1.
+  rosterSourceType: ""
   # The umbrella generates `insight-identity-resolution-config` with every
   # APP__gears__identity_resolution__config__* env var filled in from the
   # auto-generated credentials (see templates/secrets.yaml). The subchart
   # consumes it via envFrom (overriding its mounted config ConfigMap).
   existingSecret: "insight-identity-resolution-config"
+  # Same hook-twin arrangement as analytics.migrateEnvSecret above.
+  migrateEnvSecret: "insight-identity-resolution-migrate-env"
   # Scheduled persons-seed (#1690): a CronJob runs `identity-resolution seed`
-  # daily to rebuild the identity org projection (persons / account_person_map
-  # / org_chart) from ClickHouse identity_inputs — without it the projection
+  # daily to rebuild the identity org projection (persons / org_chart) from
+  # ClickHouse identity_inputs — without it the projection
   # freezes at the last manual run and Team-view rosters go stale. Runs
   # serialize on a per-tenant MariaDB advisory lock; input guards abort on an
   # empty identity_inputs read or a tenant mismatch (`--force` overrides).
   # Manual run: kubectl create job --from=cronjob/<release>-identity-resolution-seed ...
   seed:
     enabled: true
-    schedule: "30 6 * * *" # daily, after overnight syncs + the 06:00 data-quality run
+    schedule: "*/15 * * * *" # freshness backstop; the pipeline + corrections publish on their own
   # Gateway-JWT verification (NGINX_BFF R1) — same wiring as analytics: the
   # oidc-authn-plugin resolves the authenticator's JWKS via OIDC discovery
   # over https on `issuer` and trusts its CA from the authn-tls cert Secret.
+  gateway:
+    issuer: 'https://{{ .Release.Name }}-authenticator.{{ .Release.Namespace }}.svc.cluster.local:8443'
+    audience: "internal-services"
+    caCertSecret: "insight-authenticator-authn-tls-cert"
+    caCertPaths:
+      - /etc/insight/authn-ca/ca.crt
+# ─── Previews (preview-experiment provisioning, epic #1981) ──────────────
+# Manages preview experiments: one FE build per experiment, served under
+# /exp/<name> as a Deployment/Service/HTTPRoute trio in a dedicated namespace
+# — Kubernetes is the only store, and the subchart's Role/RoleBinding confine
+# the service to that namespace. Reached through the gateway at /api/previews.
+# Structurally inert until the stand sets `experiments.routeHost` (creates
+# fail closed without it) and the shared Gateway's `allowedRoutes` admits the
+# experiments namespace (bootstrap/<env>/gateway.yaml in gitops).
+previews:
+  deploy: true
+  replicaCount: 1 # the subchart refuses more: the TTL sweep has no leader election
+  image:
+    repository: ghcr.io/constructorfabric/insight-previews
+    tag: "" # MUST be set (e.g. "0.1.0")
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  experiments:
+    # Single source for every place the experiments namespace appears (gear
+    # config, Namespace object, Role/RoleBinding) — see the subchart values.
+    namespace: insight-previews
+    # The single preview host experiments serve under (e.g.
+    # preview.example.com). Per-stand; empty refuses every create.
+    routeHost: ""
+  # Gateway-JWT verification (NGINX_BFF R1) — same wiring as
+  # identityResolution.gateway above.
   gateway:
     issuer: 'https://{{ .Release.Name }}-authenticator.{{ .Release.Namespace }}.svc.cluster.local:8443'
     audience: "internal-services"
@@ -556,7 +801,35 @@ frontend:
   resources:
     requests: {cpu: 50m, memory: 64Mi}
     limits: {cpu: 200m, memory: 128Mi}
-  ingress:
+  # Standalone installs only — the SPA is served through the gateway's "/"
+  # route; enabling both on one Gateway/host makes the routes collide.
+  route:
     enabled: false
-    className: nginx
-    host: ""
+  sentry:
+    # Sentry origin the SPA posts to, e.g. "https://sentry.example.com".
+    # Empty leaves it out of the CSP, which blocks every event.
+    connectSrc: ""
+    # DSN the SPA reads from /config.js at load. Empty disables reporting.
+    dsn: ""
+  nav:
+    # Navigation entries hidden on this install, read by the SPA from
+    # /config.js. Typed paths, one per entry:
+    #   - "zone:scorecard"                          (a rail zone)
+    #   - "zone:aicost/item:idle-seats"             (a pane item)
+    #   - "zone:directions/dir:sales"               (a whole direction)
+    #   - "zone:directions/dir:dev/lens:git-output" (one lens, by URL slug)
+    #   - "zone:person/section:git_output"          (a Person-zone section)
+    #   - "metric:tasks.resolution_time"            (one metric, everywhere)
+    #   - "metric:ai.*"                             (a whole metric family)
+    # A metric path is not a menu entry: it gates the key itself, so the metric
+    # reaches no tile, attention row, heatmap column, drilldown block or report
+    # column, and no request asks for it.
+    # Unknown paths are ignored (the browser console warns). Presentation
+    # only — the API authorizes independently of what the menu shows.
+    hide: []
+    # Navigation entries this install marks as still in development — same
+    # path forms as `hide`. This is the only source of planned navigation:
+    # entries absent from this list are treated as live. Planned entries are
+    # toggled by the viewer's "Show planned sections" switch. A path in both
+    # lists is hidden.
+    planned: []

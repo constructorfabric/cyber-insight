@@ -57,6 +57,27 @@ A yellow warning strip renders at the top of the page whenever mocks are active 
 
 Seeded mock people: `bob.park@example.com`, `carol.chen@example.com`, `alice.kim@example.com`, `frank.moss@example.com` (see [src/mocks/registry.ts](src/mocks/registry.ts)).
 
+### Running against a deployed backend
+
+`pnpm dev` proxies `/api` and `/auth` to `VITE_API_PROXY_TARGET` (default: the compose gateway). Pointing that at a deployed stand gets you its data, but **not** its login: the stand registers its OIDC `redirect_uri` on its own origin, so the IdP posts the code back to the stand and the dev server never receives a session.
+
+Hand it a session instead:
+
+1. Sign in to the stand in a browser.
+2. Copy the `__Host-sid` value from DevTools → Application → Cookies (it is `HttpOnly`, so DevTools is the only way).
+3. In `.env.local`:
+
+```
+VITE_API_PROXY_TARGET=https://<stand-host>
+VITE_API_PROXY_SESSION=<the __Host-sid value>
+```
+
+The dev server holds the token and attaches it to every proxied request; the browser never stores it. `/auth/refresh` rotation is absorbed automatically, so the session stays alive as long as the SPA keeps refreshing it — no re-paste. Add `VITE_API_PROXY_INSECURE=true` for a self-signed upstream certificate.
+
+Once the token is expired or revoked the SPA takes a `401` and heads for `/auth/login`, which the dev server answers with a `503` explaining how to refresh it rather than bouncing you onto the stand.
+
+`VITE_API_PROXY_SESSION` is a live session on a real stand. `.env.local` is gitignored — keep it there.
+
 ## Scripts
 
 | Script | Description |
@@ -107,6 +128,37 @@ Server-side cookie/BFF flow — the SPA holds no tokens.
 4. A 401 bounces the whole page into `/auth/login?return_to=…` ([src/auth/use-auth.ts](src/auth/use-auth.ts)); there is no client-side token to refresh.
 5. The session is non-sliding: [src/auth/refresh.ts](src/auth/refresh.ts) drives `POST /auth/refresh` on the server-supplied `refresh_at`.
 
+## Per-Install Navigation Policy
+
+A deployment can hide navigation entries — at any nesting level — or mark
+them as still in development, with the `nav` chart value rendered into
+`/config.js` next to the Sentry DSN. Both lists take the same typed paths:
+
+```yaml
+nav:
+  hide:
+    - "zone:scorecard"
+    - "zone:aicost/item:idle-seats"
+    - "zone:directions/dir:sales"
+    - "zone:directions/dir:dev/lens:git-output"
+    - "zone:person/section:git_output"
+  planned:
+    - "zone:reports/item:report-builder"
+```
+
+A hidden entry disappears from every menu and from default/deep-link
+resolution. A `planned` entry is demoted to the "Planned" menu group and
+toggled by the viewer's "Show planned sections" switch. Planning is entirely
+deployment-owned: entries absent from `nav.planned` are treated as live. A path
+in both lists is hidden; a path that matches nothing is ignored (malformed ones
+warn in the browser console). One control is planned in code rather than by
+path: the topbar Cohort select renders only while the switch is on, and with it
+off the `?slice=` parameter is ignored so no view compares against a cohort the
+reader cannot see or change.
+This is presentation, not authorization — the API refuses on its own
+regardless of what the menu shows. Parsing and semantics live in
+[src/lib/portal/nav-policy.ts](src/lib/portal/nav-policy.ts).
+
 ## Environment Variables
 
 Build-time (Vite, `.env.local`):
@@ -118,6 +170,44 @@ Build-time (Vite, `.env.local`):
 | `VITE_API_PROXY_TARGET` | Dev-only `/api` proxy target (e.g. `http://localhost:8080`). |
 | `VITE_API_BASE` | Override analytics API base URL (default `/api/analytics/v1`). |
 | `VITE_IDENTITY_BASE` | Override identity API base URL (default `/api/identity/v1`). |
+| `VITE_SENTRY_DSN` | Sentry DSN for local runs only; a deployed stand uses `sentry.dsn`. Unset means Sentry never initializes. |
+| `VITE_APP_RELEASE` | Release attached to events. Defaults to `local-<git sha>`; CI passes the image tag. |
+
+## Error Reporting and Tracing
+
+[src/sentry.ts](src/sentry.ts) initializes Sentry as the first statement in
+[src/main.tsx](src/main.tsx). The module imports above it — i18n, the query
+client, the router — have already run by then, so a throw while they initialize
+goes unreported.
+
+What leaves the browser:
+
+- Render errors, via `onError` on [app-error-boundary.tsx](src/components/app-error-boundary.tsx).
+- Unhandled exceptions and rejections, from the SDK's own handlers.
+- Performance transactions for 10% of page loads and navigations. Browser
+  tracing also instruments `fetch`/XHR and adds `sentry-trace` and `baggage`
+  headers to same-origin requests.
+
+Events carry the hostname as their `environment` (`local` on localhost) — one
+image serves every stand, so nothing else tells them apart.
+
+The image carries no DSN. A deployed stand takes two chart values, and they
+must agree:
+
+1. `sentry.dsn` — rendered into a ConfigMap that mounts over `/config.js`,
+   which the SPA reads before it boots.
+2. `sentry.connectSrc`, set to the same origin. The container's CSP is
+   rendered from it at start; without it the browser blocks every event and
+   nothing arrives.
+
+Locally there is no chart, so `VITE_SENTRY_DSN` stands in for the first and
+the CSP does not apply.
+
+The SDK attaches no cookies, IP or headers to events. Session Replay is not
+enabled.
+
+The build emits no sourcemaps and uploads none, so a stack trace names the
+minified bundle rather than your code.
 
 ## Routes
 

@@ -1,4 +1,4 @@
-import { format, parseISO } from "date-fns";
+import { format, formatDistance, parseISO } from "date-fns";
 import { enUS } from "date-fns/locale";
 
 import type { MetricFormat } from "@/api/metric-results-client";
@@ -19,6 +19,10 @@ const METRIC_CURRENCY_FORMAT = new Intl.NumberFormat(LOCALE, {
  */
 export const NO_METRIC_VALUE = "—";
 
+export function roundMetricValue(v: number, fmt: MetricFormat): number {
+  return fmt === "decimal" ? Math.round(v * 10) / 10 : Math.round(v);
+}
+
 /**
  * Formatting for `/v1/metric-results` values: the wire `format` decides
  * rounding and presentation; `unit` is a display suffix only. Bare number —
@@ -33,8 +37,8 @@ export function formatMetricNumber(
   fmt: MetricFormat,
 ): string {
   if (v == null || !Number.isFinite(v)) return NO_METRIC_VALUE;
-  if (fmt === "currency") return METRIC_CURRENCY_FORMAT.format(v);
-  const rounded = fmt === "decimal" ? Math.round(v * 10) / 10 : Math.round(v);
+  const rounded = roundMetricValue(v, fmt);
+  if (fmt === "currency") return METRIC_CURRENCY_FORMAT.format(rounded);
   return NF_THOUSANDS.format(rounded);
 }
 
@@ -48,6 +52,26 @@ export function formatMetricValue(
   if (fmt === "currency") return s;
   if (fmt === "percent") return `${s}%`;
   return unit ? `${s} ${unit}` : s;
+}
+
+/**
+ * The value split into what a column of digits shows and what sits beside it.
+ *
+ * `formatMetricNumber` + `metricDisplayUnit` do NOT compose back into
+ * `formatMetricValue`: a percent loses its sign, because the suffix lives in
+ * the value formatter and the unit helper reports none. A split that drops a
+ * "%" turns 50% into 50 — a different number, not a shorter one.
+ */
+export function splitMetricValue(
+  v: number,
+  fmt: MetricFormat,
+  unit?: string | null,
+): { number: string; unit: string } {
+  const number = formatMetricNumber(v, fmt);
+  if (fmt === "percent") return { number, unit: "%" };
+  // Currency carries its symbol inside the number.
+  if (fmt === "currency") return { number, unit: "" };
+  return { number, unit: unit ?? "" };
 }
 
 /** Unit rendered beside the number; none when the number carries it. */
@@ -79,6 +103,46 @@ export function formatPp(diff: number, decimals = 1): string {
 
 export function formatDate(iso: string, pattern = "d MMM"): string {
   return format(parseISO(iso), pattern, { locale: enUS });
+}
+
+/**
+ * Format an instant the identity service journals. Its timestamps are UTC
+ * clock readings serialized WITHOUT a zone designator
+ * (`2026-08-01T10:15:00.000000`); `parseISO` would read that as local time
+ * and shift every audit entry by the viewer's UTC offset. Zone-suffixed
+ * input is passed through untouched, so the helper is safe for either shape.
+ */
+export function formatUtcInstant(iso: string, pattern = "d MMM"): string {
+  return formatDate(withZone(iso), pattern);
+}
+
+/**
+ * The same instant as an age ("3 days ago").
+ *
+ * How long a binding has stood is the question an audit trail is read for —
+ * "still the automatic one from months back" versus "someone decided this
+ * yesterday" — and a date makes the reader do that subtraction. The exact
+ * instant stays beside it; this replaces nothing.
+ */
+export function formatUtcAge(iso: string, now = new Date()): string {
+  return formatDistance(parseISO(withZone(iso)), now, {
+    addSuffix: true,
+    locale: enUS,
+  });
+}
+
+/** The identity journal serializes UTC without a zone designator. */
+function withZone(iso: string): string {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`;
+}
+
+/**
+ * The instant's own UTC clock, for a surface whose other dates are UTC buckets.
+ * Dropping the zone is what does it: a date-time with no offset is local time
+ * per spec, so the UTC digits render unshifted.
+ */
+export function formatUtcClock(iso: string, pattern = "d MMM"): string {
+  return formatDate(iso.replace(" ", "T").replace(/Z$/i, ""), pattern);
 }
 
 /** "1.0k" reads worse than "1k" on an axis. */

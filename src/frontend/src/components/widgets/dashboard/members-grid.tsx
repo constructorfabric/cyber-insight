@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { metricHelp } from "@/lib/insight/metric-help";
 import { Link } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp } from "lucide-react";
 
@@ -53,9 +54,41 @@ import {
   type PeerStatusWithNeutral,
 } from "@/lib/peers";
 import { applyFocusStatus, STATUS_TEXT_CLASS } from "@/lib/status";
+import { TEXT_FIGURE } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 import { evidenceSelection } from "@/api/metric-drilldown-client";
-import { useMetricEvidenceOptional } from "@/components/metric-evidence-context";
+import {
+  EvidenceScopeContext,
+  useEvidenceScope,
+  useMetricEvidenceOptional,
+  withOwnTarget,
+} from "@/components/metric-evidence-context";
+
+/**
+ * INVARIANT: every step leaves room for the names plus one whole metric column
+ * (`METRIC_COL_PX`) inside the container it applies to — a step wider than
+ * that is the bug this replaced, where the roster showed names and nothing
+ * else. A container query, not a viewport one: a drilldown pane on a desktop
+ * is as narrow as a phone.
+ */
+const MEMBER_COL_WIDTH =
+  "[--member-col:9rem] @min-[26rem]:[--member-col:12rem] @min-[32rem]:[--member-col:16rem]";
+
+/** Falls back rather than collapsing to `auto` if the wrapper ever loses it. */
+const MEMBER_COL_CELL =
+  "sticky start-0 z-10 w-[var(--member-col,16rem)] bg-card text-left";
+
+/**
+ * INVARIANT: the cap is what gives the roster a scrollport of its own. The
+ * headings stick to it, never to the page, so without a height they cannot
+ * hold at all.
+ */
+const ROSTER_SCROLLPORT = "max-h-[75svh] overflow-auto";
+
+const HEADING_CELL =
+  "sticky top-0 z-20 bg-card shadow-[0_4px_0_0_var(--card)]";
+
+const METRIC_COL_PX = 108;
 
 export interface MembersGridMember {
   /** Canonical person id — keys every metric lookup AND the IC link. */
@@ -73,8 +106,8 @@ export interface MembersGridProps {
   previousByKey?: Map<string, NormalizedMetricResult>;
   /**
    * Optional triage facet: per-member standing counts across ALL groups.
-   * When present each row carries a standing chip (behind / ahead / on par,
-   * the section-card vocabulary) and the grid offers the "Most behind" sort
+   * When present each row carries a standing chip (behind / ahead / near the median,
+   * the section-card vocabulary) and the grid offers the "Furthest behind" sort
    * (the default).
    */
   countsByMember?: Map<string, RankCounts>;
@@ -153,7 +186,7 @@ interface RowShape {
   member: MembersGridMember;
   cells: CellShape[];
   /** Cross-group standing counts when provided, else derived from the row's
-   *  own cells. Drives the chip phrase and the "Most behind" sort. */
+   *  own cells. Drives the chip phrase and the "Furthest behind" sort. */
   counts: RankCounts;
   worstLabel: string | null;
 }
@@ -352,8 +385,8 @@ export function MembersGrid({
   const memberSortActive = sort.key === "issues" || sort.key === "name";
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
-      <div className="overflow-x-auto">
+    <div className={cn("@container flex flex-col gap-3", className)}>
+      <div className={cn(ROSTER_SCROLLPORT, MEMBER_COL_WIDTH)}>
         {/* Fixed layout so metric columns are uniform — auto layout sizes
             each column to its own content, making them ragged. The member
             column takes a fixed width; the metric columns split the rest
@@ -363,7 +396,9 @@ export function MembersGrid({
             wrapper scrolls instead of crushing columns. */}
         <table
           className="w-full max-w-[1600px] table-fixed border-separate border-spacing-1"
-          style={{ minWidth: `${256 + columns.length * 108}px` }}
+          style={{
+            minWidth: `calc(var(--member-col, 16rem) + ${columns.length * METRIC_COL_PX}px)`,
+          }}
         >
           <caption className="sr-only">{caption}</caption>
           <thead>
@@ -371,7 +406,7 @@ export function MembersGrid({
               <th
                 scope="col"
                 aria-sort={memberDirection}
-                className="sticky left-0 z-10 w-64 bg-card px-2 text-left"
+                className={cn(MEMBER_COL_CELL, HEADING_CELL, "z-30 px-2")}
               >
                 {hasIssuesFacet ? (
                   // Two member orderings (issues / name) → a small header menu,
@@ -387,14 +422,14 @@ export function MembersGrid({
                             memberSortActive && "text-foreground"
                           )}
                         >
-                          Member
+                          Person
                           <SortArrow direction={memberDirection} />
                         </button>
                       }
                     />
                     <DropdownMenuContent align="start">
                       <DropdownMenuItem onClick={() => toggleSort("issues")}>
-                        Most behind
+                        Furthest behind
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => toggleSort("name")}>
                         Name
@@ -411,7 +446,7 @@ export function MembersGrid({
                       sort.key === "name" && "text-foreground"
                     )}
                   >
-                    Member
+                    Person
                     <SortArrow direction={directionFor("name")} />
                   </button>
                 )}
@@ -421,7 +456,7 @@ export function MembersGrid({
                   key={col.key}
                   scope="col"
                   aria-sort={directionFor(col.key)}
-                  className="p-0"
+                  className={cn(HEADING_CELL, "p-0")}
                 >
                   <ColumnHeader
                     col={col}
@@ -466,7 +501,7 @@ function MemberRow({
 }) {
   const { member, cells, counts, worstLabel } = row;
   // The section-card vocabulary: behind wins over ahead on mixed profiles,
-  // "on par" only when nothing sticks out either way. The chip states the
+  // "near the median" only when nothing sticks out either way. The chip states the
   // count; the tint carries the judgment.
   const chipText = showIssues ? sectionStandingPhrase(counts) : null;
   const chipRank: PeerStatusWithNeutral =
@@ -477,18 +512,26 @@ function MemberRow({
         : counts.top > 0
           ? "top"
           : "in_pack";
+  const rowEvidenceTargets = cells.flatMap((cell) => {
+    if (!cell.col.metric.drilldown) return [];
+    const selection = evidenceSelection(
+      cell.col.metric.selection,
+      member.entityId
+    );
+    return selection ? [{ selection, label: cell.col.label }] : [];
+  });
   return (
     <tr>
       <th
         scope="row"
-        className="sticky left-0 z-10 w-64 bg-card px-2 py-1 text-left font-normal"
+        className={cn(MEMBER_COL_CELL, "px-2 py-1 font-normal")}
       >
         <div className="flex min-h-12 flex-col justify-center gap-0.5">
           <div className="flex items-center gap-1.5">
             <Link
               to="/ic/$person/personal"
               params={{ person: member.entityId }}
-              className="min-w-0 truncate text-sm font-medium leading-tight hover:underline"
+              className="min-w-0 truncate text-sm leading-tight font-medium hover:underline"
             >
               {member.displayName}
             </Link>
@@ -504,23 +547,25 @@ function MemberRow({
             ) : null}
           </div>
           {showIssues && counts.bottom > 0 && worstLabel ? (
-            <p className="truncate text-[11px] leading-tight text-muted-foreground">
+            <p className="truncate text-xs leading-tight text-muted-foreground">
               worst: {worstLabel}
             </p>
           ) : null}
         </div>
       </th>
-      {cells.map((cell) => (
-        <td key={cell.col.key} className="p-0 align-middle">
-          <GridCell
-            cell={cell}
-            entityId={member.entityId}
-            memberName={member.displayName}
-            cohortLabel={cohortLabel}
-            focusMode={focusMode}
-          />
-        </td>
-      ))}
+      <EvidenceScopeContext.Provider value={rowEvidenceTargets}>
+        {cells.map((cell) => (
+          <td key={cell.col.key} className="p-0 align-middle">
+            <GridCell
+              cell={cell}
+              entityId={member.entityId}
+              memberName={member.displayName}
+              cohortLabel={cohortLabel}
+              focusMode={focusMode}
+            />
+          </td>
+        ))}
+      </EvidenceScopeContext.Provider>
     </tr>
   );
 }
@@ -540,6 +585,7 @@ function GridCell({
 }) {
   const focused = applyFocus(cell.status, focusMode);
   const evidenceContext = useMetricEvidenceOptional();
+  const scope = useEvidenceScope();
   const { col, value, previous, delta, median, observed } = cell;
   const evidence = col.metric.drilldown
     ? evidenceSelection(
@@ -597,7 +643,14 @@ function GridCell({
           <button
             type="button"
             onClick={() => {
-              if (evidence) evidenceContext?.openEvidence(evidence, col.label);
+              if (!evidence) return;
+              evidenceContext?.openEvidenceTargets(
+                withOwnTarget(scope, {
+                  selection: evidence,
+                  label: col.label,
+                }),
+                { activeMetricKey: evidence.metric_key }
+              );
             }}
             aria-label={
               observed
@@ -628,12 +681,7 @@ function GridCell({
         <div className="flex flex-col gap-1">
           <p className="text-sm font-semibold">{col.label}</p>
           <p className="text-xs text-muted-foreground">{memberName}</p>
-          <p
-            className={cn(
-              "mt-2 text-2xl font-semibold tabular-nums",
-              PEER_TEXT[focused]
-            )}
-          >
+          <p className={cn("mt-2", TEXT_FIGURE, "", PEER_TEXT[focused])}>
             {displayWithUnit}
           </p>
           <p className="text-xs text-muted-foreground">
@@ -646,7 +694,7 @@ function GridCell({
                 "Not recorded"
               )
             ) : median == null ? (
-              "No peer data"
+              "No comparison"
             ) : gapText != null ? (
               <>
                 <span className={cn("font-medium", PEER_TEXT[focused])}>
@@ -704,6 +752,7 @@ function ColumnHeader({
   direction: "ascending" | "descending" | undefined;
   onClick: () => void;
 }) {
+  const help = metricHelp(col.metric);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -732,6 +781,15 @@ function ColumnHeader({
       <TooltipContent side="top" className="max-w-56">
         <span className="flex flex-col gap-0.5 leading-snug">
           <span className="font-medium">{col.label}</span>
+          {/* What the column counts, in the catalog's words. A header reading
+              "AI LINES +" is otherwise a guess, and the grid is where a
+              reader compares people on it. */}
+          {help?.description ? <span>{help.description}</span> : null}
+          {/* The catalog sometimes supplies only the longer explanation, and a
+              header showing neither leaves the column a guess. */}
+          {help?.explanation ? (
+            <span className="text-background/70">{help.explanation}</span>
+          ) : null}
           <span className="text-background/70">
             {col.unit ? `${col.unit} · ` : ""}
             {betterWhenHigher(col.direction) === true
@@ -749,11 +807,11 @@ function ColumnHeader({
 
 function Legend() {
   return (
-    <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-4 px-3 text-xs text-muted-foreground">
       <LegendSwatch className={PEER_FILL.top}>Top 25%</LegendSwatch>
-      <LegendSwatch className={PEER_FILL.in_pack}>On par</LegendSwatch>
+      <LegendSwatch className={PEER_FILL.in_pack}>Near the median</LegendSwatch>
       <LegendSwatch className={PEER_FILL.bottom}>Bottom 25%</LegendSwatch>
-      <LegendSwatch className={PEER_FILL.neutral}>No peer data</LegendSwatch>
+      <LegendSwatch className={PEER_FILL.neutral}>No comparison</LegendSwatch>
     </div>
   );
 }

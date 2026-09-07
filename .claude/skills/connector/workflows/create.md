@@ -36,7 +36,6 @@ Ask the user (skip questions where context already provides the answer):
 Builder-UI-compatible references (OK to copy):
 - `src/ingestion/connectors/collaboration/zoom/connector.yaml`
 - `src/ingestion/connectors/collaboration/m365/connector.yaml`
-- `src/ingestion/connectors/hr-directory/bamboohr/connector.yaml`
 
 **Do NOT copy from**:
 - `src/ingestion/connectors/task-tracking/jira/connector.yaml` — uses whole-object `$ref` (`#/definitions/auth`, `#/definitions/paginator`, `#/streams/N`) which the Builder strict validator rejects. It loads via the CDK runtime but cannot be opened in the Builder UI without full expansion.
@@ -144,6 +143,13 @@ transformations:
 ```
 
 Only inject: `tenant_id`, `source_id`, `unique_key`, and optionally `raw_data` for configurable streams. Do NOT add `_source` or `_extracted_at` — dbt models handle source tagging, and Airbyte auto-generates `_airbyte_extracted_at`.
+
+Two hard rules for every `AddFields` target, each learned from silent data loss:
+
+- **Declare every `AddFields` target as `string` in the inline schema** (plus `"null"`). Jinja renders to a string, and the destination's typing step coerces it into the declared type: numbers and booleans coerce fine, but a declared `object`/deep ADF shape cannot be built from a string — the destination NULLs the field and records `{"change":"NULLED","reason":"DESTINATION_SERIALIZATION_ERROR"}` in `_airbyte_meta`, on every sync, while the source still has the data. A `tojson` projection is a string; declare it `string`, never the shape of the JSON inside it.
+- **Do not re-project payload fields the record already carries** (`email` ← `emailAddress`-style snake_case aliases). It doubles storage, forces the schema to describe the same value twice, and creates exactly the type-mismatch surface above. Renames and typing belong in the dbt staging model. The only values that may be injected are the ones that exist solely at extraction time: config values (`tenant_id`, `source_id`), `unique_key`, `stream_partition.*` context (a substream's parent id), and cursor hoists for nested `cursor_field` (see Common failure modes).
+
+Detection for the first rule on a live instance: `SELECT count() FROM <bronze_table> WHERE position(_airbyte_meta, 'NULLED') > 0` — anything non-zero means the destination is dropping fields.
 
 **Schema rules** — must match Builder output format:
 
@@ -563,7 +569,6 @@ def parse_response(self, response, **kwargs):
 
 If your connector ships at least one `Dockerfile` under its connector directory (CDK source, enrich sidecar, future bootstrap or migrator container), you MUST declare every such image in your `descriptor.yaml.images:` block. CI uses **dynamic discovery** — it scans every descriptor on every run and builds whatever is declared. Adding a new connector with images is a descriptor edit; CI follows automatically.
 
-See [ADR-0016 — Descriptor `images:` Block](../../../../docs/components/airbyte-toolkit/specs/ADR/0016-descriptor-images-block.md) for the rationale.
 
 ### 1. Descriptor `images:` block (REQUIRED for every Dockerfile)
 
@@ -635,7 +640,7 @@ The minor version bump makes reconcile classify the diff as `bump_kind: minor` p
 
 Because that job runs **only on the push to `main`**, a bad version does not fail your PR — it fails after merge and leaves `images.<key>.image` empty, so reconcile WARN+skips the connector and it never deploys (issue #2048). Verify locally before merge with the guard in §3.8; do NOT rely on a green PR.
 
-Existing descriptors that carry legacy non-semver values (`ai/openai`, `collaboration/slack`, `hr-directory/bamboohr` — all `2026.05.04`) are tolerated in place per ADR-0015 §"Legacy non-semver values": they declare no `images:` block, so `bump-descriptors` never sees them. Do NOT "fix" them as drive-by work — reconcile classifies legacy→semver as `bump_kind: migration`, and churning a live connector's version buys nothing.
+Existing descriptors that carry legacy non-semver values (`ai/openai`, `collaboration/slack` — both `2026.05.04`) are tolerated in place per ADR-0015 §"Legacy non-semver values": they declare no `images:` block, so `bump-descriptors` never sees them. Do NOT "fix" them as drive-by work — reconcile classifies legacy→semver as `bump_kind: migration`, and churning a live connector's version buys nothing.
 
 No per-connector wiring in `bump-descriptors` itself. Your descriptor declaring `images:` plus a strict-semver `version:` IS your wiring.
 
@@ -882,7 +887,7 @@ If any stream fails, do NOT deploy. Fix the manifest and re-run both `validate-s
 
 ### 5.7 Write mock-server tests (MANDATORY before deploy)
 
-Normative spec: `docs/domain/connector/specs/feature-connector-mock-tests/FEATURE.md` (L1 of the connector test ladder). Mock tests are credential-free pytest suites that load `connector.yaml` in-process through the pinned `airbyte-cdk`, intercept HTTP with `HttpMocker`, and run a full protocol `read` — they are the only deterministic, CI-runnable check of pagination, cursors, error handling, and transformations.
+L1 of the connector test ladder. Mock tests are credential-free pytest suites that load `connector.yaml` in-process through the pinned `airbyte-cdk`, intercept HTTP with `HttpMocker`, and run a full protocol `read` — they are the only deterministic, CI-runnable check of pagination, cursors, error handling, and transformations.
 
 Create `CONNECTOR_DIR/tests/`:
 

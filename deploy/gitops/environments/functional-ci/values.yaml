@@ -2,6 +2,13 @@ credentials:
   deploymentMode: gitops
   autoGenerate: false
 
+# No git connector runs here, and gitops mode cannot self-generate the proxy's
+# bearer token (secrets.yaml refuses: a template-time token would differ on
+# every sync). Enabling git syncing on this environment means setting
+# gitCliProxy.proxyToken as well.
+gitCliProxy:
+  deploy: false
+
 global:
   storageClass: local-path
   tenantDefaultId: "00000000-df51-5b42-9538-d2b56b7ee953"
@@ -33,7 +40,11 @@ ingestion:
 
 gateway:
   replicaCount: 1
-  ingress:
+  # Attaches to the `insight` Gateway from bootstrap/functional-ci/gateway.yaml
+  # (the chart's default parentRef). No hostname: the smoke reaches the edge by
+  # IP through the k3d load balancer, so the route matches whatever Host it is
+  # asked for.
+  route:
     enabled: true
 
 authenticator:
@@ -43,32 +54,54 @@ authenticator:
     issuerRef:
       name: local-ca
       kind: ClusterIssuer
+  # IdP = the in-stack Keycloak (below). No browser participates in this
+  # smoke, so the issuer is the cluster-internal Service URL. clientSecret is
+  # the dev secret the realm generator bakes in; not sensitive.
   oidc:
-    issuerUrl: 'http://{{ .Release.Name }}-fakeidp.{{ .Release.Namespace }}.svc.cluster.local:8084'
+    issuerUrl: 'http://{{ .Release.Name }}-keycloak.{{ .Release.Namespace }}.svc.cluster.local:8085/kc/realms/insight'
     clientId: "insight-authenticator"
+    clientSecret: "insight-authenticator-dev-secret"
     redirectUri: "http://localhost/auth/callback"
-    # fakeidp's `sub` claim IS the stable per-user id (see users.yaml) — no
-    # real connector backs it, but the persons-seed fixtures used in this
-    # environment key their `value_type='id'` rows on this made-up source_type.
-    sourceType: "fakeidp"
+    # Realm users' `sub` is their roster uuid; persons-seed fixtures key
+    # their id rows on this source_type.
+    sourceType: "keycloak"
+    externalIdClaim: "sub"
 
-fakeidp:
+# `hostname` is the advertised issuer base; no route here, so the concrete
+# Service FQDN (the keycloak-realm recipe reads it raw — no tpl string).
+keycloak:
   deploy: true
-  issuer: 'http://{{ .Release.Name }}-fakeidp.{{ .Release.Namespace }}.svc.cluster.local:8084'
-  devUserEmail: "dev@company.nonpresent"
+  hostname: 'http://insight-keycloak.insight.svc.cluster.local:8085/kc'
+  admin:
+    existingSecret: insight-keycloak-config # CI admin/admin (keycloak-realm target)
+  database:
+    host: mariadb.insight-infra.svc.cluster.local
+    username: insight
+    passwordSecret: {name: insight-db-creds, key: mariadb-password}
+
+keycloakConfig:
+  enabled: true
+  # The roster realm is generated JSON (keycloak-realm target), and JSON only:
+  # config-cli fails the import on a pattern that matches nothing.
+  filesLocations: "/config/*.json"
+  # In-cluster hop over plain http — ephemeral CI cluster only.
+  url: 'http://{{ .Release.Name }}-keycloak:8085/kc'
+  allowInsecureUrl: true
+  extraEnv:
+    - name: KEYCLOAK_USER
+      valueFrom:
+        secretKeyRef: {name: insight-keycloak-config, key: username}
+    - name: KEYCLOAK_PASSWORD
+      valueFrom:
+        secretKeyRef: {name: insight-keycloak-config, key: password}
 
 analytics:
   replicaCount: 1
 
-identityResolution:
-  deploy: true
-
 # The authenticator's login-bootstrap resolve (GET /internal/persons/
-# by-external-id / by-email-override) is Rust-only — the frozen .NET
-# `identity` twin above never gained it (constructorfabric/insight#1960) — so
-# identity-resolution must ALSO be deployed here, and the authenticator talks
-# to it unconditionally (deploy/gitops/scripts/compose-app-secrets.sh enforces
-# this at apply time regardless of what `.identityUrl` — analytics' own
-# .NET<->Rust switch — is set to).
+# by-external-id / by-email-override) lives on identity-resolution
+# (constructorfabric/insight#1960), so it must be deployed here — the
+# authenticator talks to it unconditionally
+# (deploy/gitops/scripts/compose-app-secrets.sh enforces this at apply time).
 identityResolution:
   deploy: true

@@ -1,11 +1,10 @@
 //! ClickHouse reader for `identity.identity_inputs` — the raw observation
 //! stream that feeds the persons-seed. Concrete `IdentityInputsReader` over the
-//! shared `insight-clickhouse` client. Query ported from the .NET
-//! `ClickHouseIdentityInputsReader`. Verified against a live dev ClickHouse
+//! shared `insight-clickhouse` client. Verified against a live dev ClickHouse
 //! (the persons-seed reads its whole input through this).
 //!
 //! NOTE: this materializes the filtered input into a `Vec` rather than
-//! streaming row-by-row like the .NET `IAsyncEnumerable`. Fine at current
+//! streaming row-by-row. Fine at current
 //! deployment sizes; row-streaming is deferred to the hardening pass (#1753).
 
 use std::time::Duration;
@@ -30,10 +29,9 @@ use crate::domain::seed_service::IdentityInputsReader;
 /// — wrapped in `ifNull` because the column is `Nullable(String)` in the dbt
 /// table (`toString` of a Nullable stays Nullable, which the strict decoder
 /// rejects against the non-null `String` field); a NULL becomes `''` and fails
-/// the UUID reparse, failing the seed exactly like the .NET reader's
-/// `Guid.Parse(GetString(...))` throw.
+/// the UUID reparse, failing the seed.
 ///
-/// HOTFIX(#1550) — TEMPORARY, ported from the .NET reader (3256f707). This is
+/// HOTFIX(#1550) — TEMPORARY. This is
 /// the ANCHOR of the hotfix: every piece of code whose behavior exists only
 /// because of it carries the literal tag `HOTFIX(#1550)` — grep for it to
 /// find the full blast radius when unwinding the hotfix. The dbt
@@ -53,20 +51,21 @@ use crate::domain::seed_service::IdentityInputsReader;
 /// re-file under itself) all other tenants' rows. Restoring it requires the
 /// producer side to be fixed first (dbt resolves real tenant UUIDs instead of
 /// hashing free-form connector strings), then reinstate
-/// `WHERE insight_tenant_id = ?` here and in the .NET reader.
+/// `WHERE insight_tenant_id = ?` here.
 ///
 /// The text columns have mixed nullability in `identity_inputs` (e.g.
 /// `insight_source_type` is `String`, `source_account_id` is `Nullable(String)`),
 /// and the clickhouse decoder is strict in both directions — so most are coerced
 /// to a non-null `String` with `ifNull(col, '')` and decoded uniformly.
 /// `source_account_id` is the exception: it is decoded as `Option<String>` and a
-/// NULL fails the read — parity with .NET, whose `reader.GetString()` throws on
-/// NULL and fails the seed, instead of silently minting a `''` pseudo-account.
+/// NULL fails the read rather than silently minting a `''` pseudo-account.
 /// Crucially the aliases DIFFER from the source column names (`val`, `op_type`,
 /// …): a same-name `ifNull(value,'') AS value` would shadow the `value`
-/// referenced in `WHERE` and can trip a ClickHouse "Cyclic aliases" error (the
-/// .NET reader avoids this the same way). `is_delete` is derived from
-/// `operation_type`.
+/// referenced in `WHERE` and can trip a ClickHouse "Cyclic aliases" error.
+/// `is_delete` is derived from
+/// `operation_type`. DELETE rows are closure signals that arrive with an
+/// empty `value` by the write contract, so the non-empty filter applies to
+/// UPSERT rows only — value-filtering DELETEs would drop every tombstone.
 const STREAM_SQL: &str = r"
     SELECT
         ifNull(insight_source_type, '')  AS source_type,
@@ -77,9 +76,8 @@ const STREAM_SQL: &str = r"
         toString(_synced_at)             AS synced_at,
         ifNull(operation_type, '')       AS op_type
     FROM identity.identity_inputs
-    WHERE operation_type IN ('UPSERT', 'DELETE')
-      AND value IS NOT NULL
-      AND value != ''
+    WHERE (operation_type = 'UPSERT' AND value IS NOT NULL AND value != '')
+       OR operation_type = 'DELETE'
     ORDER BY
         insight_source_type,
         insight_source_id,
@@ -126,8 +124,8 @@ impl ClickHouseIdentityInputsReader {
 impl IdentityInputsReader for ClickHouseIdentityInputsReader {
     async fn stream(&self, tenant_id: Uuid) -> anyhow::Result<Vec<IdentityInputRow>> {
         // tenant_id is intentionally unused while the HOTFIX(#1550) drops the
-        // tenant filter — kept so the `IdentityInputsReader` trait (and the
-        // .NET reader tracking it) stays stable for when the filter comes back.
+        // tenant filter — kept so the `IdentityInputsReader` trait stays
+        // stable for when the filter comes back.
         let _ = tenant_id;
         let rows: Vec<InputRow> = self.client.query(STREAM_SQL).fetch_all().await?;
         rows.into_iter().map(map_row).collect()
@@ -168,6 +166,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_sql_keeps_empty_value_delete_rows() {
+        assert!(
+            STREAM_SQL.contains("OR operation_type = 'DELETE'"),
+            "DELETE closure signals carry an empty value and must not be value-filtered"
+        );
+        assert!(
+            STREAM_SQL.contains("operation_type = 'UPSERT' AND value IS NOT NULL"),
+            "the non-empty filter applies to UPSERT rows only"
+        );
+    }
+
+    #[test]
     fn parses_clickhouse_datetime_with_and_without_fraction() -> anyhow::Result<()> {
         let with_frac = parse_ch_datetime("2026-07-16 12:34:56.123456")?;
         let no_frac = parse_ch_datetime("2026-07-16 12:34:56")?;
@@ -183,31 +193,27 @@ mod tests {
         Ok(())
     }
 
-    /// Live read against a dev ClickHouse. Set `IDENTITY_TEST_CH_URL`,
-    /// `IDENTITY_TEST_CH_DB`, `IDENTITY_TEST_TENANT_ID` (+ optional
-    /// `IDENTITY_TEST_CH_USER` / `IDENTITY_TEST_CH_PASSWORD`) and a port-forward
-    /// to run; skips cleanly otherwise so CI stays green.
-    #[tokio::test]
-    async fn stream_against_dev_clickhouse() -> anyhow::Result<()> {
-        let (Ok(url), Ok(db), Ok(tenant_raw)) = (
-            std::env::var("IDENTITY_TEST_CH_URL"),
-            std::env::var("IDENTITY_TEST_CH_DB"),
-            std::env::var("IDENTITY_TEST_TENANT_ID"),
-        ) else {
-            eprintln!(
-                "skip: set IDENTITY_TEST_CH_URL + IDENTITY_TEST_CH_DB + IDENTITY_TEST_TENANT_ID to run"
-            );
-            return Ok(());
+    #[test]
+    fn a_null_account_id_fails_the_read_rather_than_minting_a_pseudo_account() -> anyhow::Result<()>
+    {
+        let row = InputRow {
+            source_type: "bamboohr".to_owned(),
+            source_id: Uuid::now_v7().to_string(),
+            account_id: None,
+            val_type: "email".to_owned(),
+            val: "person@inputs.test".to_owned(),
+            synced_at: "2026-01-02 03:04:05.678".to_owned(),
+            op_type: "UPSERT".to_owned(),
         };
-        let user = std::env::var("IDENTITY_TEST_CH_USER").unwrap_or_default();
-        let password = std::env::var("IDENTITY_TEST_CH_PASSWORD").unwrap_or_default();
-        let tenant = Uuid::parse_str(tenant_raw.trim())?;
 
-        let reader = ClickHouseIdentityInputsReader::connect(&url, &db, &user, &password);
-        let rows = reader.stream(tenant).await?;
-        assert!(
-            !rows.is_empty(),
-            "dev tenant should have identity_inputs rows"
+        let refused = map_row(row)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+
+        anyhow::ensure!(
+            refused.contains("NULL source_account_id"),
+            "an accountless row must name itself in the failure, not fold into '': {refused:?}"
         );
         Ok(())
     }

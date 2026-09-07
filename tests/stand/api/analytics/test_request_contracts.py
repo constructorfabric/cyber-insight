@@ -29,6 +29,9 @@ from insight_stand.api import JsonValue
 
 from .. import scratch
 
+# Quality vector of this module's tests.
+pytestmark = pytest.mark.reliability
+
 #: `{id}` routes, with the offending segment already substituted. Written out
 #: rather than generated from `operations.py`: the point is to state which
 #: segment is under test, and a route with two ids is two different claims.
@@ -52,11 +55,15 @@ BODY_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", f"/v1/queries/{scratch.UNKNOWN_ID}"),
     ("POST", f"/v1/queries/{scratch.UNKNOWN_ID}/run"),
     ("POST", "/v1/metric-results"),
+    ("POST", "/v1/reports/preview"),
+    ("POST", "/v1/reports/export"),
     ("POST", "/v1/metric-drilldown"),
     ("POST", "/v1/metric-drilldown/export"),
     ("POST", "/v1/metrics"),
     ("PUT", f"/v1/metrics/{scratch.UNKNOWN_METRIC_KEY}"),
     ("POST", "/v1/metrics/import"),
+    ("POST", "/v1/usage/events"),
+    ("POST", "/v1/feedback"),
 )
 
 
@@ -112,6 +119,8 @@ OFF_SCHEMA_ROUTES: tuple[tuple[str, str, int], ...] = (
     ("POST", "/v1/queries", LEGACY_422),
     ("PUT", f"/v1/queries/{scratch.UNKNOWN_ID}", LEGACY_422),
     ("POST", "/v1/metric-results", LEGACY_422),
+    ("POST", "/v1/reports/preview", LEGACY_422),
+    ("POST", "/v1/reports/export", LEGACY_422),
     ("POST", "/v1/metric-drilldown", LEGACY_422),
     ("POST", "/v1/metric-drilldown/export", LEGACY_422),
     ("POST", "/v1/metrics", LEGACY_422),
@@ -139,6 +148,10 @@ OFF_SCHEMA_BODY: JsonValue = "not the request type"
 #: rejection — whether it becomes `None` or an error is the Option wrapper's
 #: business, and pinning either would be pinning axum's version rather than
 #: this product's contract. The rig leaves it out for the same reason.
+
+#: `POST /v1/usage/events` is absent too, on its own grounds: it is the only
+#: body route that declares no 400, so there is no gap between declaration and
+#: behaviour for this table to pin.
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,13 @@ credentials:
   deploymentMode: gitops
   autoGenerate: false
 
+# No git connector runs here, and gitops mode cannot self-generate the proxy's
+# bearer token (secrets.yaml refuses: a template-time token would differ on
+# every sync). Enabling git syncing on this environment means setting
+# gitCliProxy.proxyToken as well.
+gitCliProxy:
+  deploy: false
+
 global:
   storageClass: local-path
   # Single-tenant fallback for the analytics metric-catalog resolver
@@ -85,18 +92,23 @@ ingestion:
 
 # Full auth (NGINX_BFF EPIC #1583) — no auth_disabled anywhere. The nginx
 # `gateway` is the single edge: auth_request -> authenticator, ES256 gateway-JWT
-# injection, fan-out to the app services + SPA. `fakeidp` is the local OIDC
-# provider the authenticator logs in against; every downstream verifies the JWT.
+# injection, fan-out to the app services + SPA. The in-stack Keycloak is the
+# local OIDC provider the authenticator logs in against; every downstream
+# verifies the JWT.
 gateway:
   image: { repository: insight-gateway, tag: dev, pullPolicy: IfNotPresent }
   replicaCount: 1
-  # The gateway is the cluster ingress target. Empty host matches any Host
-  # header — on OrbStack/k3d/kind the ingress-nginx LoadBalancer takes a
-  # host-reachable IP (`kubectl -n ingress-nginx get svc`), so
-  # `http://<that-ip>/...` works without /etc/hosts entries. Real envs set a
+  # The gateway is the cluster edge route. Empty host matches any Host
+  # header — on OrbStack/k3d/kind the Envoy data-plane LoadBalancer in
+  # `envoy-gateway-system` takes a host-reachable IP
+  # (`kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=insight`),
+  # so `http://<that-ip>/...` works without /etc/hosts entries. Real envs set a
   # host + TLS via cert-manager.
-  ingress:
+  route:
     enabled: true
+    parentRef:
+      name: insight
+      namespace: insight-infra
   resources:
     requests: { cpu: 25m, memory: 32Mi }
     limits:   { cpu: 500m, memory: 128Mi }
@@ -112,11 +124,11 @@ authenticator:
       kind: ClusterIssuer
   # Local IdP = the in-cluster Keycloak (below), pre-seeded `insight-authenticator`
   # CONFIDENTIAL client. Both the browser AND the authenticator pod reach Keycloak
-  # at the SAME ingress LoadBalancer IP (`__INGRESS_LB_IP__`), so the id_token `iss`
+  # at the SAME edge LoadBalancer IP (`__INGRESS_LB_IP__`), so the id_token `iss`
   # matches for discovery AND the browser redirect. `redirectUri` stays on
   # `http://localhost` because the `__Host-sid` session cookie requires a
   # secure-context origin, and `http://localhost` qualifies (the LB IP does not).
-  # clientSecret matches the dev secret gen-realm.py bakes into the realm.
+  # clientSecret matches the dev secret the realm generator bakes in.
   oidc:
     issuerUrl: 'http://__INGRESS_LB_IP__/kc/realms/insight'
     clientId: "insight-authenticator"
@@ -124,28 +136,28 @@ authenticator:
     redirectUri: "http://localhost/auth/callback"
     # The identity-resolution source_type this IdP is seeded under — required
     # (constructorfabric/insight#1960): the login-bootstrap resolve
-    # (GET /internal/persons/by-external-id) is scoped to it, and it only
-    # exists on identity-resolution (Rust), never the .NET identity twin.
+    # (GET /internal/persons/by-external-id) is scoped to it.
     sourceType: "keycloak"
     # id_token claim carrying the stable external user id for sourceType.
-    # gen-realm.py pins each realm user's `id` to their OWN roster uuid (see
-    # deploy/compose/keycloak/gen-realm.py), so Keycloak's `sub` (the default)
+    # The realm generator pins each realm user's `id` to their OWN roster uuid
+    # (src/ingestion/tools/seed/insight_seed/keycloak_realm.py), so `sub`
     # already IS that stable id — no Entra-style non-default claim needed here.
     externalIdClaim: "sub"
     # Optional tenant sourcing: `tenantClaim` names the id_token claim carrying
-    # the single tenant (default `tenant_id` — fakeidp/Keycloak; Entra: `tid`);
+    # the single tenant (default `tenant_id` — Keycloak; Entra: `tid`);
     # `defaultTenantId` is the fallback for a claim-less IdP (e.g. Okta),
     # empty = fail closed.
 
 # ─── Local IdP topology ──────────────────────────────────────────────────────
-# Local k8s runs an in-cluster `keycloak` exposed THROUGH the ingress at the `/kc`
+# Local k8s runs an in-cluster `keycloak` exposed THROUGH the edge at the `/kc`
 # prefix (Keycloak serves under /kc natively via --http-relative-path, no rewrite).
 # The browser reaches it at `http://__INGRESS_LB_IP__/kc` and so does the
 # authenticator pod (via the same LoadBalancer IP), so the id_token issuer matches
 # in both directions. The roster realm is generated from the seed
 # (keycloak-realm target) and applied through keycloak-config-cli like every
-# environment's realm content. `__INGRESS_LB_IP__` is the ingress-nginx
-# LoadBalancer IP (`kubectl -n ingress-nginx get svc ingress-nginx-controller`);
+# environment's realm content. `__INGRESS_LB_IP__` is the Envoy data-plane
+# LoadBalancer IP in `envoy-gateway-system`
+# (`kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=insight`);
 # the per-developer gitignored `values.yaml` substitutes the concrete IP.
 
 # keycloak — the in-stack Keycloak (local IdP; roster realm generated by the
@@ -153,15 +165,19 @@ authenticator:
 keycloak:
   deploy: true
   hostname: 'http://__INGRESS_LB_IP__/kc'
+  # Dev-lead login for the generated roster realm (keycloak-realm target).
+  devUserEmail: "dev@company.nonpresent"
   admin:
     existingSecret: insight-keycloak-config # sandbox admin/admin (keycloak-realm target)
   database:
     host: mariadb.insight-infra.svc.cluster.local
     username: insight
     passwordSecret: {name: insight-db-creds, key: mariadb-password}
-  ingress:
+  route:
     enabled: true
-    className: nginx
+    parentRef:
+      name: insight
+      namespace: insight-infra
 
 keycloakConfig:
   enabled: true
@@ -178,17 +194,6 @@ keycloakConfig:
       valueFrom:
         secretKeyRef: {name: insight-keycloak-config, key: password}
 
-# fakeidp — the lighter alt IdP; off for local (keycloak is the local IdP). Flip
-# fakeidp.deploy=true + keycloak.deploy=false (and point authenticator.oidc.issuerUrl
-# back at http://__INGRESS_LB_IP__/idp) to use it instead.
-fakeidp:
-  image: { repository: insight-fakeidp, tag: dev, pullPolicy: IfNotPresent }
-  deploy: false
-  ingress:
-    enabled: false
-  issuer: 'http://__INGRESS_LB_IP__/idp'
-  devUserEmail: "dev@company.nonpresent"
-
 analytics:
   image: { repository: insight-analytics, tag: dev, pullPolicy: IfNotPresent }
   replicaCount: 1
@@ -197,7 +202,7 @@ analytics:
     limits:   { cpu: 500m, memory: 512Mi }
 
 # Identity Resolution (epic #1602). Owns the MariaDB `identity` database
-# (its migrate initContainer applies the schema at startup). The database
+# (its pre-install/pre-upgrade migrate hook Job applies the schema). The database
 # itself must already exist with the `insight` user granted ALL on it.
 # When `mariadb.deploy=false` (as here), the engineer runs the one-time
 # `CREATE DATABASE identity` SQL against the L2 MariaDB before the first
@@ -219,7 +224,7 @@ frontend:
   # work against the current backend yet.
   deploy: true
   replicaCount: 1
-  # No own ingress: the SPA is served THROUGH the gateway edge (the gateway
-  # proxies "/" to the frontend), so only the gateway holds an Ingress.
-  ingress:
+  # No own route: the SPA is served THROUGH the gateway edge (the gateway
+  # proxies "/" to the frontend), so only the gateway holds an HTTPRoute.
+  route:
     enabled: false

@@ -24,7 +24,7 @@
 ## Context and Problem Statement
 
 ADR-0012 gates every read of the OrgChart Visibility tables behind
-`CallerAdminCheck`, and names as a decision driver that the whole family
+the shared admin gate, and names as a decision driver that the whole family
 "behaves identically under the same filter". It also leaves the door open:
 a later ADR may relax specific reads, and offers
 `GET /v1/person-roles?person=<self>` as the example.
@@ -146,6 +146,6 @@ allow would be the failure this endpoint exists to prevent.
 - Endpoint: `services/identity-resolution/src/api/visible_persons.rs`
 - SQL: `subchart_repo::visible_targets`, `subchart_repo::has_wildcard_grant`
 - Tests: `infra::db::visible_set_live_tests`,
-  `src/ingestion/tests/e2e/identity/test_visible_persons.py`
+  `tests/stand/api/identity/test_visible_persons.py`
 - Related: ADR-0012 (admin-only reads — relaxed here for one read),
   ADR-0010 (org-chart cache), ADR-0011 (persons collation)

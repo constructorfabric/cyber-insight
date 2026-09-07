@@ -243,7 +243,7 @@ preflight_k8s() {
   # Block helm v4.2.1 — known --wait regression that hangs the full
   # --timeout on every fast hook-resource deletion. Trips bootstrap-*
   # and system-* steps that use `before-hook-creation` lifecycle hooks
-  # (ingress-nginx admission, cert-manager startupapicheck, etc.).
+  # (envoy-gateway certgen, cert-manager startupapicheck, etc.).
   # See helm/helm#32214; #32230 is the proposed revert. Pin to v4.2.0
   # or v3.x until v4.2.2+ ships.
   if command -v helm >/dev/null 2>&1; then
@@ -401,6 +401,13 @@ write_compose() {
   local fe_mode="dev"
   [[ "$NO_FRONTEND" == "true" ]] && fe_mode="ghcr"
 
+  local mcp_enabled=false
+  local clickhouse_mcp_password=""
+  if [[ "$CLICKHOUSE_EXTERNAL" != "true" ]]; then
+    mcp_enabled=true
+    clickhouse_mcp_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+
   # ── Seeding decision for external DBs ─────────────────────────────
   local seed_external=false
   if [[ "$MARIADB_EXTERNAL" == "true" || "$CLICKHOUSE_EXTERNAL" == "true" ]]; then
@@ -427,6 +434,8 @@ write_compose() {
   update_env_var "$env_file" CLICKHOUSE_DATABASE           "$CLICKHOUSE_DATABASE"
   update_env_var "$env_file" CLICKHOUSE_USER               "$CLICKHOUSE_USER"
   update_env_var "$env_file" CLICKHOUSE_PASSWORD           "$CLICKHOUSE_PASSWORD"
+  update_env_var "$env_file" MCP_ENABLED                   "$mcp_enabled"
+  update_env_var "$env_file" CLICKHOUSE_MCP_PASSWORD       "$clickhouse_mcp_password"
   update_env_var "$env_file" TENANT_DEFAULT_ID             "$TENANT_DEFAULT_ID"
   update_env_var "$env_file" DEV_USER_EMAIL                "$DEV_USER_EMAIL"
   update_env_var "$env_file" FRONTEND_MODE                 "$fe_mode"
@@ -550,15 +559,15 @@ write_k8s_local() {
   # ── L0 cluster prereqs pre-flight ────────────────────────────────
   #
   # bootstrap-* targets call `helm upgrade --install`, which fails if a
-  # matching resource already exists but isn't Helm-managed (OrbStack
-  # ships its own ingress-nginx, k3s sometimes ships traefik+klipper, a
+  # matching resource already exists but isn't Helm-managed (a prior
+  # manual Envoy Gateway install, k3s sometimes ships traefik+klipper, a
   # shared sandbox cluster might have cert-manager from another stack,
   # etc). For each controller, probe the cluster, show what's there,
   # and let the operator decide whether to skip our install. No silent
   # reconfig — if the operator wants to install anyway and it fails,
   # the Makefile aborts with helm's own error and they can clean up.
   echo "--- L0 cluster prereqs (preflight) ---" >&2
-  local l0_ingress_nginx=true l0_cert_manager=true l0_sealed_secrets=true
+  local l0_envoy_gateway=true l0_cert_manager=true l0_sealed_secrets=true
   _check_l0_controller() {
     local label="$1" ns="$2" release="$3" probe_kind="$4" probe_name="$5"
     local found_present=false found_helm=false
@@ -586,7 +595,7 @@ write_k8s_local() {
     echo "    OK — bootstrap will proceed; clean up the existing install manually if helm refuses." >&2
     return 0
   }
-  _check_l0_controller "ingress-nginx"      ingress-nginx ingress-nginx            sa     ingress-nginx           || l0_ingress_nginx=false
+  _check_l0_controller "envoy-gateway"      envoy-gateway-system envoy-gateway     sa     envoy-gateway           || l0_envoy_gateway=false
   _check_l0_controller "cert-manager"       cert-manager  cert-manager             deploy cert-manager            || l0_cert_manager=false
   _check_l0_controller "sealed-secrets"     kube-system   sealed-secrets-controller deploy sealed-secrets-controller || l0_sealed_secrets=false
   echo "" >&2
@@ -623,7 +632,7 @@ write_k8s_local() {
   # ── Write inventory.yaml ─────────────────────────────────────────
   cp "$inventory_tmpl" "$inventory_out"
   yq -i ".kubeContext = \"$kube_ctx\"" "$inventory_out"
-  yq -i ".bootstrap.ingressNginx  = $l0_ingress_nginx"  "$inventory_out"
+  yq -i ".bootstrap.envoyGateway  = $l0_envoy_gateway"  "$inventory_out"
   yq -i ".bootstrap.certManager   = $l0_cert_manager"   "$inventory_out"
   yq -i ".bootstrap.sealedSecrets = $l0_sealed_secrets" "$inventory_out"
   yq -i ".system.airbyte         = $sys_airbyte"          "$inventory_out"
@@ -752,9 +761,9 @@ EOF
   # holds the committed sandbox config.
   cp "$values_tmpl" "$values_out"
   yq -i ".global.tenantDefaultId = \"$TENANT_DEFAULT_ID\"" "$values_out"
-  # Full auth: the dev login identity is the fakeidp default user (must exist in
+  # Full auth: the dev login identity is a realm user (must exist in
   # identity's `persons`), not a frontend impersonation escape hatch.
-  yq -i ".fakeidp.devUserEmail   = \"$DEV_USER_EMAIL\""    "$values_out"
+  yq -i ".keycloak.devUserEmail  = \"$DEV_USER_EMAIL\""    "$values_out"
   echo "Wrote $values_out." >&2
 
   cat >&2 <<EOF
@@ -762,19 +771,18 @@ EOF
 Next: \`make deploy ENV=local\` (already running, if invoked from there)
 will continue with: bootstrap → fetch-cert → seal → system → deploy-app.
 
-Manual demo-data seeding (the compose stack auto-seeds; the k8s stack
-doesn't ship a seed image yet — port-forward and run from the host):
+Demo-data seeding (the compose stack auto-seeds; a k8s stand is seeded by
+one command, which reads the stand's own coordinates and runs the seeder as
+a Job on the toolbox image the release already pins):
 
-  kubectl -n insight-infra port-forward svc/mariadb    3306:3306 &
-  kubectl -n insight-infra port-forward svc/clickhouse 8123:8123 &
-  cd $ROOT_DIR/deploy/seed
-  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-  MARIADB_HOST=127.0.0.1 CLICKHOUSE_HOST=127.0.0.1 \\
-    MARIADB_USER=$MARIADB_USER MARIADB_PASSWORD=$MARIADB_PASSWORD \\
-    CLICKHOUSE_USER=$CLICKHOUSE_USER CLICKHOUSE_PASSWORD=$CLICKHOUSE_PASSWORD \\
-    .venv/bin/python seed.py all
+  $ROOT_DIR/src/ingestion/tools/seed/seed-stand.sh -n insight --email you@example.com
 
-See deploy/seed/README.md for the package layout.
+Add --dry-run to read the Job it would apply, or --step identity to seed only
+the roster (no ClickHouse, finishes in seconds). A user with the --email
+address must exist in the realm first: the authenticator resolves people by
+the email claim.
+
+See src/ingestion/tools/seed/README.md for the flags and the package layout.
 
 EOF
 }

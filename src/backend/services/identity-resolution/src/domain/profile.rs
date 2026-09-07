@@ -1,14 +1,79 @@
 //! Profile domain: the `POST /v1/profiles` request/response DTOs and the
 //! assembly of a person's observations into the response.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
+use utoipa::openapi::schema::{
+    Array, ArrayBuilder, KnownFormat, ObjectBuilder, SchemaFormat, Type,
+};
 use uuid::Uuid;
 
 use crate::infra::db::entities::persons;
 use crate::infra::db::persons_repo::SourceIdRow;
+
+pub const MAX_PROFILE_BATCH_PERSON_IDS: usize = 1000;
+
+pub const SAFE_PROFILE_ATTRIBUTE_TYPES: [&str; 10] = [
+    "email",
+    "display_name",
+    "first_name",
+    "last_name",
+    "department",
+    "division",
+    "job_title",
+    "status",
+    "username",
+    "employee_id",
+];
+
+/// Ordered canonical people to hydrate for an authorized consumer.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchProfilesRequest {
+    #[serde(deserialize_with = "deserialize_batch_person_ids")]
+    #[schema(schema_with = batch_person_ids_schema)]
+    pub person_ids: Vec<Uuid>,
+}
+
+fn batch_person_ids_schema() -> Array {
+    let uuid = ObjectBuilder::new()
+        .schema_type(Type::String)
+        .format(Some(SchemaFormat::KnownFormat(KnownFormat::Uuid)));
+
+    ArrayBuilder::new()
+        .items(uuid)
+        .min_items(Some(1))
+        .max_items(Some(MAX_PROFILE_BATCH_PERSON_IDS))
+        .unique_items(true)
+        .build()
+}
+
+/// Ordered visible profiles from [`BatchProfilesRequest`].
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchProfilesResponse {
+    pub profiles: Vec<BatchProfileResponse>,
+}
+
+/// Generic safe profile data for one canonical person.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchProfileResponse {
+    pub person_id: Uuid,
+    pub attributes: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<BatchSupervisorResponse>,
+}
+
+/// Supervisor associated with one batch profile.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchSupervisorResponse {
+    pub person_id: Uuid,
+    pub attributes: BTreeMap<String, String>,
+}
 
 /// Body of `POST /v1/profiles`. `value_type = "email"` matches across all
 /// sources for the tenant; `value_type = "id"` matches a source-native account
@@ -31,13 +96,13 @@ pub struct ResolveProfileRequest {
 /// current attributes, the org tree (`supervisor_*` / `parent_*` /
 /// `subordinates[]`), and every current source-native id (`ids[]`). Null
 /// attribute fields are omitted from JSON; `subordinates`/`ids` are always
-/// present (empty when none), matching the .NET contract.
+/// present (empty when none).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ProfileResponse {
     pub person_id: Uuid,
     pub insight_tenant_id: Uuid,
-    // `email` and `display_name` are always present in JSON (null when absent),
-    // matching the .NET contract (no `[JsonIgnore]` on these two).
+    // `email` and `display_name` are always present in JSON (null when
+    // absent), unlike the attributes below.
     pub email: Option<String>,
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,7 +122,7 @@ pub struct ProfileResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub employee_id: Option<String>,
     // Org tree. `supervisor_*` and the legacy `parent_*` triple are both filled
-    // from the single `org_chart` parent edge (matching the .NET assembler).
+    // from the single `org_chart` parent edge.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supervisor_email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,15 +137,17 @@ pub struct ProfileResponse {
     /// configured `org_chart` source. Always serialized (empty when none).
     pub subordinates: Vec<PersonResponse>,
     /// Every current source-native id for the person (one per source instance).
-    /// Always serialized — an empty array when the person has no ids — matching
-    /// the .NET contract (unlike the attributes above, which are omitted).
+    /// Always serialized — an empty array when the person has no ids, unlike
+    /// the attributes above, which are omitted.
     pub ids: Vec<ProfileIdEntry>,
 }
 
-/// A person node in the org tree (subordinate of a profile), matching the .NET
-/// `PersonResponse`. Unlike `ProfileResponse`, the attribute fields are plain
-/// strings (empty when absent, not omitted) and the `supervisor_*`/`parent_*`
-/// fields serialize as `null` rather than being dropped.
+/// A person node in the org tree (subordinate of a profile). Carries
+/// `username` alongside the profile attributes — the UI labels a nameless
+/// person by their handle (#2711). Unlike `ProfileResponse`, the attribute
+/// fields are plain strings (empty when absent, not omitted) and the
+/// `supervisor_*`/`parent_*` fields serialize as `null` rather than being
+/// dropped.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PersonResponse {
     pub person_id: Uuid,
@@ -92,6 +159,7 @@ pub struct PersonResponse {
     pub division: String,
     pub job_title: String,
     pub status: String,
+    pub username: String,
     pub supervisor_email: Option<String>,
     pub supervisor_name: Option<String>,
     pub parent_email: Option<String>,
@@ -106,8 +174,7 @@ pub struct PersonResponse {
 }
 
 /// One source-native account id bound to the person — the latest
-/// `value_type='id'` observation per source instance. Ported from the .NET
-/// `ProfileIdEntry`.
+/// `value_type='id'` observation per source instance.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ProfileIdEntry {
     pub insight_source_type: String,
@@ -117,7 +184,7 @@ pub struct ProfileIdEntry {
 
 /// The parent (a.k.a. supervisor) edge resolved into the fields written onto
 /// the response. Both the `supervisor_*` and legacy `parent_*` fields come from
-/// this single projection (matching the .NET `PersonAssembler`). `None` leaves
+/// this single projection. `None` leaves
 /// every parent field null.
 pub struct ParentProjection {
     pub person_id: Uuid,
@@ -129,11 +196,83 @@ pub struct ParentProjection {
 
 // Marker traits the toolkit `OperationBuilder` requires (alongside `ToSchema`).
 impl toolkit::api::api_dto::RequestApiDto for ResolveProfileRequest {}
+impl toolkit::api::api_dto::RequestApiDto for BatchProfilesRequest {}
 impl toolkit::api::api_dto::ResponseApiDto for ProfileResponse {}
 impl toolkit::api::api_dto::ResponseApiDto for PersonResponse {}
+impl toolkit::api::api_dto::ResponseApiDto for BatchProfilesResponse {}
+
+fn deserialize_batch_person_ids<'de, D>(deserializer: D) -> Result<Vec<Uuid>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let person_ids = Vec::<Uuid>::deserialize(deserializer)?;
+    validate_batch_person_ids(&person_ids).map_err(serde::de::Error::custom)?;
+    Ok(person_ids)
+}
+
+fn validate_batch_person_ids(person_ids: &[Uuid]) -> Result<(), &'static str> {
+    if person_ids.is_empty() {
+        return Err("person_ids must not be empty");
+    }
+    if person_ids.len() > MAX_PROFILE_BATCH_PERSON_IDS {
+        return Err("too many person_ids");
+    }
+
+    let mut seen = HashSet::with_capacity(person_ids.len());
+    for person_id in person_ids {
+        if person_id.is_nil() {
+            return Err("person_ids must not contain nil UUIDs");
+        }
+        if !seen.insert(*person_id) {
+            return Err("person_ids must not contain duplicates");
+        }
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn assemble_batch_profile(
+    person_id: Uuid,
+    observations: Vec<persons::Model>,
+    supervisor: Option<(Uuid, Vec<persons::Model>)>,
+) -> BatchProfileResponse {
+    let supervisor = supervisor.map(|(person_id, observations)| BatchSupervisorResponse {
+        person_id,
+        attributes: safe_attributes(observations),
+    });
+
+    BatchProfileResponse {
+        person_id,
+        attributes: safe_attributes(observations),
+        supervisor,
+    }
+}
+
+fn safe_attributes(observations: Vec<persons::Model>) -> BTreeMap<String, String> {
+    let mut attributes = latest_values(observations)
+        .into_iter()
+        .filter(|(value_type, _)| SAFE_PROFILE_ATTRIBUTE_TYPES.contains(&value_type.as_str()))
+        .filter_map(|(value_type, value)| non_blank(value).map(|value| (value_type, value)))
+        .collect::<BTreeMap<_, _>>();
+
+    if !attributes.contains_key("first_name")
+        && !attributes.contains_key("last_name")
+        && let Some(display_name) = attributes.get("display_name")
+    {
+        let (first_name, last_name) = split_display_name(display_name);
+        if let Some(first_name) = non_blank(first_name) {
+            attributes.insert("first_name".to_owned(), first_name);
+        }
+        if let Some(last_name) = non_blank(last_name) {
+            attributes.insert("last_name".to_owned(), last_name);
+        }
+    }
+
+    attributes
+}
 
 /// Collapse a person's observations to the current value per attribute — the
-/// latest by `created_at` (per the .NET `ProfileAssembler`, ADR-0003) — and map
+/// latest by `created_at` (ADR-0003) — and map
 /// to the response DTO. `value_effective` is the DB's coalesced display value.
 #[must_use]
 pub fn assemble_profile(
@@ -142,13 +281,14 @@ pub fn assemble_profile(
     observations: Vec<persons::Model>,
     source_ids: Vec<SourceIdRow>,
     parent: Option<ParentProjection>,
-    subordinates: Vec<PersonResponse>,
+    mut subordinates: Vec<PersonResponse>,
 ) -> ProfileResponse {
+    sort_by_label(&mut subordinates);
     let latest = latest_values(observations);
     let get = |value_type: &str| latest.get(value_type).cloned();
 
     // Display-name fallback: derive first/last from display_name only when
-    // neither is observed (matches the .NET `DisplayNameSplitter` path).
+    // neither is observed.
     let display_name = get("display_name");
     let mut first_name = get("first_name");
     let mut last_name = get("last_name");
@@ -207,17 +347,48 @@ pub fn assemble_profile(
     }
 }
 
+fn sort_by_label(nodes: &mut [PersonResponse]) {
+    nodes.sort_by(|a, b| {
+        label_key(a)
+            .cmp(&label_key(b))
+            .then(a.person_id.cmp(&b.person_id))
+    });
+}
+
+// INVARIANT: this precedence is `LABEL_CTES` in `infra::db::person_listing`.
+// A person listed under one name and ordered under another pages unpredictably.
+fn label_key(person: &PersonResponse) -> (bool, String) {
+    let composed = [person.first_name.trim(), person.last_name.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let label = [
+        person.display_name.trim(),
+        composed.as_str(),
+        person.username.trim(),
+        person.email.trim(),
+    ]
+    .into_iter()
+    .find(|candidate| !candidate.is_empty())
+    .unwrap_or_default();
+
+    (label.is_empty(), label.to_lowercase())
+}
+
 /// Assemble a subordinate `PersonResponse` from its observations, parent edge,
-/// and already-hydrated child subtree. Mirrors the .NET `PersonAssembler`:
-/// attribute fields default to the empty string (not omitted), and the
+/// and already-hydrated child subtree. Attribute fields default to the empty
+/// string (not omitted), and the
 /// display-name split fallback applies here too.
 #[must_use]
 pub fn assemble_person(
     person_id: Uuid,
     observations: Vec<persons::Model>,
     parent: Option<ParentProjection>,
-    subordinates: Vec<PersonResponse>,
+    mut subordinates: Vec<PersonResponse>,
 ) -> PersonResponse {
+    sort_by_label(&mut subordinates);
     let latest = latest_values(observations);
     let get = |value_type: &str| latest.get(value_type).cloned().unwrap_or_default();
 
@@ -250,6 +421,7 @@ pub fn assemble_person(
         division: get("division"),
         job_title: get("job_title"),
         status: get("status"),
+        username: get("username"),
         supervisor_email,
         supervisor_name,
         parent_email,
@@ -267,7 +439,7 @@ pub fn latest_values(observations: Vec<persons::Model>) -> HashMap<String, Strin
     let mut latest: HashMap<String, persons::Model> = HashMap::new();
     for obs in observations {
         match latest.get(&obs.value_type) {
-            // Tie-break on `id` (matches the .NET `created_at DESC, id DESC`), so
+            // Tie-break on `id` (`created_at DESC, id DESC`), so
             // the result is deterministic even when `created_at` values are equal
             // (common under batch backfill) and independent of DB row order.
             Some(prev) if (prev.created_at, prev.id) >= (obs.created_at, obs.id) => {}
@@ -279,9 +451,8 @@ pub fn latest_values(observations: Vec<persons::Model>) -> HashMap<String, Strin
     latest
         .into_iter()
         .filter_map(|(k, m)| {
-            // Keep the raw value; trim is only the emptiness test. .NET does not
-            // trim (NullIfBlank / GetValueOrDefault return the value verbatim),
-            // so leading/trailing whitespace in source data must survive.
+            // Keep the raw value; trim is only the emptiness test, so
+            // leading/trailing whitespace in source data survives.
             let value = m.value_effective?;
             (!value.trim().is_empty()).then_some((k, value))
         })
@@ -289,7 +460,7 @@ pub fn latest_values(observations: Vec<persons::Model>) -> HashMap<String, Strin
 }
 
 /// Best-effort split of a display name into `(first, last)` when dedicated
-/// observations are missing. Ported from the .NET `DisplayNameSplitter`:
+/// observations are missing.
 /// `"Last, First"` (comma) → `(after, before)`; `"First Rest"` (space) →
 /// `(before, rest)`; single token → `(token, "")`; blank → `("", "")`.
 fn split_display_name(display_name: &str) -> (String, String) {
@@ -316,6 +487,107 @@ mod tests {
     use super::*;
     use sea_orm::prelude::DateTime;
 
+    #[test]
+    fn batch_request_rejects_duplicate_and_unknown_fields() {
+        let person_id = Uuid::from_u128(1);
+
+        let duplicate = serde_json::json!({
+            "person_ids": [person_id, person_id],
+        });
+        let unknown = serde_json::json!({
+            "person_ids": [person_id],
+            "unexpected": true,
+        });
+
+        assert!(serde_json::from_value::<BatchProfilesRequest>(duplicate).is_err());
+        assert!(serde_json::from_value::<BatchProfilesRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn batch_request_rejects_empty_nil_and_oversized_person_lists() {
+        for person_ids in [
+            Vec::new(),
+            vec![Uuid::nil()],
+            (0..=MAX_PROFILE_BATCH_PERSON_IDS)
+                .map(|offset| Uuid::from_u128(offset as u128 + 1))
+                .collect(),
+        ] {
+            let body = serde_json::json!({"person_ids": person_ids});
+            assert!(
+                serde_json::from_value::<BatchProfilesRequest>(body).is_err(),
+                "should reject {person_ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_response_rejects_unknown_fields() {
+        let body = serde_json::json!({
+            "profiles": [],
+            "unexpected": true,
+        });
+
+        assert!(serde_json::from_value::<BatchProfilesResponse>(body).is_err());
+    }
+
+    #[test]
+    fn batch_profile_exposes_only_safe_present_attributes() -> anyhow::Result<()> {
+        let person_id = Uuid::from_u128(1);
+        let supervisor_id = Uuid::from_u128(2);
+        let created_at: DateTime = "2026-01-01T00:00:00".parse()?;
+
+        let profile = assemble_batch_profile(
+            person_id,
+            vec![
+                obs("email", "person@example.test", created_at),
+                obs("department", "Engineering", created_at),
+                obs("insight_source_id", "not safe", created_at),
+            ],
+            Some((
+                supervisor_id,
+                vec![obs("display_name", "Supervisor", created_at)],
+            )),
+        );
+
+        let body = serde_json::to_value(profile)?;
+        assert_eq!(body["person_id"], person_id.to_string());
+        assert_eq!(body["attributes"]["email"], "person@example.test");
+        assert_eq!(body["attributes"]["department"], "Engineering");
+        assert!(body["attributes"].get("insight_source_id").is_none());
+        assert!(body["attributes"].get("first_name").is_none());
+        assert_eq!(body["supervisor"]["person_id"], supervisor_id.to_string());
+        assert_eq!(
+            body["supervisor"]["attributes"]["display_name"],
+            "Supervisor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batch_profile_matches_safe_profile_name_fallbacks() -> anyhow::Result<()> {
+        let created_at: DateTime = "2026-01-01T00:00:00".parse()?;
+
+        let profile = assemble_batch_profile(
+            Uuid::from_u128(1),
+            vec![
+                obs("display_name", "Example User", created_at),
+                obs("department", "   ", created_at),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            profile.attributes.get("first_name").map(String::as_str),
+            Some("Example")
+        );
+        assert_eq!(
+            profile.attributes.get("last_name").map(String::as_str),
+            Some("User")
+        );
+        assert!(!profile.attributes.contains_key("department"));
+        Ok(())
+    }
+
     /// Minimal observation carrying only the fields `assemble_profile` reads.
     fn obs(value_type: &str, value_effective: &str, created_at: DateTime) -> persons::Model {
         persons::Model {
@@ -328,7 +600,6 @@ mod tests {
             value_full_text: None,
             value: None,
             value_effective: Some(value_effective.to_owned()),
-            value_hash: None,
             person_id: vec![0u8; 16],
             author_person_id: vec![0u8; 16],
             reason: None,
@@ -590,12 +861,16 @@ mod tests {
         let t: DateTime = "2026-01-01T00:00:00".parse()?;
         let leaf = assemble_person(
             Uuid::from_u128(30),
-            vec![obs("email", "leaf@example.com", t)],
+            vec![
+                obs("email", "leaf@example.com", t),
+                obs("username", "leafhandle", t),
+            ],
             None,
             Vec::new(),
         );
-        // Absent attributes are empty strings (not omitted), per .NET PersonResponse.
+        // Absent attributes are empty strings, not omitted.
         assert_eq!(leaf.email, "leaf@example.com");
+        assert_eq!(leaf.username, "leafhandle");
         assert_eq!(leaf.department, "");
         assert_eq!(leaf.first_name, "");
         assert!(leaf.subordinates.is_empty());
@@ -636,6 +911,131 @@ mod tests {
         Ok(())
     }
 
+    fn named(id: u128, value_type: &str, value: &str, t: DateTime) -> PersonResponse {
+        assemble_person(
+            Uuid::from_u128(id),
+            vec![obs(value_type, value, t)],
+            None,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn subordinates_are_served_in_label_order() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let zed = named(31, "display_name", "Zed Alder", t);
+        let ann = named(32, "display_name", "ann brooks", t);
+
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("display_name", "Root", t)],
+            vec![],
+            None,
+            vec![zed, ann],
+        );
+
+        assert_eq!(
+            profile
+                .subordinates
+                .iter()
+                .map(|s| s.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ann brooks", "Zed Alder"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn person_nodes_order_their_own_children_too() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let yan = named(41, "display_name", "Yan Cole", t);
+        let bob = named(42, "display_name", "Bob Dahl", t);
+
+        let mid = assemble_person(
+            Uuid::from_u128(40),
+            vec![obs("display_name", "Mid Manager", t)],
+            None,
+            vec![yan, bob],
+        );
+
+        assert_eq!(
+            mid.subordinates
+                .iter()
+                .map(|s| s.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Bob Dahl", "Yan Cole"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn label_order_follows_the_roster_listing_precedence() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let handle = named(51, "username", "octo-bot", t);
+        let address = named(52, "email", "ada@example.com", t);
+        let parts = assemble_person(
+            Uuid::from_u128(53),
+            vec![obs("first_name", "Mia", t), obs("last_name", "Fox", t)],
+            None,
+            Vec::new(),
+        );
+
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("display_name", "Root", t)],
+            vec![],
+            None,
+            vec![handle, address, parts],
+        );
+
+        assert_eq!(
+            profile
+                .subordinates
+                .iter()
+                .map(|s| s.person_id)
+                .collect::<Vec<_>>(),
+            vec![
+                Uuid::from_u128(52),
+                Uuid::from_u128(53),
+                Uuid::from_u128(51)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_person_with_no_label_sorts_last_but_keeps_a_stable_place() -> anyhow::Result<()> {
+        let t: DateTime = "2026-01-01T00:00:00".parse()?;
+        let nameless_high = assemble_person(Uuid::from_u128(62), vec![], None, Vec::new());
+        let nameless_low = assemble_person(Uuid::from_u128(61), vec![], None, Vec::new());
+        let zed = named(63, "display_name", "Zed Alder", t);
+
+        let profile = assemble_profile(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            vec![obs("display_name", "Root", t)],
+            vec![],
+            None,
+            vec![nameless_high, nameless_low, zed],
+        );
+
+        assert_eq!(
+            profile
+                .subordinates
+                .iter()
+                .map(|s| s.person_id)
+                .collect::<Vec<_>>(),
+            vec![
+                Uuid::from_u128(63),
+                Uuid::from_u128(61),
+                Uuid::from_u128(62)
+            ]
+        );
+        Ok(())
+    }
+
     #[test]
     fn values_are_not_trimmed_only_dropped_when_blank() -> anyhow::Result<()> {
         let t: DateTime = "2026-01-01T00:00:00".parse()?;
@@ -650,7 +1050,7 @@ mod tests {
             None,
             Vec::new(),
         );
-        // .NET returns the value verbatim (no TRIM); only blank collapses to None.
+        // The value is returned verbatim (no TRIM); only blank collapses to None.
         assert_eq!(profile.department.as_deref(), Some(" Engineering "));
         assert_eq!(profile.division, None);
         Ok(())

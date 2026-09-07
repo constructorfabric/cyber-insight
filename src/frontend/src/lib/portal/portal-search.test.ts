@@ -1,6 +1,11 @@
+import { retainSearchParams } from "@tanstack/react-router";
 import { describe, expect, it } from "vitest";
 
-import { validatePortalSearch } from "./portal-search";
+import {
+  PORTAL_SEARCH_KEYS,
+  applySearchPatch,
+  validatePortalSearch,
+} from "./portal-search";
 
 /**
  * Search params are user-editable text and arrive from links other people
@@ -13,6 +18,12 @@ describe("validatePortalSearch", () => {
     expect(
       validatePortalSearch({ zone: "directions", dir: "dev", lens: "Delivery" }),
     ).toMatchObject({ zone: "directions", dir: "dev", lens: "Delivery" });
+    // A repository is carried by its dimension VALUE, so a shared link
+    // reproduces the one that was opened even when two share a display name.
+    expect(
+      validatePortalSearch({ lens: "Repositories", repo: "src-a:acme/api" }),
+    ).toMatchObject({ lens: "Repositories", repo: "src-a:acme/api" });
+    expect(validatePortalSearch({ repo: "" }).repo).toBeUndefined();
   });
 
   it("lowercases the scope — an email is case-insensitive but our keys are not", () => {
@@ -70,5 +81,70 @@ describe("validatePortalSearch", () => {
         validatePortalSearch({ from: "2026-13-45", to: "2026-13-46" }),
       ).not.toHaveProperty("from");
     });
+  });
+});
+
+describe("the ingestion drill-down key", () => {
+  it("keeps a connector slug", () => {
+    expect(validatePortalSearch({ conn: "bamboohr" }).conn).toBe("bamboohr");
+    expect(validatePortalSearch({ conn: "claude_enterprise" }).conn).toBe(
+      "claude_enterprise",
+    );
+  });
+
+  it("drops anything the endpoint would refuse as a scope", () => {
+    // A hand-edited value must degrade to the overview, not reach the API and
+    // come back a 400 the reader cannot act on.
+    for (const raw of ["Jira", "bronze jira", "jira;drop", "jira/../x", ""]) {
+      expect(validatePortalSearch({ conn: raw }).conn, raw).toBeUndefined();
+    }
+  });
+
+  it("is retained across navigation", () => {
+    // Without this the drill-down is lost the moment anything else navigates.
+    expect(PORTAL_SEARCH_KEYS).toContain("conn");
+  });
+});
+
+describe("applySearchPatch", () => {
+  /** The real middleware the portal routes install, over the patched result. */
+  function afterRetain(
+    prev: Record<string, unknown>,
+    patched: Record<string, unknown>
+  ): Record<string, unknown> {
+    const middleware = retainSearchParams(PORTAL_SEARCH_KEYS);
+    return middleware({
+      search: prev as never,
+      next: (() => ({ search: patched, meta: {} })) as never,
+    }) as unknown as Record<string, unknown>;
+  }
+
+  it("survives retention when a key is cleared", () => {
+    // Choosing a preset clears the custom range. Deleting the keys handed them
+    // back: the middleware restores whatever is absent, so the range stayed in
+    // force and the preset did nothing.
+    const prev = { period: "month", from: "2026-05-01", to: "2026-05-08" };
+    const patched = applySearchPatch(prev, {
+      period: "quarter",
+      from: undefined,
+      to: undefined,
+    });
+
+    expect("from" in patched).toBe(true);
+    const kept = afterRetain(prev, patched);
+    expect(kept.period).toBe("quarter");
+    expect(kept.from).toBeUndefined();
+    expect(kept.to).toBeUndefined();
+    expect(validatePortalSearch(kept)).toEqual({ period: "quarter" });
+  });
+
+  it("clears a key given an empty string or false, and leaves omitted keys alone", () => {
+    const patched = applySearchPatch(
+      { zone: "directions", slice: "division", direct: true },
+      { slice: "", direct: false }
+    );
+    expect(patched.zone).toBe("directions");
+    expect(patched.slice).toBeUndefined();
+    expect(patched.direct).toBeUndefined();
   });
 });

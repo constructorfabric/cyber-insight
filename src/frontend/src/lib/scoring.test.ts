@@ -66,25 +66,34 @@ describe("gradeSectionStanding", () => {
 });
 
 describe("sectionStandingPhrase", () => {
-  it("says no peer data with nothing rankable", () => {
-    expect(sectionStandingPhrase(counts({ unranked: 2 }))).toBe("no peer data");
+  it("says no comparison with nothing rankable", () => {
+    expect(sectionStandingPhrase(counts({ unranked: 2 }))).toBe("no comparison");
   });
 
   it("prefers behind over ahead on mixed profiles", () => {
     expect(sectionStandingPhrase(counts({ bottom: 2, top: 3 }))).toBe(
-      "2 behind peers",
+      "2 of 5 behind peers",
     );
   });
 
   it("reports ahead when nothing is behind", () => {
     expect(sectionStandingPhrase(counts({ top: 3, inPack: 1 }))).toBe(
-      "3 ahead of peers",
+      "3 of 4 ahead of peers",
+    );
+  });
+
+  it("names the set it counted, since the card shows fewer rows than that", () => {
+    // A bare "4 ahead of peers" over four rows with no green mark on any of
+    // them read as a claim about those rows, and the reader had no way to see
+    // that the badge was counting the whole section.
+    expect(sectionStandingPhrase(counts({ bottom: 5, inPack: 7 }))).toBe(
+      "5 of 12 behind peers",
     );
   });
 
   it("reports on par for an all-in-pack section", () => {
     expect(sectionStandingPhrase(counts({ inPack: 4 }))).toBe(
-      "on par with peers",
+      "near the median",
     );
   });
 });

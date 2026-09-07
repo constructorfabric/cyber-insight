@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+
+import type { NormalizedMetricResult } from "@/lib/metrics/collection";
+import { bucketBreakdown, bucketRange } from "./trend-drilldown";
+
+function result(
+  points: Record<string, ReadonlyArray<[string, number | null]>>,
+): NormalizedMetricResult {
+  return {
+    timeseries: {
+      bucket: "day",
+      series: Object.entries(points).map(([entity_id, pts]) => ({
+        entity_id,
+        points: pts.map(([bucket_start, value]) => ({ bucket_start, value })),
+      })),
+    },
+  } as unknown as NormalizedMetricResult;
+}
+
+const MEMBERS = [
+  { person_id: "a", name: "Ada" },
+  { person_id: "b", name: "Grace" },
+];
+
+
+function multiSeriesResult(): NormalizedMetricResult {
+  return {
+    timeseries: {
+      bucket: "day",
+      series: [
+        {
+          entity_id: "a",
+          points: [{ bucket_start: "2026-08-01", value: 2 }],
+        },
+        {
+          entity_id: "a",
+          points: [{ bucket_start: "2026-08-01", value: 3 }],
+        },
+      ],
+    },
+  } as unknown as NormalizedMetricResult;
+}
+
+describe("bucketBreakdown", () => {
+  it("totals each bucket and names who contributed to it", () => {
+    const byKey = new Map([
+      [
+        "git.prs_merged",
+        result({
+          a: [["2026-08-01", 2]],
+          b: [["2026-08-01", 3]],
+        }),
+      ],
+    ]);
+
+    expect(bucketBreakdown("git.prs_merged", byKey, MEMBERS)).toEqual([
+      { date: "2026-08-01", total: 5, contributors: ["Ada", "Grace"] },
+    ]);
+  });
+
+  it("does not count a measured zero as a contribution", () => {
+    const byKey = new Map([
+      [
+        "git.prs_merged",
+        result({
+          a: [["2026-08-01", 0]],
+          b: [["2026-08-01", 4]],
+        }),
+      ],
+    ]);
+
+    expect(bucketBreakdown("git.prs_merged", byKey, MEMBERS)).toEqual([
+      { date: "2026-08-01", total: 4, contributors: ["Grace"] },
+    ]);
+  });
+
+  it("reads oldest bucket first", () => {
+    const byKey = new Map([
+      [
+        "git.prs_merged",
+        result({
+          a: [
+            ["2026-08-09", 1],
+            ["2026-08-01", 1],
+          ],
+        }),
+      ],
+    ]);
+
+    expect(
+      bucketBreakdown("git.prs_merged", byKey, MEMBERS).map((r) => r.date),
+    ).toEqual(["2026-08-01", "2026-08-09"]);
+  });
+
+  it("counts a person once in a bucket they have several readings in", () => {
+    const byKey = new Map([["git.prs_merged", multiSeriesResult()]]);
+
+    expect(bucketBreakdown("git.prs_merged", byKey, MEMBERS)).toEqual([
+      { date: "2026-08-01", total: 5, contributors: ["Ada"] },
+    ]);
+  });
+
+  it("counts two people who share a display name as two contributors", () => {
+    const byKey = new Map([
+      [
+        "git.prs_merged",
+        result({
+          a: [["2026-08-01", 1]],
+          b: [["2026-08-01", 1]],
+        }),
+      ],
+    ]);
+    const namesakes = [
+      { person_id: "a", name: "Alex Kim" },
+      { person_id: "b", name: "Alex Kim" },
+    ];
+
+    expect(bucketBreakdown("git.prs_merged", byKey, namesakes)).toEqual([
+      { date: "2026-08-01", total: 2, contributors: ["Alex Kim", "Alex Kim"] },
+    ]);
+  });
+
+  it("answers with nothing for a metric the response does not carry", () =>
+    expect(bucketBreakdown("git.absent", new Map(), MEMBERS)).toEqual([]));
+});
+
+describe("bucketRange", () => {
+  it("makes a day bucket its own single day", () => {
+    expect(bucketRange("2026-07-14", "day")).toEqual({
+      from: "2026-07-14",
+      to: "2026-07-14",
+    });
+  });
+
+  it("covers the seven days a week bucket stands for", () => {
+    expect(bucketRange("2026-07-13", "week")).toEqual({
+      from: "2026-07-13",
+      to: "2026-07-19",
+    });
+  });
+
+  it("closes a month bucket on the month's own last day", () => {
+    // February, and a leap year, because a fixed 30 or 31 would pass the rest.
+    expect(bucketRange("2026-02-01", "month")).toEqual({
+      from: "2026-02-01",
+      to: "2026-02-28",
+    });
+    expect(bucketRange("2024-02-01", "month")).toEqual({
+      from: "2024-02-01",
+      to: "2024-02-29",
+    });
+  });
+
+  it("crosses a year boundary rather than clamping inside one", () => {
+    expect(bucketRange("2026-12-28", "week")).toEqual({
+      from: "2026-12-28",
+      to: "2027-01-03",
+    });
+  });
+
+  it("answers a label it cannot read as that label alone", () => {
+    expect(bucketRange("not a date", "week")).toEqual({
+      from: "not a date",
+      to: "not a date",
+    });
+  });
+});

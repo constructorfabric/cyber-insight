@@ -27,10 +27,22 @@ fn openapi_document_covers_the_route_table() -> anyhow::Result<()> {
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("paths object missing"))?;
     for expected in [
+        "/v1/ai/config",
+        "/v1/ai/context",
+        "/v1/ai/context/{id}",
+        "/v1/ai/credentials",
+        "/v1/ai/explain",
+        "/v1/ai/settings",
+        "/v1/connector-health",
+        "/v1/connector-health/{connector}/syncs",
+        "/v1/feedback",
+        "/v1/ingestion/intensity",
         "/v1/metric-definitions",
         "/v1/metric-drilldown",
         "/v1/metric-drilldown/export",
         "/v1/metric-results",
+        "/v1/reports/preview",
+        "/v1/reports/export",
         "/v1/metrics",
         "/v1/metrics/export",
         "/v1/metrics/import",
@@ -38,12 +50,15 @@ fn openapi_document_covers_the_route_table() -> anyhow::Result<()> {
         "/v1/queries",
         "/v1/queries/{id}",
         "/v1/queries/{id}/run",
+        "/v1/usage/config",
+        "/v1/usage/events",
+        "/v1/usage/summary",
     ] {
         assert!(paths.contains_key(expected), "missing path {expected}");
     }
     assert_eq!(
         paths.len(),
-        11,
+        26,
         "the contract must carry exactly the surviving paths, got {:?}",
         paths.keys().collect::<Vec<_>>()
     );
@@ -73,6 +88,21 @@ fn openapi_document_covers_the_route_table() -> anyhow::Result<()> {
     assert!(
         schemas.contains_key("TimeseriesDto"),
         "TimeseriesDto schema missing"
+    );
+    Ok(())
+}
+
+#[test]
+fn report_export_request_is_strict_and_caps_metric_keys() -> anyhow::Result<()> {
+    let json = serde_json::to_value(openapi_document()?)?;
+    let request = &json["components"]["schemas"]["ReportExportRequest"];
+
+    assert_eq!(request["type"], "object");
+    assert_eq!(request["additionalProperties"], false);
+    assert_eq!(request["properties"]["metric_keys"]["maxItems"], 100);
+    assert_eq!(
+        request["required"],
+        serde_json::json!(["subject", "period", "granularity", "metric_keys", "format"])
     );
     Ok(())
 }
