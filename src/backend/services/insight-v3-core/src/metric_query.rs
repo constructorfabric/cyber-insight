@@ -23,7 +23,36 @@ pub(crate) struct MetricQuery {
     #[serde(default)]
     filters: Vec<Filter>,
     #[serde(default)]
+    order_by: Option<OrderBy>,
+    #[serde(default)]
     limit: Option<u32>,
+}
+
+/// How to sort the rows. Without it the grouping's own columns order the
+/// result, which cannot answer "the most" or "the largest".
+#[derive(Debug, Deserialize)]
+struct OrderBy {
+    /// One of the query's own `as_name` values.
+    field: String,
+    #[serde(default)]
+    direction: Direction,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Direction {
+    #[default]
+    Asc,
+    Desc,
+}
+
+impl Direction {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +201,8 @@ pub(crate) enum MetricQueryError {
     Identifier(String),
     #[error("`{0}` must name one of this query's as_name values")]
     GroupBy(String),
+    #[error("`{0}` cannot order the rows: it is not one of this query's as_name values")]
+    OrderBy(String),
     #[error("a metric must select at least one field")]
     NoFields,
     #[error("filter value for `{0}` does not match its declared type")]
@@ -245,8 +276,17 @@ impl MetricQuery {
                 .collect();
             sql.push_str(" GROUP BY ");
             sql.push_str(&backticked.join(", "));
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&backticked.join(", "));
+
+            if self.order_by.is_none() {
+                sql.push_str(" ORDER BY ");
+                sql.push_str(&backticked.join(", "));
+            }
+        }
+        if let Some(order) = &self.order_by {
+            if !as_names.contains(order.field.as_str()) {
+                return Err(MetricQueryError::OrderBy(order.field.clone()));
+            }
+            let _ = write!(sql, " ORDER BY `{}` {}", order.field, order.direction.sql());
         }
         let limit = self.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
         let _ = write!(sql, " LIMIT {limit}");
@@ -471,6 +511,79 @@ mod tests {
         assert!(matches!(
             metric.compile(),
             Err(MetricQueryError::Identifier(_))
+        ));
+    }
+
+    #[test]
+    fn ordering_by_a_selected_value_beats_the_grouping_order() {
+        // "Which author changed the most lines" is unanswerable without
+        // this: ordering by the grouped column returns whoever sorts first
+        // alphabetically, and the reply presents it as the largest.
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "json": "author", "type": "string", "as_name": "author" },
+                { "json": "lines", "type": "int", "agg": "sum", "as_name": "total_lines" }
+            ],
+            "group_by": ["author"],
+            "filters": [],
+            "order_by": { "field": "total_lines", "direction": "desc" },
+            "limit": 1
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("the query compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("ORDER BY `total_lines` DESC"),
+            "{}",
+            compiled.sql
+        );
+        // One ORDER BY, not the grouping's as well.
+        assert_eq!(
+            compiled.sql.matches("ORDER BY").count(),
+            1,
+            "{}",
+            compiled.sql
+        );
+        assert!(compiled.sql.ends_with(" LIMIT 1"), "{}", compiled.sql);
+    }
+
+    #[test]
+    fn ordering_defaults_to_ascending() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "json": "day", "type": "string", "as_name": "day" }],
+            "group_by": [],
+            "filters": [],
+            "order_by": { "field": "day" }
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("the query compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("ORDER BY `day` ASC"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn ordering_by_a_column_the_query_does_not_select_is_refused() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "json": "day", "type": "string", "as_name": "day" }],
+            "group_by": [],
+            "filters": [],
+            "order_by": { "field": "lines" }
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::OrderBy(_))
         ));
     }
 

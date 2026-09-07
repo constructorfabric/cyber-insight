@@ -91,6 +91,13 @@ function MetricSummary({ definition }: { definition: MetricDefinition }) {
           </span>
         </Row>
       ) : null}
+      {definition.order_by ? (
+        <Row label="Ordered by">
+          <span className="font-mono">
+            {definition.order_by.field} {definition.order_by.direction ?? "asc"}
+          </span>
+        </Row>
+      ) : null}
       {definition.limit ? (
         <Row label="Limit">
           <span className="font-mono">{definition.limit}</span>

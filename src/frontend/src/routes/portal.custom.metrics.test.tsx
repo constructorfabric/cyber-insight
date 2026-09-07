@@ -45,6 +45,7 @@ describe("/portal/custom/metrics", () => {
       ],
       group_by: ["day"],
       filters: [{ json: "event", type: "string", op: "eq", value: "commit" }],
+      order_by: { field: "total_lines", direction: "desc" },
       limit: 100,
     });
 
@@ -57,6 +58,8 @@ describe("/portal/custom/metrics", () => {
       await screen.findByText("day as day, sum(lines) as total_lines")
     ).toBeInTheDocument();
     expect(await screen.findByText("event eq commit")).toBeInTheDocument();
+    // Ordering decides which row answers "the most", so the catalogue says it.
+    expect(await screen.findByText("total_lines desc")).toBeInTheDocument();
     expect(await screen.findByText("100")).toBeInTheDocument();
   });
 
@@ -74,6 +77,7 @@ describe("/portal/custom/metrics", () => {
     expect(await screen.findByText("everything")).toBeInTheDocument();
     expect(screen.queryByText("Grouped by")).not.toBeInTheDocument();
     expect(screen.queryByText("Filtered")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ordered by")).not.toBeInTheDocument();
     expect(screen.queryByText("Limit")).not.toBeInTheDocument();
   });
 

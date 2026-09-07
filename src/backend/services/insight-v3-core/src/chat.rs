@@ -369,7 +369,8 @@ fn system_prompt(tables: &[KnownTable]) -> String {
          Write replies as plain prose. No markdown: asterisks and hashes are shown as typed.\n\n\
          - Call `answer` to answer a question: it runs one query and stores nothing. Leave the query out when the question is about what data exists.\n\
          - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition. A create that carries none of the three is refused, and a dashboard needs the metric and widgets it draws.\n\n\
-         A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"limit\":<int>|null}.\n\
+         A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"order_by\":{\"field\":<as_name>,\"direction\":\"asc\"|\"desc\"}|null,\"limit\":<int>|null}.\n\
+         A question about the most, the largest or the top of something needs order_by on the aggregated field with direction desc, and a limit. Without it the rows come back in the grouping's order and the first row is not the largest.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
          A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
     );
@@ -469,6 +470,15 @@ fn metric_query_schema() -> Value {
                 },
             },
             "group_by": { "type": "array", "items": plain },
+            "order_by": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["field"],
+                "properties": {
+                    "field": { "type": "string" },
+                    "direction": { "enum": ["asc", "desc"] },
+                },
+            },
             "filters": {
                 "type": "array",
                 "items": {
@@ -680,6 +690,18 @@ mod tests {
             .unwrap_or_else(|error| panic!("an answer needs no query: {error}"));
 
         assert!(matches!(proposal, Proposal::Answer { query: None, .. }));
+    }
+
+    #[test]
+    fn the_query_schema_offers_an_ordering() {
+        let tools = proposal_tools();
+        let order = &tools[0]["input_schema"]["properties"]["query"]["properties"]["order_by"];
+
+        assert_eq!(order["properties"]["field"]["type"], json!("string"));
+        assert_eq!(
+            order["properties"]["direction"]["enum"],
+            json!(["asc", "desc"])
+        );
     }
 
     #[test]

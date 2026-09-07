@@ -34,6 +34,7 @@ export interface MetricDefinition {
     op: string;
     value: unknown;
   }[];
+  order_by?: { field: string; direction?: "asc" | "desc" };
   limit?: number;
 }
 
