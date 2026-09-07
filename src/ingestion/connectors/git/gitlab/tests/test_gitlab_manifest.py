@@ -108,9 +108,9 @@ def test_every_stream_opts_out_of_schema_auto_import() -> None:
 
 def test_the_proxy_never_learns_the_vendor_token_through_a_query_string() -> None:
     """The GitLab token rides to the proxy in a header only."""
-    for requester in _requesters(_streams()):
-        if "git_proxy_url" not in requester["url_base"]:
-            continue
+    proxy_requesters = [r for r in _requesters(_streams()) if "git_proxy_url" in r["url_base"]]
+    assert proxy_requesters
+    for requester in proxy_requesters:
         params = " ".join(str(v) for v in (requester.get("request_parameters") or {}).values())
         assert "gitlab_token" not in params, requester["path"]
 

@@ -459,7 +459,7 @@ definitions:
       requester:
         <<: [*vendor_requester, *merge_requests_path]
         request_parameters: *merge_requests_listing_params
-        error_handler: *project_scoped_error_handler
+        error_handler: *discovery_error_handler
       record_selector:
         type: RecordSelector
         extractor:
@@ -475,6 +475,8 @@ definitions:
         - "%Y-%m-%dT%H:%M:%S.%f%z"
         - "%Y-%m-%dT%H:%M:%S%z"
         - "%Y-%m-%dT%H:%M:%SZ"
+      step: P1M
+      cursor_granularity: PT0.001S
       lookback_window: P1D
       start_datetime:
         type: MinMaxDatetime
@@ -483,6 +485,10 @@ definitions:
       start_time_option:
         type: RequestOption
         field_name: updated_after
+        inject_into: request_parameter
+      end_time_option:
+        type: RequestOption
+        field_name: updated_before
         inject_into: request_parameter
 
 check:
@@ -1226,7 +1232,7 @@ streams:
       requester:
         <<: [*vendor_requester, *merge_requests_path]
         request_parameters: *merge_requests_listing_params
-        error_handler: *project_scoped_error_handler
+        error_handler: *discovery_error_handler
       record_selector:
         type: RecordSelector
         extractor:

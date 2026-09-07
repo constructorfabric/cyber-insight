@@ -191,7 +191,7 @@ def test_pull_requests_hoist_people_and_survive_a_deleted_account(http_mocker: H
     assert "author" not in first and "merge_user" not in first and "merged_by" not in first
     second = by_iid[2]
     assert second["author_username"] == "" and second["merged_by_username"] == ""
-    assert "author_id" not in second or second["author_id"] is None
+    assert second.get("author_id") is None
     assert second["milestone_title"] == ""
     listing = _urls(http_mocker, "/merge_requests")[0]
     assert "scope=all" in listing and "state=all" in listing and "updated_after=2026-06-01" in listing
@@ -387,12 +387,15 @@ def test_state_and_label_events_keep_the_actor_and_distinct_keys(http_mocker: Ht
 
 
 @freezegun.freeze_time(_FROZEN)
-def test_a_403_on_one_merge_request_skips_it_not_the_stream(http_mocker: HttpMocker) -> None:
+@pytest.mark.parametrize("status", [402, 403, 404])
+def test_a_project_scoped_error_on_one_merge_request_skips_it_not_the_stream(
+    http_mocker: HttpMocker, status: int
+) -> None:
     config = GitlabConfigBuilder().build()
     http_mocker.get(HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS), _ok([_mr(5), _mr(6)]))
     http_mocker.get(
         HttpRequest(f"{API_URL}/projects/7/merge_requests/5/notes", query_params=ANY_QUERY_PARAMS),
-        HttpResponse(body="", status_code=403),
+        HttpResponse(body="", status_code=status),
     )
     http_mocker.get(
         HttpRequest(f"{API_URL}/projects/7/merge_requests/6/notes", query_params=ANY_QUERY_PARAMS),
@@ -414,6 +417,97 @@ def test_a_403_on_one_merge_request_skips_it_not_the_stream(http_mocker: HttpMoc
 
     assert not output.errors
     assert [r.record.data["id"] for r in output.records] == [601]
+
+
+def test_a_merge_request_listing_the_token_cannot_see_fails_as_a_config_error(http_mocker: HttpMocker) -> None:
+    """The listing is per configured scope, like project discovery: a 404 there
+    is a wrong path or a token without membership, not a project to skip."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS), HttpResponse(body="", status_code=404))
+
+    output = read_stream(_CONNECTOR, "pull_requests", config, expecting_exception=True)
+
+    assert output.errors
+    assert output.errors[-1].trace.error.failure_type == FailureType.config_error
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_pull_requests_follow_the_link_header_to_the_next_page(http_mocker: HttpMocker) -> None:
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(
+        HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS),
+        [
+            HttpResponse(
+                body=json.dumps([_mr(5)]),
+                status_code=200,
+                headers={"Link": f'<{_MRS_URL}?page=2&per_page=100>; rel="next"'},
+            ),
+            _ok([_mr(6)]),
+        ],
+    )
+
+    output = read_stream(_CONNECTOR, "pull_requests", config)
+
+    assert not output.errors
+    assert [r.record.data["iid"] for r in output.records] == [5, 6]
+    listing = _urls(http_mocker, "/merge_requests")
+    assert len(listing) == 2 and "page=2" in listing[1], listing
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_resumed_pull_requests_sync_asks_for_less_than_the_first(http_mocker: HttpMocker) -> None:
+    """The start date is a floor paid once; a run carrying state asks only for
+    what changed since, less the one-day lookback."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS), _ok([_mr(5)]))
+
+    first = read_stream(_CONNECTOR, "pull_requests", config)
+    assert not first.errors
+    assert first.state_messages, "an incremental read must emit state"
+    resumed = read_stream(_CONNECTOR, "pull_requests", config, state=[m.state for m in first.state_messages][-1:])
+    assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
+
+    asked = _urls(http_mocker, "/merge_requests")
+    assert "updated_after=2026-06-01" in asked[0], f"first run starts at the floor: {asked[0]}"
+    assert "updated_after=2026-06-19" in asked[-1], f"a resumed run starts at stored state: {asked[-1]}"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_resumed_child_sync_resumes_the_parent_window_too(http_mocker: HttpMocker) -> None:
+    """Every merge-request child rides the windowed parent with
+    incremental_dependency, so the parent's cursor is persisted with the child
+    and a later run lists only the merge requests updated since."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS), _ok([_mr(5)]))
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/projects/7/merge_requests/5/notes", query_params=ANY_QUERY_PARAMS),
+        _ok(
+            [
+                {
+                    "id": 501,
+                    "body": "ok",
+                    "system": False,
+                    "author": {"id": 11, "username": "alice"},
+                    "created_at": "2026-06-20T10:00:00.000+00:00",
+                    "updated_at": "2026-06-20T10:00:00.000+00:00",
+                }
+            ]
+        ),
+    )
+
+    first = read_stream(_CONNECTOR, "pull_request_notes", config)
+    assert not first.errors
+    assert first.state_messages, "an incremental child must emit state"
+    state = first.state_messages[-1].state.stream.stream_state.__dict__
+    assert "parent_state" in state, f"the parent cursor must be persisted with the child: {state}"
+    resumed = read_stream(
+        _CONNECTOR, "pull_request_notes", config, state=[m.state for m in first.state_messages][-1:]
+    )
+    assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
+
+    listings = _urls(http_mocker, "/merge_requests?")
+    assert "updated_after=2026-06-01" in listings[0], listings[0]
+    assert "updated_after=2026-06-19" in listings[-1], f"a resumed run lists from the parent's stored state: {listings[-1]}"
 
 
 # ── GraphQL ──────────────────────────────────────────────────────────────
@@ -634,6 +728,40 @@ def test_deployments_keep_one_row_per_status(http_mocker: HttpMocker) -> None:
     assert "order_by=updated_at" in listing and "updated_after=2026-06-01" in listing
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "deployments", strict=True)
+
+
+def test_a_402_on_one_project_deployments_skips_it_not_the_stream(http_mocker: HttpMocker) -> None:
+    """Deployments are an edition feature: a project the licence does not
+    cover answers 402 and is skipped, the rest of the roster is still read."""
+    config = GitlabConfigBuilder().build()
+    other = _project(id=8, path="api", path_with_namespace="acme/api", http_url_to_repo="https://gitlab.example.com/acme/api.git")
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _ok([_project(), other]))
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/projects/7/deployments", query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body="", status_code=402),
+    )
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/projects/8/deployments", query_params=ANY_QUERY_PARAMS),
+        _ok(
+            [
+                {
+                    "id": 301,
+                    "iid": 1,
+                    "ref": "main",
+                    "sha": "a" * 40,
+                    "status": "success",
+                    "environment": {"id": 3, "name": "staging", "tier": "staging"},
+                    "created_at": "2026-06-20T10:00:00.000+00:00",
+                    "updated_at": "2026-06-20T10:01:00.000+00:00",
+                }
+            ]
+        ),
+    )
+
+    output = read_stream(_CONNECTOR, "deployments", config)
+
+    assert not output.errors
+    assert [r.record.data["unique_key"] for r in output.records] == ["test-tenant:test-source:8:301:success"]
 
 
 @freezegun.freeze_time(_FROZEN)

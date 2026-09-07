@@ -36,6 +36,24 @@ WITH resolved_authors AS (
     GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 
+-- WORKAROUND: ClickHouse substitutes the alias `email` into the array literal
+-- that reads the `email` column, so the unnest runs one subquery below it.
+directory_addresses AS (
+    SELECT
+        id,
+        tenant_id,
+        source_id,
+        collected_at,
+        address,
+        field
+    FROM {{ source('bronze_gitlab', 'users') }} FINAL
+    ARRAY JOIN
+        [email, public_email, commit_email] AS address,
+        ['email', 'public_email', 'commit_email'] AS field
+    WHERE COALESCE(id, 0) > 0
+      AND COALESCE(address, '') != ''
+),
+
 directory_emails AS (
     SELECT
         toString(id) AS account_id,
@@ -44,13 +62,24 @@ directory_emails AS (
         source_id,
         concat('bronze_gitlab.users.', field) AS observed_in,
         max(parseDateTimeBestEffortOrNull(collected_at)) AS seen_at
-    FROM {{ source('bronze_gitlab', 'users') }} FINAL
+    FROM directory_addresses
+    GROUP BY account_id, email, tenant_id, source_id, observed_in
+),
+
+roster_addresses AS (
+    SELECT
+        id,
+        tenant_id,
+        source_id,
+        collected_at,
+        address,
+        field
+    FROM {{ source('bronze_gitlab', 'group_members') }} FINAL
     ARRAY JOIN
-        [email, public_email, commit_email] AS address,
-        ['email', 'public_email', 'commit_email'] AS field
+        [email, public_email] AS address,
+        ['email', 'public_email'] AS field
     WHERE COALESCE(id, 0) > 0
       AND COALESCE(address, '') != ''
-    GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 
 roster_emails AS (
@@ -61,12 +90,7 @@ roster_emails AS (
         source_id,
         concat('bronze_gitlab.group_members.', field) AS observed_in,
         max(parseDateTimeBestEffortOrNull(collected_at)) AS seen_at
-    FROM {{ source('bronze_gitlab', 'group_members') }} FINAL
-    ARRAY JOIN
-        [email, public_email] AS address,
-        ['email', 'public_email'] AS field
-    WHERE COALESCE(id, 0) > 0
-      AND COALESCE(address, '') != ''
+    FROM roster_addresses
     GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 

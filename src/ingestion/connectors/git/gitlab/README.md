@@ -91,8 +91,11 @@ DROP DATABASE bronze_gitlab SYNC;
 ```
 
 The next deploy recreates the placeholder and the first sync fills it from
-`gitlab_start_date`. Staging models are rebuilt by dbt from the new bronze;
-silver and gold need nothing.
+`gitlab_start_date`. The descriptor major bump dispatches a one-shot
+`dbt --full-refresh` over `tag:gitlab+`, so the staging models and every
+silver class they feed are rebuilt from the new bronze; 3.x rows under the
+old keys (`pull_requests_comments`, `pull_requests_reviewers`) do not
+survive it. Gold needs nothing.
 
 ## Streams
 
@@ -126,9 +129,10 @@ instance-wide listing uses keyset pagination, which has no offset ceiling.
 ### How the streams fit together
 
 `repositories` is the roster: it applies the fork and exclusion filters and is
-the incremental **parent** of every proxy stream (`SubstreamPartitionRouter`
-with `incremental_dependency: true`), so a sync clones only projects whose
-`last_activity_at` advanced. The proxy routes on the project's
+the **parent** of every proxy stream. The incremental ones (`commits`,
+`file_changes`, `commit_authors`) declare `incremental_dependency: true`, so a
+sync clones only projects whose `last_activity_at` advanced; `branches` is a
+full refresh and lists every project each sync. The proxy routes on the project's
 `http_url_to_repo`; bronze keys every proxy row on the numeric project id, so
 forks sharing commit SHAs never collapse into one row and a rename changes
 nothing.
@@ -169,9 +173,9 @@ query) yields no rows and no error.
 
 Three handlers, by what a status means at that endpoint:
 
-- **scope discovery** (`/groups/{g}/projects`, `/projects/{p}`, members): a
-  `403`/`404` is a wrong path or a token without membership — a
-  configuration error, failed loudly.
+- **scope discovery** (`/groups/{g}/projects`, `/projects/{p}`, members, and
+  the merge-request listing of a configured scope): a `403`/`404` is a wrong
+  path or a token without membership — a configuration error, failed loudly.
 - **per-project and per-merge-request endpoints**: a `402`/`403`/`404` is
   about one project (a feature not licensed, a restricted project, a deleted
   merge request) and skips it, never the stream.

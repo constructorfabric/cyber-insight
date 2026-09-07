@@ -37,7 +37,7 @@ WITH latest_status AS (
 SELECT
     tenant_id,
     source_id,
-    concat(tenant_id, ':', source_id, ':', toString(COALESCE(project_id, 0)), ':', toString(COALESCE(id, 0))) AS unique_key,
+    concat(COALESCE(tenant_id, ''), ':', COALESCE(source_id, ''), ':', toString(COALESCE(project_id, 0)), ':', toString(COALESCE(id, 0))) AS unique_key,
     COALESCE(repo_path, '') AS repo_full_name,
     toString(COALESCE(id, 0)) AS deployment_id,
     COALESCE(environment_name, '') AS environment,

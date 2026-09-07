@@ -36,7 +36,7 @@ state_events AS (
         'state' AS field_id,
         'set' AS delta_action,
         multiIf(
-            state = 'reopened', 'open',
+            state IN ('opened', 'reopened'), 'open',
             COALESCE(state, '')
         ) AS delta_value_id,
         _airbyte_extracted_at

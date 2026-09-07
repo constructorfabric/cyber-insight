@@ -123,3 +123,23 @@ templates:
     squash: false
     detailed_merge_status: not_open
     user_notes_count: 0
+
+  # A merge-request note. `system: true` rows are GitLab's own log of the
+  # request; the review verdicts among them are recognised by body.
+  note:
+    $ref: "#/templates/base"
+    project_id: 101
+    mr_iid: null
+    mr_updated_at: "2026-10-01T13:00:00.000+00:00"
+    id: null
+    body: null
+    type: null
+    system: false
+    internal: false
+    resolvable: false
+    resolved: false
+    author_id: null
+    author_username: null
+    author_name: null
+    created_at: null
+    updated_at: null

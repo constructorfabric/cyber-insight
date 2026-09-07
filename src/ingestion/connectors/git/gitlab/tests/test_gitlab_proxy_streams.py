@@ -14,6 +14,8 @@ import json
 from typing import Any
 
 import freezegun
+import pytest
+from airbyte_cdk import __version__ as _cdk_version
 from config import API_URL, GITLAB_URL, PROXY_URL, GitlabConfigBuilder
 from connector_tests import ANY_QUERY_PARAMS, HttpMocker, HttpRequest, HttpResponse, assert_records_conform, read_stream
 
@@ -21,6 +23,7 @@ _CONNECTOR = "git/gitlab"
 _PROJECTS_URL = f"{API_URL}/groups/acme/projects"
 _CLONE_URL = f"{GITLAB_URL}/acme/app.git"
 _FROZEN = "2026-07-01T00:00:00Z"
+_CDK_MAJOR = int(_cdk_version.split(".")[0])
 
 
 def _project(**overrides: Any) -> dict[str, Any]:
@@ -92,6 +95,42 @@ def test_commits_paginate_and_key_on_the_project_id(http_mocker: HttpMocker) -> 
     assert "page_token=t1" in calls[1]
     assert "since=2026-06-01" in calls[0], "the start date floors the walk"
     assert_records_conform(output.records, _CONNECTOR, "commits", strict=True)
+
+
+@pytest.mark.xfail(
+    _CDK_MAJOR < 7,
+    reason="airbyte-cdk 6.x persists the roster cursor with the child but does not apply it when the roster is re-read as a partition parent; 7.x does",
+    strict=True,
+)
+@freezegun.freeze_time(_FROZEN)
+def test_a_resumed_commits_sync_clones_no_project_idle_since_the_stored_cursor(http_mocker: HttpMocker) -> None:
+    """The roster's last_activity_at cursor is persisted with the child
+    (incremental_dependency), so a later run never clones a project whose
+    activity predates what the previous run already saw."""
+    config = GitlabConfigBuilder().build()
+    idle = _project(
+        id=8,
+        path="api",
+        path_with_namespace="acme/api",
+        http_url_to_repo=f"{GITLAB_URL}/acme/api.git",
+        last_activity_at="2026-06-10T10:00:00.000+00:00",
+    )
+    http_mocker.get(
+        HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS),
+        [_projects_page(), _projects_page(_project(), idle)],
+    )
+    http_mocker.get(HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS), _page([_commit("a" * 40)]))
+
+    first = read_stream(_CONNECTOR, "commits", config)
+    assert not first.errors
+    assert first.state_messages, "an incremental child must emit state"
+    state = first.state_messages[-1].state.stream.stream_state.__dict__
+    assert state["parent_state"]["projects_active"]["states"], f"the roster cursor must be persisted: {state}"
+    resumed = read_stream(_CONNECTOR, "commits", config, state=[m.state for m in first.state_messages][-1:])
+    assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
+
+    cloned = _proxy_calls(http_mocker, "commits")
+    assert not any("acme%2Fapi.git" in url or "acme/api.git" in url for url in cloned), cloned
 
 
 @freezegun.freeze_time(_FROZEN)

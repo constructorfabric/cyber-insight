@@ -193,9 +193,10 @@ models:
       - name: state
         description: >
           Vendor state: success | failure | error | inactive | in_progress |
-          queued | pending. inactive = superseded by a newer deployment, and
-          error is an infrastructure failure of the deploy itself — readers
-          must not fold either into failure of the deployed code.
+          queued | pending | cancelled. inactive = superseded by a newer
+          deployment, error is an infrastructure failure of the deploy itself,
+          and cancelled is a deploy stopped before it ran — readers must not
+          fold any of them into failure of the deployed code.
       - name: environment
         description: "Environment the event was recorded against"
       - name: creator_login

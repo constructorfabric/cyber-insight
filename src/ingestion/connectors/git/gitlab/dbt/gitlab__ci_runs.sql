@@ -30,7 +30,7 @@ SELECT
     '' AS pipeline_name,
     COALESCE(id, 0) AS run_id,
     COALESCE(iid, 0) AS run_number,
-    1 AS attempt,
+    toInt64(1) AS attempt,
     0 AS is_retry,
     multiIf(
         source = 'push', 'push',
