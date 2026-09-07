@@ -214,6 +214,15 @@ impl MetricQuery {
         &self.table
     }
 
+    /// The columns a result carries, in order — each field's `as_name`. What
+    /// a widget must name to draw anything.
+    pub(crate) fn column_names(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .map(|field| field.as_name.clone())
+            .collect()
+    }
+
     pub(crate) fn compile(&self) -> Result<CompiledQuery, MetricQueryError> {
         if !is_identifier(&self.table) {
             return Err(MetricQueryError::Identifier(self.table.clone()));

@@ -127,6 +127,15 @@ async fn handle_chat(
                 writes.push((kind, parsed, body, name));
             }
 
+            // A widget draws its metric's columns by the names the metric
+            // gives them. Unchecked, a widget could name a column that is not
+            // there and the chart drew its axes and no line.
+            for (kind, _, body, _) in &writes {
+                if *kind == DefinitionKind::Widget {
+                    check_widget_in_batch(&state, body, &writes).await?;
+                }
+            }
+
             // Which names are new is read before the write, so a name another
             // writer takes in between is reported as created rather than
             // replaced. The write itself is one transaction either way.
@@ -185,6 +194,36 @@ async fn names(state: &AppState, kind: DefinitionKind) -> Vec<String> {
             tracing::warn!(error = ?error, ?kind, "could not list definitions for the chat");
             Vec::new()
         }
+    }
+}
+
+/// Checks a widget against the metric it draws, whether that metric is
+/// already stored or arriving in the same request.
+///
+/// A chat request usually builds the metric and the widget together, so the
+/// metric is not in the store yet when the widget is checked.
+async fn check_widget_in_batch(
+    state: &AppState,
+    body: &serde_json::Value,
+    batch: &[(DefinitionKind, DefinitionName, serde_json::Value, String)],
+) -> Result<(), CanonicalError> {
+    let widget: crate::widget::Widget = serde_json::from_value(body.clone())
+        .map_err(|error| crate::api::definitions::widget_error(&error.into()))?;
+
+    let arriving = batch
+        .iter()
+        .find(|(kind, _, _, name)| *kind == DefinitionKind::Metric && name == widget.metric());
+
+    match arriving {
+        Some((_, _, metric_body, _)) => {
+            let metric: crate::metric_query::MetricQuery =
+                serde_json::from_value(metric_body.clone())
+                    .map_err(|error| crate::api::definitions::widget_error(&error.into()))?;
+            widget
+                .check_against(&metric)
+                .map_err(|error| crate::api::definitions::widget_error(&error))
+        }
+        None => crate::api::definitions::check_widget(state, body).await,
     }
 }
 

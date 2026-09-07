@@ -191,6 +191,18 @@ async fn list_returns_the_stored_names_in_order() {
 async fn put_then_get_a_widget_definition_round_trips() {
     let harness = TestHarness::new().await;
 
+    // The widget draws this metric's columns, so it has to be there first.
+    let metric = harness
+        .put_json(
+            "/v1/metrics/commits_per_day",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+    assert_eq!(metric.status(), StatusCode::NO_CONTENT);
+
     let put = harness
         .put_json(
             "/v1/widgets/commits_table",

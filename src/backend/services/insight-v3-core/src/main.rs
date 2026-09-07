@@ -7,6 +7,7 @@ mod metric_query;
 mod migration;
 mod raw_data;
 mod tables;
+mod widget;
 
 use api_gateway as _;
 use authn_resolver as _;

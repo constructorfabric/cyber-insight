@@ -138,4 +138,24 @@ describe("<CustomWidget>", () => {
     expect(cells).toHaveLength(1);
     expect(cells[0]).toHaveTextContent("2026-09-01");
   });
+
+  it("says which column is missing instead of drawing an empty chart", () => {
+    // Seen live: y named the metric's raw json field instead of its as_name,
+    // so every point was undefined and the chart drew axes and no line.
+    render(
+      <CustomWidget
+        widget={{ type: "line", metric: "lines_per_day", x: "day", y: "lines" }}
+        result={{
+          columns: ["day", "total_lines"],
+          rows: [["2026-09-01", 132]],
+        }}
+      />
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("draws lines");
+    expect(alert).toHaveTextContent("lines_per_day does not return");
+    expect(alert).toHaveTextContent("day, total_lines");
+    expect(screen.queryByTestId("custom-line-chart")).not.toBeInTheDocument();
+  });
 });

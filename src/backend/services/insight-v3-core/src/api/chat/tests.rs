@@ -170,10 +170,17 @@ struct ChatCreatedBody {
 fn single_existing_widget_proposal() -> Proposal {
     Proposal::Create {
         reply: "ok".to_owned(),
-        metric: None,
+        // The metric arrives with the widget, as a chat request builds them.
+        metric: Some((
+            "m".to_owned(),
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )),
         widgets: vec![(
             "commits_table".to_owned(),
-            json!({ "type": "table", "metric": "m", "columns": [] }),
+            json!({ "type": "table", "metric": "m", "columns": ["day"] }),
         )],
         dashboard: None,
     }
@@ -183,12 +190,23 @@ fn single_existing_widget_proposal() -> Proposal {
 async fn a_name_already_in_use_is_replaced_and_reported_as_updated() {
     let harness = TestHarness::new(ChatClient::scripted(single_existing_widget_proposal)).await;
 
+    // The widget names this metric's columns, so it goes in first.
     harness
         .put_json(
-            "/v1/widgets/commits_table",
-            json!({ "type": "table", "metric": "was_here_first", "columns": [] }),
+            "/v1/metrics/was_here_first",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
         )
         .await;
+    let seeded = harness
+        .put_json(
+            "/v1/widgets/commits_table",
+            json!({ "type": "table", "metric": "was_here_first", "columns": ["day"] }),
+        )
+        .await;
+    assert_eq!(seeded.status(), StatusCode::NO_CONTENT);
 
     harness.queue_chat_context();
 

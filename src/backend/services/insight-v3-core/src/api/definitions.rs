@@ -119,6 +119,10 @@ async fn put_definition(
 ) -> Result<Response, CanonicalError> {
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
+    if kind == DefinitionKind::Widget {
+        check_widget(&state, &body).await?;
+    }
+
     state
         .definitions()
         .put(kind, &name, &body)
@@ -126,6 +130,43 @@ async fn put_definition(
         .map_err(definition_store_error)?;
 
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Refuses a widget whose metric cannot supply the columns it draws.
+///
+/// The chart used to render its axes and nothing else, which reads as missing
+/// data rather than as a definition naming a column that is not there.
+pub(crate) async fn check_widget(
+    state: &AppState,
+    body: &serde_json::Value,
+) -> Result<(), CanonicalError> {
+    let widget: crate::widget::Widget =
+        serde_json::from_value(body.clone()).map_err(|error| widget_error(&error.into()))?;
+
+    let metric_name = DefinitionName::parse(widget.metric()).map_err(definition_error)?;
+    let stored = state
+        .definitions()
+        .get(DefinitionKind::Metric, &metric_name)
+        .await
+        .map_err(definition_store_error)?
+        .ok_or_else(|| {
+            widget_error(&crate::widget::WidgetError::NoMetric(
+                widget.metric().to_owned(),
+            ))
+        })?;
+
+    let metric: crate::metric_query::MetricQuery =
+        serde_json::from_value(stored).map_err(|error| widget_error(&error.into()))?;
+
+    widget
+        .check_against(&metric)
+        .map_err(|error| widget_error(&error))
+}
+
+pub(crate) fn widget_error(error: &crate::widget::WidgetError) -> CanonicalError {
+    DefinitionApiError::invalid_argument()
+        .with_field_violation("body", error.to_string(), "INVALID")
+        .create()
 }
 
 async fn get_definition(
