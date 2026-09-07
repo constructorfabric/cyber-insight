@@ -38,14 +38,37 @@ describe("/portal/custom", () => {
       "engineering",
       "delivery",
     ]);
+    vi.mocked(customClient.fetchDashboard).mockRejectedValue(
+      new Error("no title today")
+    );
 
     render(<Component />, { wrapper });
 
+    // The identifier stands in until a title arrives, so the link is still
+    // reachable when a definition cannot be read.
     expect(
-      await screen.findByRole("link", { name: "engineering" })
+      await screen.findByRole("link", { name: /engineering/ })
     ).toHaveAttribute("href", "/portal/custom/engineering");
     expect(
-      await screen.findByRole("link", { name: "delivery" })
+      await screen.findByRole("link", { name: /delivery/ })
+    ).toBeInTheDocument();
+  });
+
+  it("titles a card by the dashboard, keeping the identifier beneath it", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "lines_of_code_dashboard",
+    ]);
+    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
+      title: "Lines of Code",
+      widgets: [],
+    });
+
+    render(<Component />, { wrapper });
+
+    // The reader picks a dashboard by its name, not by its slug.
+    expect(await screen.findByText("Lines of Code")).toBeInTheDocument();
+    expect(
+      await screen.findByText("lines_of_code_dashboard")
     ).toBeInTheDocument();
   });
 

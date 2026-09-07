@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { dashboardNamesQuery } from "@/queries/custom";
+import { dashboardNamesQuery, dashboardQuery } from "@/queries/custom";
 import { TEXT_LABEL } from "@/lib/type-scale";
 
 /**
@@ -76,6 +76,28 @@ function CatalogueRow({
   );
 }
 
+/**
+ * One row, labelled by the dashboard's own title rather than the identifier it
+ * is stored under. The listing carries names only, so each row reads its own
+ * definition - the same query the page reads, so opening one costs nothing
+ * extra, and the name stands in until the title arrives.
+ */
+function DashboardRow({ name, active }: { name: string; active: boolean }) {
+  const { data } = useQuery(dashboardQuery(name));
+
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        isActive={active}
+        render={<Link to="/portal/custom/$name" params={{ name }} />}
+      >
+        <LayoutDashboard />
+        <span>{data?.title ?? name}</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
 function DashboardRows() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { data: names, isPending, isError } = useQuery(dashboardNamesQuery());
@@ -95,15 +117,11 @@ function DashboardRows() {
         ) : names && names.length > 0 ? (
           <SidebarMenu>
             {names.map((name) => (
-              <SidebarMenuItem key={name}>
-                <SidebarMenuButton
-                  isActive={pathname === `/portal/custom/${name}`}
-                  render={<Link to="/portal/custom/$name" params={{ name }} />}
-                >
-                  <LayoutDashboard />
-                  <span>{name}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              <DashboardRow
+                key={name}
+                name={name}
+                active={pathname === `/portal/custom/${name}`}
+              />
             ))}
           </SidebarMenu>
         ) : (

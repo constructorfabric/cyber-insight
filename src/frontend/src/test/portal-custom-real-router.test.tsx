@@ -106,7 +106,9 @@ describe("the /portal/custom routes, through the real router", () => {
 
     renderAt("/portal/custom/engineering");
 
-    expect(await screen.findByText("Engineering")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Engineering" })
+    ).toBeInTheDocument();
     expect(
       document.querySelector('[data-slot="sidebar-wrapper"]')
     ).toBeInTheDocument();
@@ -134,8 +136,11 @@ describe("the /portal/custom routes, through the real router", () => {
     );
     await userEvent.click(screen.getByTestId("chat-send"));
 
-    // The new dashboard opens...
-    expect(await screen.findByText("Delivery")).toBeInTheDocument();
+    // The new dashboard opens (its title is in the pane too, so the heading
+    // is what says the page changed)...
+    expect(
+      await screen.findByRole("heading", { name: "Delivery" })
+    ).toBeInTheDocument();
     // ...and the conversation is still there. The chat used to be mounted per
     // page, so this navigation unmounted it and the reader lost what they had
     // just asked.
@@ -167,7 +172,7 @@ describe("the /portal/custom routes, through the real router", () => {
     });
 
     renderAt("/portal/custom/engineering");
-    await screen.findByText("Engineering");
+    await screen.findByRole("heading", { name: "Engineering" });
 
     await userEvent.type(
       screen.getByTestId("chat-input"),

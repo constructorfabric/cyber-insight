@@ -5,8 +5,8 @@ import { ChevronRight, LayoutDashboard } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
-import { dashboardNamesQuery } from "@/queries/custom";
-import { TEXT_BODY, TEXT_NAME, TEXT_TITLE } from "@/lib/type-scale";
+import { dashboardNamesQuery, dashboardQuery } from "@/queries/custom";
+import { TEXT_BODY, TEXT_LABEL, TEXT_NAME, TEXT_TITLE } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/portal/custom/")({
@@ -36,6 +36,43 @@ function CustomDashboardIndex() {
         onRetry={() => void refetch()}
       />
     </>
+  );
+}
+
+/** Titled by the dashboard, with the identifier it is stored under beneath. */
+function DashboardCard({ name }: { name: string }) {
+  const { data } = useQuery(dashboardQuery(name));
+
+  return (
+    <Card
+      size="sm"
+      render={
+        <Link
+          to="/portal/custom/$name"
+          params={{ name }}
+          className="block transition-colors hover:bg-accent/50"
+        />
+      }
+    >
+      <CardContent className="flex items-center gap-3">
+        <LayoutDashboard
+          className="size-4 shrink-0 text-muted-foreground"
+          aria-hidden
+        />
+        <span className="flex min-w-0 flex-col">
+          <span className={cn(TEXT_NAME, "truncate")}>
+            {data?.title ?? name}
+          </span>
+          {data?.title ? (
+            <span className={cn(TEXT_LABEL, "truncate font-mono")}>{name}</span>
+          ) : null}
+        </span>
+        <ChevronRight
+          className="ms-auto size-4 shrink-0 text-muted-foreground"
+          aria-hidden
+        />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -78,28 +115,7 @@ function CustomDashboardList({
     <ul className="grid gap-3 @xl:grid-cols-2 @5xl:grid-cols-3">
       {names.map((name) => (
         <li key={name}>
-          <Card
-            size="sm"
-            render={
-              <Link
-                to="/portal/custom/$name"
-                params={{ name }}
-                className="block transition-colors hover:bg-accent/50"
-              />
-            }
-          >
-            <CardContent className="flex items-center gap-3">
-              <LayoutDashboard
-                className="size-4 shrink-0 text-muted-foreground"
-                aria-hidden
-              />
-              <span className={cn(TEXT_NAME, "min-w-0 truncate")}>{name}</span>
-              <ChevronRight
-                className="ms-auto size-4 shrink-0 text-muted-foreground"
-                aria-hidden
-              />
-            </CardContent>
-          </Card>
+          <DashboardCard name={name} />
         </li>
       ))}
     </ul>
