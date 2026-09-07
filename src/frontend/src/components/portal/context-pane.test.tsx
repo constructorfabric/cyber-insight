@@ -78,6 +78,7 @@ beforeEach(() => {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
   mocks.zone = { activeZone: "overview", activePerson: "boss@x" };
+  mocks.isFlat = false;
   mocks.standings = [];
   act(() => {
     portalRouter.set({ zone: undefined });
@@ -146,6 +147,29 @@ describe("ContextPane", () => {
     pane();
     expect(screen.getByText("People & org structure")).toBeInTheDocument();
     expect(screen.getByTestId("org-tree")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["org chart", false],
+    ["flat roster", true],
+  ])("keeps the %s list in its own scroll region", (_policy, isFlat) => {
+    mocks.isFlat = isFlat;
+    mocks.zone = { activeZone: "people", activePerson: "boss@x" };
+
+    pane();
+
+    const search = screen.getByLabelText("Find someone in the org");
+    const scrollArea = screen
+      .getByTestId("org-tree")
+      .closest('[data-slot="scroll-area"]');
+
+    expect(scrollArea).not.toBeNull();
+    expect(scrollArea).toHaveClass("min-h-0", "flex-1");
+    expect(scrollArea).not.toContainElement(search);
+    expect(scrollArea?.closest('[data-slot="sidebar-group"]')).toHaveClass(
+      "min-h-0",
+      "flex-1"
+    );
   });
 
   it("renders Manage items", () => {

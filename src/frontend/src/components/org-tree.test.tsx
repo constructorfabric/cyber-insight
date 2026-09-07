@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PeopleListItem } from "@/api/identity-client";
@@ -47,9 +48,32 @@ vi.mock("@/components/ui/sidebar", () => ({
   SidebarMenuItem: ({ children }: { children?: React.ReactNode }) => (
     <li>{children}</li>
   ),
-  SidebarMenuButton: ({ children }: { children?: React.ReactNode }) => (
-    <span>{children}</span>
-  ),
+  SidebarMenuButton: ({
+    children,
+    render,
+    className,
+    isActive: _isActive,
+    ...props
+  }: {
+    children?: React.ReactNode;
+    render?: React.ReactElement;
+    className?: string;
+    isActive?: boolean;
+  } & React.ComponentProps<"button">) =>
+    render ? (
+      <a
+        href="/person"
+        data-sidebar="menu-button"
+        className={className}
+        onClick={(event) => event.preventDefault()}
+      >
+        {children}
+      </a>
+    ) : (
+      <button data-sidebar="menu-button" className={className} {...props}>
+        {children}
+      </button>
+    ),
 }));
 
 function person(
@@ -69,7 +93,7 @@ function rosterPerson(
   personId: string,
   displayName: string | null,
   managerPersonId: string | null,
-  username: string | null = null,
+  username: string | null = null
 ): PeopleListItem {
   return {
     person_id: personId,
@@ -109,6 +133,59 @@ describe("OrgTree", () => {
     expect(screen.queryByText("Deep Person")).not.toBeInTheDocument();
   });
 
+  it("opens and closes reports without following the person link", async () => {
+    const user = userEvent.setup();
+    render(<OrgTree />);
+
+    const expand = screen.getByRole("button", { name: "Expand Lead Person" });
+    expect(expand).toHaveAttribute("data-sidebar", "menu-button");
+    expect(expand).toHaveClass("w-8", "shrink-0", "justify-center", "p-0");
+    expect(screen.getByRole("link", { name: "Lead Person" })).toHaveAttribute(
+      "data-sidebar",
+      "menu-button"
+    );
+
+    await user.click(expand);
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Lead Person" }));
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Lead Person" })
+    );
+    expect(screen.queryByText("Deep Person")).not.toBeInTheDocument();
+  });
+
+  it("allows the root row to collapse and reopen", async () => {
+    const user = userEvent.setup();
+    render(<OrgTree />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Root Person" })
+    );
+    expect(screen.queryByText("Lead Person")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Expand Root Person" })
+    );
+    expect(screen.getByText("Lead Person")).toBeInTheDocument();
+  });
+
+  it("restores manual expansion after search is cleared", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<OrgTree />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Collapse Root Person" })
+    );
+    rerender(<OrgTree query="Deep" />);
+    expect(screen.getByText("Deep Person")).toBeInTheDocument();
+
+    rerender(<OrgTree query="" />);
+    expect(screen.queryByText("Lead Person")).not.toBeInTheDocument();
+  });
+
   it("reveals a deep match and the managers above it, and nothing else", () => {
     render(<OrgTree query="Deep" />);
     expect(screen.getByText("Root Person")).toBeInTheDocument();
@@ -136,7 +213,12 @@ describe("OrgTree on an organisation with no reporting lines", () => {
     mocks.isFlat = true;
     // The tree the profile serves is the viewer alone — the shape that left
     // this pane showing one name beside a full Employees table.
-    mocks.viewer = { person_id: "root", display_name: "Me", email: "me@x", subordinates: [] } as IdentityPerson;
+    mocks.viewer = {
+      person_id: "root",
+      display_name: "Me",
+      email: "me@x",
+      subordinates: [],
+    } as IdentityPerson;
     mocks.roster = [
       rosterPerson("root", "Me", null),
       rosterPerson("p-ann", "Ann Dev", null),

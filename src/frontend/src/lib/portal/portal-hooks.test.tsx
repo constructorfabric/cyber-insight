@@ -282,8 +282,8 @@ describe("usePersonCohort", () => {
 describe("useOrgScope", () => {
   it("resolves the viewer's subtree with counts and pivot id", () => {
     const { result } = renderHook(() => useOrgScope());
-    // count = people under the pivot, the pivot itself excluded
-    expect(result.current.count).toBe(3);
+    expect(result.current.rosterCount).toBe(3);
+    expect(result.current.scopeMemberCount).toBe(4);
     expect(result.current.pivotPersonId).toBe(BOSS);
     expect(result.current.isLoading).toBe(false);
   });
@@ -292,8 +292,8 @@ describe("useOrgScope", () => {
     act(() => portalRouter.set({ scope: B }));
     const { result } = renderHook(() => useOrgScope());
     expect(result.current.pivotPersonId).toBe(B);
-    // a leaf has no reports — org zones will gate on the empty roster
-    expect(result.current.count).toBe(0);
+    expect(result.current.rosterCount).toBe(0);
+    expect(result.current.scopeMemberCount).toBe(1);
   });
 
   it("surfaces identity errors and delegates refetch", () => {
