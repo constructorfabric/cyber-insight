@@ -30,8 +30,13 @@ pub(crate) struct KnownTable {
 /// One of the two things the model can propose in reply to a chat message.
 #[derive(Debug)]
 pub(crate) enum Proposal {
-    /// A one-time question. The service runs `query` and answers; nothing is stored.
-    Answer { reply: String, query: MetricQuery },
+    /// A one-time question. The service runs `query` when there is one and
+    /// answers; nothing is stored. A question about what data exists needs no
+    /// query, and forcing one got an invented query and a junk table with it.
+    Answer {
+        reply: String,
+        query: Option<MetricQuery>,
+    },
     /// A metric/widget/dashboard to store. Any of the three may be absent.
     Create {
         reply: String,
@@ -75,7 +80,7 @@ impl Proposal {
     /// The table this proposal reads, when it names one.
     fn table(&self) -> Option<&str> {
         match self {
-            Self::Answer { query, .. } => Some(query.table()),
+            Self::Answer { query, .. } => query.as_ref().map(MetricQuery::table),
             Self::Create { metric, .. } => metric
                 .as_ref()
                 .and_then(|(_, body)| body.get("table").and_then(Value::as_str)),
@@ -91,8 +96,13 @@ impl Proposal {
 
         Ok(match wire {
             ProposalWire::Answer { reply, query } => {
-                query.compile()?;
-                Self::Answer { reply, query }
+                if let Some(query) = query.as_ref() {
+                    query.compile()?;
+                }
+                Self::Answer {
+                    reply: as_prose(reply),
+                    query,
+                }
             }
             ProposalWire::Create {
                 reply,
@@ -105,7 +115,7 @@ impl Proposal {
                 }
 
                 Self::Create {
-                    reply,
+                    reply: as_prose(reply),
                     metric: metric.map(compile_named_metric).transpose()?,
                     widgets: widgets.into_iter().map(NamedBody::into_pair).collect(),
                     dashboard: dashboard.map(NamedBody::into_pair),
@@ -121,6 +131,21 @@ fn compile_named_metric(named: NamedBody) -> Result<(String, Value), ChatError> 
     Ok(named.into_pair())
 }
 
+/// The reply as prose.
+///
+/// Seen live: the model encodes the whole reply a second time, so the string
+/// arrives quoted with its newlines escaped and the panel shows `\n` between
+/// paragraphs and a trailing quote. Only a value that is entirely one JSON
+/// string is unwrapped, so prose that merely contains a quote is untouched.
+fn as_prose(reply: String) -> String {
+    let trimmed = reply.trim();
+    if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() > 1) {
+        return reply;
+    }
+
+    serde_json::from_str::<String>(trimmed).unwrap_or(reply)
+}
+
 fn extract_json_object(text: &str) -> &str {
     match (text.find('{'), text.rfind('}')) {
         (Some(start), Some(end)) if end >= start => &text[start..=end],
@@ -133,7 +158,8 @@ fn extract_json_object(text: &str) -> &str {
 enum ProposalWire {
     Answer {
         reply: String,
-        query: MetricQuery,
+        #[serde(default)]
+        query: Option<MetricQuery>,
     },
     Create {
         reply: String,
@@ -339,8 +365,9 @@ fn transport_error(error: &reqwest::Error) -> ChatError {
 
 fn system_prompt(tables: &[KnownTable]) -> String {
     let mut prompt = String::from(
-        "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\n\
-         - Call `answer` to answer a question: it runs one query and stores nothing.\n\
+        "You are the Insight v3 chat assistant. Answer by calling exactly one tool.\n\
+         Write replies as plain prose. No markdown: asterisks and hashes are shown as typed.\n\n\
+         - Call `answer` to answer a question: it runs one query and stores nothing. Leave the query out when the question is about what data exists.\n\
          - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition. A create that carries none of the three is refused, and a dashboard needs the metric and widgets it draws.\n\n\
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"limit\":<int>|null}.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
@@ -511,11 +538,11 @@ fn proposal_tools() -> Vec<Value> {
     vec![
         json!({
             "name": ANSWER_TOOL,
-            "description": "Answer a question about the data by running one query. Stores nothing.",
+            "description": "Answer a question. Stores nothing. Include the query to read data; leave it out when the question is about what data exists, which the table list above already answers.",
             "input_schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["reply", "query"],
+                "required": ["reply"],
                 "properties": { "reply": { "type": "string" }, "query": metric_query.clone() },
             },
         }),
@@ -609,6 +636,9 @@ mod tests {
         match Proposal::parse(reply).unwrap_or_else(|error| panic!("parses: {error}")) {
             Proposal::Answer { reply, query } => {
                 assert_eq!(reply, "About 59 lines on the first day");
+                let Some(query) = query else {
+                    panic!("this answer carries a query");
+                };
                 query
                     .compile()
                     .unwrap_or_else(|error| panic!("the query compiles: {error}"));
@@ -635,6 +665,69 @@ mod tests {
         let reply = r#"{"intent":"create","reply":"x","metric":{"name":"bad","body":{"table":"events`--","fields":[],"group_by":[],"filters":[]}},"widgets":[],"dashboard":null}"#;
 
         assert!(matches!(Proposal::parse(reply), Err(ChatError::Metric(_))));
+    }
+
+    #[test]
+    fn a_question_about_the_data_itself_answers_without_a_query() {
+        // The tool used to require a query, so a question the data cannot
+        // answer got an invented one - and the reply carried a table of 31
+        // rows of `count: 0` beneath it.
+        let reply = json!({
+            "intent": "answer",
+            "reply": "You have events, with author, day, event and lines."
+        })
+        .to_string();
+
+        let proposal = Proposal::parse(&reply)
+            .unwrap_or_else(|error| panic!("an answer needs no query: {error}"));
+
+        assert!(matches!(proposal, Proposal::Answer { query: None, .. }));
+    }
+
+    #[test]
+    fn the_answer_tool_asks_only_for_the_reply() {
+        let tools = proposal_tools();
+        let answer = &tools[0];
+
+        assert_eq!(answer["input_schema"]["required"], json!(["reply"]));
+        // Still described, so the model knows a query is how it reads data.
+        assert!(answer["input_schema"]["properties"]["query"].is_object());
+    }
+
+    #[test]
+    fn a_reply_the_model_encoded_twice_is_read_back_as_prose() {
+        // Seen live: the whole reply arrived as a quoted JSON string, so the
+        // panel showed literal \n between paragraphs and a trailing quote.
+        let reply = json!({
+            "intent": "answer",
+            "reply": r#""One.\n\nTwo.""#
+        })
+        .to_string();
+
+        let proposal =
+            Proposal::parse(&reply).unwrap_or_else(|error| panic!("the fixture parses: {error}"));
+
+        let Proposal::Answer { reply, .. } = proposal else {
+            panic!("expected an answer");
+        };
+        assert_eq!(reply, "One.\n\nTwo.");
+    }
+
+    #[test]
+    fn prose_that_merely_contains_quotes_is_left_alone() {
+        let reply = json!({
+            "intent": "answer",
+            "reply": "The column is called \"day\"."
+        })
+        .to_string();
+
+        let proposal =
+            Proposal::parse(&reply).unwrap_or_else(|error| panic!("the fixture parses: {error}"));
+
+        let Proposal::Answer { reply, .. } = proposal else {
+            panic!("expected an answer");
+        };
+        assert_eq!(reply, "The column is called \"day\".");
     }
 
     #[test]

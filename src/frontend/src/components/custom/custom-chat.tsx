@@ -4,6 +4,7 @@ import { SendHorizontal, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import type { ChatCreated, ChatReply } from "@/api/custom-client";
+import { ChatProse } from "@/components/custom/chat-prose";
 import { CustomTable } from "@/components/custom/custom-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,13 +25,14 @@ interface Exchange {
 }
 
 /**
- * Which tool the model called, read from the shape of what came back: rows
- * mean it answered, names mean it built. Never inferred from the prose.
+ * Which tool the model called, read from the shape of what came back: names
+ * mean it built, anything else answered. Never inferred from the prose.
+ *
+ * Keyed off `created`, not `result`: an answer about what data exists runs no
+ * query, so a reply without rows is still an answer.
  */
-function toolUsed(reply: ChatReply): string | null {
-  if (reply.result) return "answer";
-  if (reply.created || reply.skipped?.length) return "create";
-  return null;
+function toolUsed(reply: ChatReply): string {
+  return reply.created || reply.skipped?.length ? "create" : "answer";
 }
 
 export function CustomChat({ onCreated }: CustomChatProps) {
@@ -93,7 +95,7 @@ export function CustomChat({ onCreated }: CustomChatProps) {
                 <p
                   className={cn(
                     TEXT_BODY,
-                    "ms-auto max-w-[85%] rounded-2xl rounded-ee-sm bg-primary px-3 py-2 text-primary-foreground"
+                    "ms-auto max-w-[85%] rounded-2xl rounded-ee-sm bg-primary px-3 py-2 whitespace-pre-line text-primary-foreground"
                   )}
                 >
                   {exchange.question}
@@ -180,15 +182,16 @@ function ChatAnswer({ reply }: { reply: ChatReply }) {
 
   return (
     <div className="me-auto flex w-full flex-col gap-2 rounded-2xl rounded-es-sm bg-background px-3 py-2 shadow-xs">
-      {tool ? (
-        <Badge variant="secondary" className="w-fit font-mono">
-          {tool}
-        </Badge>
-      ) : null}
+      <Badge variant="secondary" className="w-fit font-mono">
+        {tool}
+      </Badge>
 
-      <p className={cn(TEXT_BODY, "leading-relaxed")}>{reply.reply}</p>
+      <p className={cn(TEXT_BODY, "leading-relaxed whitespace-pre-line")}>
+        <ChatProse text={reply.reply} />
+      </p>
 
-      {reply.result ? (
+      {/* A result with no rows says nothing a sentence has not already said. */}
+      {reply.result && reply.result.rows.length > 0 ? (
         <div className="max-h-64 overflow-auto rounded-md border">
           <CustomTable result={reply.result} />
         </div>

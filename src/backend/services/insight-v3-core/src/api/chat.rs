@@ -31,7 +31,8 @@ impl toolkit::api::api_dto::RequestApiDto for ChatRequest {}
 #[derive(Debug, Serialize)]
 struct ChatAnswerResponse {
     reply: String,
-    result: RunResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<RunResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,8 +91,15 @@ async fn handle_chat(
 
     match proposal {
         Proposal::Answer { reply, query } => {
-            let compiled = query.compile().map_err(|error| compile_error(&error))?;
-            let result = state.metrics().run(&compiled).await.map_err(run_error)?;
+            // No query means the reply stands on its own - a question about
+            // what data exists is answered by the table list in the prompt.
+            let result = match query {
+                Some(query) => {
+                    let compiled = query.compile().map_err(|error| compile_error(&error))?;
+                    Some(state.metrics().run(&compiled).await.map_err(run_error)?)
+                }
+                None => None,
+            };
 
             Ok(Json(ChatAnswerResponse { reply, result }).into_response())
         }
