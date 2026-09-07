@@ -48,6 +48,8 @@ Built from scratch in `insight-v3-core`. Nothing from analytics.
 - The end-to-end script runs against `./dev-compose.sh up`, and mints its session token with `tests/lib/insight_stand/service_token.py`.
 - The chat is tested against fixtures. No live model call, no key in the repo.
 - Screenshots and screen recordings land in `screenshots-and-etc/` — gitignored, never committed.
+- The chat has a `chat_mode: canned` config for recording: a fixed proposal, no network call, same validation and storage as live.
+- Recording drives the real Keycloak login as `dev@company.nonpresent` / `insight-dev`, against `npm run dev` proxied to the compose stack.
 - Plan: [docs/superpowers/plans/2026-09-07-insight-v3-mvp.md](../../../superpowers/plans/2026-09-07-insight-v3-mvp.md)
 
 ### Assumed

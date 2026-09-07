@@ -30,6 +30,8 @@
 - Docker and `./dev-compose.sh up` work on this machine. The end-to-end script runs for real against that stack; it is not written and left unrun.
 - The chat is tested against fixtures only. No live model call in any test, and no API key in the repo, a commit, or a test.
 - Review media — screenshots and recordings from driving the UI — goes in `screenshots-and-etc/`, which is gitignored. Record with `agent-browser record start`, convert to GIF with `ffmpeg`. Nothing there is committed.
+- The recording runs against the Vite dev server (`npm run dev`, port 3000) proxied to the compose backend, so a frontend change shows up without an image rebuild.
+- The browser logs in through the real Keycloak form as `dev@company.nonpresent` with password `insight-dev` — the seeded persona convention in [deploy/compose/keycloak/README.md](../../../deploy/compose/keycloak/README.md). `AUTH_DISABLED` stays unset.
 
 ---
 
@@ -891,7 +893,22 @@ git commit -m "feat(frontend): table and line renderers driven by the widget JSO
   - `POST /v1/chat` — `{ "message": String }` in. Out for an answer: `{ "reply": String, "result": { "columns": [String], "rows": [[Value]] } }`. Out for a creation: `{ "reply": String, "created": { "metric": Option<String>, "widgets": [String], "dashboard": Option<String> }, "skipped": [{ "kind": String, "name": String, "reason": "exists" }] }`.
   - The handler calls `DefinitionStore::get` for every name the model proposes. A name already in use is skipped, never overwritten, and comes back in `skipped` so the reply can say so.
 
-- [ ] **Step 0: Sample the field names a table holds**
+- [ ] **Step 0a: Add a canned-reply mode**
+
+The recording has to show the chat working, and no test may call the model. So the chat has two modes, chosen by config:
+
+```yaml
+  insight-v3-core:
+    config:
+      anthropic_token: ""
+      chat_mode: "live"   # live | canned
+```
+
+In `canned` mode `ChatClient::propose` returns a fixed `Proposal::Create` — one metric, one table widget, one line widget, one dashboard, named after the message's first word — without any network call. Everything downstream is identical: the same validation, the same stores, the same responses. A test asserts that `canned` mode makes no HTTP request and still produces a stored dashboard.
+
+This is what the GIF records. It proves the plumbing, not the model's judgement, and the plan says so rather than implying otherwise.
+
+- [ ] **Step 0b: Sample the field names a table holds**
 
 The chat is useless without them — it will invent field names that compile and return nothing.
 
@@ -1140,6 +1157,48 @@ git commit -m "feat(frontend): chat panel that creates dashboards and lists them
 
 ---
 
+### Task 9: Record the scenarios
+
+**Files:**
+- Create: `screenshots-and-etc/` output only — nothing committed.
+
+**Interfaces:**
+- Consumes: everything above, running.
+
+- [ ] **Step 1: Bring the stack up**
+
+Run: `./dev-compose.sh up` from the repo root, then `cd src/frontend && npm run dev`.
+Expected: the stack is healthy and the dev server serves port 3000.
+
+- [ ] **Step 2: Seed the data and the definitions**
+
+Run: `cd src/backend/services/insight-v3-core && ./tests/mvp.sh`
+Expected: exits 0. The `engineering` dashboard now exists.
+
+- [ ] **Step 3: Record the list and the dashboard**
+
+```bash
+agent-browser record start screenshots-and-etc/dashboard.webm http://localhost:3000/portal/custom
+# log in as dev@company.nonpresent / insight-dev, click through to the dashboard
+agent-browser record stop
+ffmpeg -i screenshots-and-etc/dashboard.webm -vf "fps=10,scale=1280:-1:flags=lanczos" \
+       -loop 0 screenshots-and-etc/dashboard.gif
+```
+
+- [ ] **Step 4: Record the chat**
+
+With `chat_mode: canned`, record a one-time question answered as a table in the panel, then a creation that adds a dashboard to the list and routes to it. Save as `screenshots-and-etc/chat.gif`.
+
+- [ ] **Step 5: Record the failure states**
+
+Store a metric naming a table that does not exist, put a widget on it, and record the error box. Save as `screenshots-and-etc/failures.gif`.
+
+- [ ] **Step 6: Report**
+
+Three GIFs in `screenshots-and-etc/`, none committed, with a line each saying which scenario it shows.
+
+---
+
 ## Order and what each task proves
 
 | Task | Proves |
@@ -1152,5 +1211,6 @@ git commit -m "feat(frontend): chat panel that creates dashboards and lists them
 | 6 | One table and one graph from JSON, plus the error and empty states |
 | 7 | The chat answers a question, and writes the same definitions |
 | 8 | It does so from the page, and a new dashboard shows up in the list at once |
+| 9 | Three GIFs showing the scenarios end to end, against a real login |
 
 Tasks 1-4 are backend and can run while 5-6 are built against the mocked endpoints. Task 7 needs Task 3's compiler; Task 8 needs Task 7.
