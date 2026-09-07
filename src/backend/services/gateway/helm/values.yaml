@@ -1,3 +1,10 @@
+global:
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    publicUrl: ""
+
 replicaCount: 1
 
 podAnnotations: {}
@@ -52,6 +59,16 @@ gateway:
   # `/v1/metrics` before proxying (the app services host at `/v1/*`, unaware of
   # the platform prefix).
   routes:
+    - prefix: /api/sql/query
+      upstream: 'http://{{ .Release.Name }}-analytics:8086'
+      auth: instance_token
+      timeoutMs: 40000
+      sqlApiOnly: true
+    - prefix: /mcp
+      upstream: 'http://{{ .Release.Name }}-analytics:8086'
+      auth: bearer
+      timeoutMs: 40000
+      mcpOnly: true
     - prefix: /api/analytics
       upstream: 'http://{{ .Release.Name }}-analytics:8081'
       timeoutMs: 135000

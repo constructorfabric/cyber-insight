@@ -7,7 +7,7 @@ use std::fmt;
 
 use url::Url;
 
-use crate::schema::{RouteConfig, SUPPORTED_VERSION};
+use crate::schema::{Authentication, RouteConfig, SUPPORTED_VERSION};
 
 /// All validation violations found in one pass, reported together so an operator
 /// fixes a `routes.yaml` in one edit rather than one error at a time.
@@ -74,10 +74,17 @@ pub fn validate(config: &RouteConfig) -> Result<(), ValidationErrors> {
             errors.push(format!("duplicate route prefix '{p}'"));
         }
 
-        if !p.starts_with("/api/") {
-            errors.push(format!(
-                "route prefix '{p}' must start with '/api/' (operator routes live only under /api/)"
-            ));
+        match route.auth {
+            Authentication::Session if !p.starts_with("/api/") => errors.push(format!(
+                "session-authenticated route prefix '{p}' must start with '/api/'"
+            )),
+            Authentication::Bearer if p != "/mcp" => errors.push(format!(
+                "bearer-authenticated route prefix '{p}' must be exactly '/mcp'"
+            )),
+            Authentication::InstanceToken if p != "/api/sql/query" => errors.push(format!(
+                "instance-token route prefix '{p}' must be exactly '/api/sql/query'"
+            )),
+            Authentication::Session | Authentication::Bearer | Authentication::InstanceToken => {}
         }
 
         match parse_upstream(&route.upstream) {
@@ -89,6 +96,11 @@ pub fn validate(config: &RouteConfig) -> Result<(), ValidationErrors> {
         }
 
         let resolved = route.resolve(&config.defaults);
+        if resolved.auth == Authentication::InstanceToken && resolved.strip_prefix {
+            errors.push(format!(
+                "instance-token route '{p}' must not enable strip_prefix"
+            ));
+        }
         if resolved.timeout_ms == 0 && !resolved.websocket {
             errors.push(format!(
                 "route '{p}': timeout_ms 0 is only allowed with websocket: true"

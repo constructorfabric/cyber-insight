@@ -54,7 +54,8 @@ describe("resolveScopeRoster", () => {
   it("defaults to the viewer's whole subtree", () => {
     const s = resolveScopeRoster(TREE, "p-ao", { root: null, directOnly: false });
     expect(s.label).toBe("Ao");
-    expect(s.count).toBe(5);
+    expect(s.rosterCount).toBe(5);
+    expect(s.scopeMemberCount).toBe(6);
   });
   it("scopes to a sub-lead's subtree", () => {
     const s = resolveScopeRoster(TREE, "p-ao", { root: "p-lead1", directOnly: false });
@@ -72,6 +73,8 @@ describe("resolveScopeRoster", () => {
       "p-ic1",
       "p-lead2",
     ]);
+    expect(s.rosterCount).toBe(2);
+    expect(s.scopeMemberCount).toBe(3);
   });
   it("falls back to the viewer when root is outside the tree", () => {
     const s = resolveScopeRoster(TREE, "p-ao", { root: "p-stranger", directOnly: false });
@@ -96,7 +99,8 @@ describe("resolveScopeRoster", () => {
       "·p-lead1",
       "··p-lead2",
     ]);
-    expect(s.managerNodes.map((m) => m.teamSize)).toEqual([5, 3, 1]);
+    expect(s.managerNodes.map((m) => m.subtreeMemberCount)).toEqual([6, 4, 2]);
+    expect(s.managerNodes.map((m) => m.directMemberCount)).toEqual([3, 3, 2]);
   });
 
   it("keeps the picker in outline order across branches, not by depth", () => {
@@ -115,7 +119,12 @@ describe("resolveScopeRoster", () => {
       "p-l2",
       "p-l2a",
     ]);
-    expect(s.managerNodes.map((m) => m.teamSize)).toEqual([6, 2, 1, 2, 1]);
+    expect(s.managerNodes.map((m) => m.subtreeMemberCount)).toEqual([
+      7, 3, 2, 3, 2,
+    ]);
+    expect(s.managerNodes.map((m) => m.directMemberCount)).toEqual([
+      3, 2, 2, 2, 2,
+    ]);
   });
 });
 
@@ -132,7 +141,8 @@ describe("flatOrgScope", () => {
     const scope = flatOrgScope(roster);
 
     expect(scope.roster?.map((r) => r.person_id)).toEqual(["p-me", "p-b", "p-c"]);
-    expect(scope.count).toBe(3);
+    expect(scope.rosterCount).toBe(3);
+    expect(scope.scopeMemberCount).toBe(3);
   });
 
   it("offers no manager nodes and no direct-only cut", () => {
@@ -184,6 +194,7 @@ describe("flatOrgScope", () => {
     const scope = flatOrgScope(null);
 
     expect(scope.roster).toBeNull();
-    expect(scope.count).toBe(0);
+    expect(scope.rosterCount).toBe(0);
+    expect(scope.scopeMemberCount).toBe(0);
   });
 });

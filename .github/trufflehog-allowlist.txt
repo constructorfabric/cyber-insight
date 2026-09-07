@@ -17,7 +17,6 @@ f805794a8092a445  Gitlab             docs/connectors/gitlab.md  # code identifie
 a0cb61bc8b698803  Gitlab             src/ingestion/connectors/git/bitbucket-cloud/descriptor.yaml  # bronze column name is_in_default_branch, not a token
 386dc4480c56ba22  Gitlab             src/ingestion/connectors/git/github/dbt/github__commits.sql  # bronze column name is_in_default_branch, not a token
 900162680ea34d4f  Gitlab             src/ingestion/connectors/git/github/descriptor.yaml  # bronze column name is_in_default_branch, not a token
-65b16a9d3ed875d7  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_github.commits.yaml  # bronze column name is_in_default_branch, not a token
 9a6a2ad8f26d96a0  Gitlab             src/ingestion/connectors/git/gitlab-nocode/descriptor.yaml  # connector name, not a token
 4ccd2051f51a85a9  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__commits.sql  # code identifier / constant name
 c71d7d6ef85cd006  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__file_changes.sql  # code identifier / constant name
@@ -37,6 +36,47 @@ d1c1dd2c5248b565  Gitlab             src/ingestion/connectors/git/gitlab/tests/t
 a1d64ea5858af851  Gitlab             src/ingestion/tools/seed/insight_seed/generators/git_repos.py  # the vendor project seeding function's name, not a token
 b7724cdd5c80cebb  Gitlab             src/ingestion/tools/seed/tests/test_git_repos.py  # a bronze relation name in the vendor-relation assertion, not a token
 5976017fb71ea0e2  HubSpotApiKey      docs/architecture/CONNECTOR_AUTOMATION.md  # synthetic UUID fixture
+10c14a66053d0859  SQLServer          src/backend/services/identity/.env.local.example  # placeholder in an example env file / unit test
+a41e6a136aac6865  SQLServer          src/backend/services/identity/tests/Insight.Identity.Tests.Unit/MariaDbConnectionFactoryTests.cs  # placeholder in an example env file / unit test
+ffa3052a64e250a1  URI                src/backend/infra/local-dev.sh  # local dev connection string, no live credential
+95b838ac246d5801  URI                src/backend/services/git-cli-proxy/src/engine/url.rs  # test literal asserting a userinfo clone URL is rejected
+823cebaae9cccd2e  URI                src/backend/services/identity/src/Insight.Identity.Infrastructure/ClickHouse/ClickHouseOptions.cs  # local dev connection string, no live credential
+523b1ceec0ec4385  URI                src/backend/services/identity/tests/Insight.Identity.Tests.Unit/ClickHouseConnectionFactoryTests.cs  # local dev connection string, no live credential
+a80cb0d9ce8131da  URI                src/backend/services/identity/tests/Insight.Identity.Tests.Unit/ClickHouseConnectionFactoryTests.cs  # local dev connection string, no live credential
+260f1be2d35046b4  Wit                src/backend/services/analytics-api/src/migration/m20260529_000001_metric_query_catalog_link.rs  # zero-padded id constant in a migration
+009efa5af4e23dd0  JiraToken          tests/datapath/metrics/tasks/tasks_bugs.test.yaml  # synthetic e2e metric fixture value
+94d8a6f64b975efa  JiraToken          tests/datapath/metrics/tasks/tasks_bugs.test.yaml  # synthetic e2e metric fixture value
+381649b71f1f06e9  JiraToken          tests/datapath/metrics/tasks/tasks_closed.test.yaml  # synthetic e2e metric fixture value
+9de24c1259694d0f  JiraToken          tests/datapath/metrics/tasks/tasks_closed.test.yaml  # synthetic e2e metric fixture value
+1dc9b04228f59921  JiraToken          tests/datapath/metrics/tasks/tasks_closed_deleted_excluded.test.yaml  # synthetic e2e metric fixture value
+844d1ef4ec9aed09  JiraToken          tests/datapath/metrics/tasks/tasks_closed_deleted_excluded.test.yaml  # synthetic e2e metric fixture value
+de3f304652beeef4  JiraToken          tests/datapath/metrics/tasks/tasks_closed_deleted_excluded.test.yaml  # repeated-digit placeholder identifier from an earlier revision of this fixture
+004745da342d7320  JiraToken          tests/datapath/metrics/tasks/tasks_dev_time.test.yaml  # synthetic e2e metric fixture value
+328427f59cdc64f5  JiraToken          tests/datapath/metrics/tasks/tasks_dev_time.test.yaml  # synthetic e2e metric fixture value
+437efa33245a9c5e  JiraToken          tests/datapath/metrics/tasks/tasks_due_dates.test.yaml  # synthetic e2e metric fixture value
+44e4c60c9e1aa04a  JiraToken          tests/datapath/metrics/tasks/tasks_due_dates.test.yaml  # synthetic e2e metric fixture value
+085bc675055a6aae  JiraToken          tests/datapath/metrics/tasks/tasks_estimation_accuracy.test.yaml  # synthetic e2e metric fixture value
+1c1ebd6ae1bb522d  JiraToken          tests/datapath/metrics/tasks/tasks_estimation_accuracy.test.yaml  # synthetic e2e metric fixture value
+844b7cc56a951033  JiraToken          tests/datapath/metrics/tasks/tasks_flow_efficiency.test.yaml  # synthetic e2e metric fixture value
+8c4f2f24d46cc272  JiraToken          tests/datapath/metrics/tasks/tasks_flow_efficiency.test.yaml  # synthetic e2e metric fixture value
+7550680aa7461b23  JiraToken          tests/datapath/metrics/tasks/tasks_pickup_time.test.yaml  # synthetic e2e metric fixture value
+8f88e9176bac8607  JiraToken          tests/datapath/metrics/tasks/tasks_pickup_time.test.yaml  # synthetic e2e metric fixture value
+dffbd148b88cad72  JiraToken          tests/datapath/metrics/tasks/tasks_reopen_rate.test.yaml  # synthetic e2e metric fixture value
+fe7bc730b8204f07  JiraToken          tests/datapath/metrics/tasks/tasks_reopen_rate.test.yaml  # synthetic e2e metric fixture value
+0eb34d9a4bde422a  JiraToken          tests/datapath/metrics/tasks/tasks_resolution_time.test.yaml  # synthetic e2e metric fixture value
+e6400951ec3d32be  JiraToken          tests/datapath/metrics/tasks/tasks_resolution_time.test.yaml  # synthetic e2e metric fixture value
+8848e1dc2118ce68  JiraToken          tests/datapath/metrics/tasks/tasks_stale_in_progress.test.yaml  # synthetic e2e metric fixture value
+8cc09af247045802  JiraToken          tests/datapath/metrics/tasks/tasks_stale_in_progress.test.yaml  # synthetic e2e metric fixture value
+a17758cf03c537dc  JiraToken          tests/datapath/metrics/tasks/tasks_worklog_accuracy.test.yaml  # synthetic e2e metric fixture value
+de93042515ab723b  JiraToken          tests/datapath/metrics/tasks/tasks_worklog_accuracy.test.yaml  # synthetic e2e metric fixture value
+30824eb2a2d37486  JiraToken          tests/datapath/metrics/tasks/tasks_worklog_deleted_excluded.test.yaml  # synthetic e2e metric fixture value
+7aad0a849a609676  JiraToken          tests/datapath/metrics/tasks/tasks_worklog_deleted_excluded.test.yaml  # synthetic e2e metric fixture value
+23b497b98d695cfa  JiraToken          tests/datapath/metrics/tasks/tasks_worklog_deleted_excluded.test.yaml  # repeated-digit placeholder identifier from an earlier revision of this fixture
+a1bf6f0828538dc7  JiraToken          tests/datapath/metrics/templates/jira_task.yaml  # synthetic e2e metric fixture value
+
+# Retired paths. The nightly sweep reads every ref, so a value stays reachable
+# while the commit that carried it does — the path leaving HEAD retires nothing.
+65b16a9d3ed875d7  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_github.commits.yaml  # bronze column name is_in_default_branch, not a token
 fdd801f84b096f9b  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
 93192185cb9d3fc6  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
 175ae9997104cde3  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
@@ -80,11 +120,3 @@ c6f108c3d2b0717f  JiraToken          src/ingestion/tests/e2e/metrics/team_bullet
 f74e89258c6ae15e  JiraToken          src/ingestion/tests/e2e/metrics/team_bullet_task_delivery_tasks_completed.test.yaml  # synthetic e2e metric fixture value
 3fdd46f911f50d69  JiraToken          src/ingestion/tests/e2e/metrics/templates/confluence_wiki_pages.yaml  # synthetic e2e metric fixture value
 a32d11c0e57c50f7  JiraToken          src/ingestion/tests/e2e/specs/templates/jira_task.yaml  # synthetic e2e metric fixture value
-10c14a66053d0859  SQLServer          src/backend/services/identity/.env.local.example  # placeholder in an example env file / unit test
-a41e6a136aac6865  SQLServer          src/backend/services/identity/tests/Insight.Identity.Tests.Unit/MariaDbConnectionFactoryTests.cs  # placeholder in an example env file / unit test
-ffa3052a64e250a1  URI                src/backend/infra/local-dev.sh  # local dev connection string, no live credential
-95b838ac246d5801  URI                src/backend/services/git-cli-proxy/src/engine/url.rs  # test literal asserting a userinfo clone URL is rejected
-823cebaae9cccd2e  URI                src/backend/services/identity/src/Insight.Identity.Infrastructure/ClickHouse/ClickHouseOptions.cs  # local dev connection string, no live credential
-523b1ceec0ec4385  URI                src/backend/services/identity/tests/Insight.Identity.Tests.Unit/ClickHouseConnectionFactoryTests.cs  # local dev connection string, no live credential
-a80cb0d9ce8131da  URI                src/backend/services/identity/tests/Insight.Identity.Tests.Unit/ClickHouseConnectionFactoryTests.cs  # local dev connection string, no live credential
-260f1be2d35046b4  Wit                src/backend/services/analytics-api/src/migration/m20260529_000001_metric_query_catalog_link.rs  # zero-padded id constant in a migration

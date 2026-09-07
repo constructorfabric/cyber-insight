@@ -4,7 +4,7 @@ import {
   Layers,
   LayoutGrid,
   Search,
-  Settings2,
+  Settings,
 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -163,7 +163,7 @@ export function ContextPane() {
                 <PopoverTrigger
                   render={
                     <SidebarMenuButton>
-                      <Settings2 aria-hidden />
+                      <Settings aria-hidden />
                       <span>Settings</span>
                     </SidebarMenuButton>
                   }
@@ -577,33 +577,16 @@ function WorkChart() {
     </div>
   );
 
-  // A roster is the whole organisation, so it takes the rest of the pane and
-  // scrolls there. The search sits ABOVE the scroll region, not inside it: a
-  // sticky-inside search put the scrollbar (and, mid-inertia, the rows) on top
-  // of it. The standard sidebar shape — fixed search, list scrolling below,
-  // scrollbar contained to the list.
-  if (isFlat) {
-    return (
-      // No group label: "WorkChart" names a structure a flat organisation does
-      // not have, and every other name for the roster restates the zone it
-      // already sits in. The search's own label says what the list is.
-      <SidebarGroup className="min-h-0 flex-1">
-        <SidebarGroupContent className="flex min-h-0 flex-1 flex-col gap-2">
-          {find}
-          <ScrollArea className="min-h-0 flex-1">
-            <OrgTree leadsToTeam query={query} />
-          </ScrollArea>
-        </SidebarGroupContent>
-      </SidebarGroup>
-    );
-  }
-
+  // WORKAROUND: Search stays outside ScrollArea because inertial scrolling can
+  // draw its scrollbar and rows over the search.
   return (
-    <SidebarGroup>
-      <SidebarGroupLabel>WorkChart</SidebarGroupLabel>
-      <SidebarGroupContent className="flex flex-col gap-2">
+    <SidebarGroup className="min-h-0 flex-1">
+      {isFlat ? null : <SidebarGroupLabel>WorkChart</SidebarGroupLabel>}
+      <SidebarGroupContent className="flex min-h-0 flex-1 flex-col gap-2">
         {find}
-        <OrgTree leadsToTeam query={query} />
+        <ScrollArea className="min-h-0 flex-1">
+          <OrgTree leadsToTeam query={query} />
+        </ScrollArea>
       </SidebarGroupContent>
     </SidebarGroup>
   );

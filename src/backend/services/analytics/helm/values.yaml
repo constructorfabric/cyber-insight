@@ -1,5 +1,12 @@
 replicaCount: 1
 
+global:
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    publicUrl: ""
+
 podAnnotations: {}
 
 image:
@@ -10,6 +17,18 @@ image:
 service:
   type: ClusterIP
   port: 8081
+
+sqlApi:
+  tokenSecret: insight-sql-api-creds
+  tokenKey: token
+
+mcp:
+  port: 8086
+  maxConcurrentQueries: 16
+  # Pre-create this Secret with the dedicated ClickHouse password.
+  credentialsSecret: insight-mcp-creds
+  clickhouseUser: insight_mcp
+  clickhousePasswordKey: clickhouse-password
 
 resources:
   requests:

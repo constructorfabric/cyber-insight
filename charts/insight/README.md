@@ -2,6 +2,12 @@
 
 Single canonical unit of delivery for the Insight platform.
 
+See [MCP authentication](../../deploy/MCP_AUTHENTICATION.md) for connection lifetime,
+revocation, and upgrade behavior.
+
+For token-authenticated, read-only SQL execution, see the
+[SQL query API guide](../../deploy/SQL_QUERY_API.md).
+
 - **Chart**: `insight`
 - **Version**: see `Chart.yaml` → `version`
 - **App version**: see `Chart.yaml` → `appVersion` (matches image tags)
@@ -107,7 +113,7 @@ See comments in [`values.yaml`](./values.yaml) — every block is documented inl
 Key groups:
 
 - `credentials.deploymentMode` / `credentials.autoGenerate` — who owns the generated Secrets (`helm` with lookup-based reuse, or `gitops` with out-of-band Secrets)
-- `global.*` — cluster-wide defaults (pull secrets, storage class, `tenantDefaultId`, `observability.otlp.endpoint`)
+- `global.*` — cluster-wide defaults (pull secrets, storage class, `tenantDefaultId`, `observability.logs.{level,format}`, `observability.otlp.endpoint`)
 - `<dep>.host` / `<dep>.port` / `<dep>.passwordSecret` (Redpanda: `<dep>.brokers`) — external-infra wiring for ClickHouse, MariaDB, Redis, Redpanda
 - `gateway` / `authenticator` / `analytics` — **mandatory** app services (no deploy flag; the gateway is the single entrance and the product is one unit)
 - `authenticator.oidc.*` — OIDC upstream and login-resolution mode (`resolveBy: external_id | email`)
