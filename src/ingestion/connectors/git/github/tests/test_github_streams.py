@@ -240,12 +240,13 @@ def test_pull_requests_trim_body_and_hoist_author(http_mocker: HttpMocker) -> No
 
 
 @freezegun.freeze_time(_FROZEN)
-def test_data_feed_stops_at_start_date_but_boundary_page_tail_emits(http_mocker: HttpMocker) -> None:
+def test_data_feed_stops_at_start_date_and_drops_the_boundary_page_tail(http_mocker: HttpMocker) -> None:
     """First-sync data-feed behavior, pinned: pagination stops at the first
     record older than start_date (the Link-next page is never mocked, so a
-    fetch would fail the test) — but the boundary page's old tail still
-    emits. A record_filter must never be added to "fix" the tail: the stop
-    condition sees post-filter records, so it would unbound pagination."""
+    fetch would fail the test), and the boundary page's older tail is
+    dropped by the cursor's own window check. No record_filter is needed
+    for that, and none must be added: the stop condition sees post-filter
+    records, so a filter would unbound pagination."""
     config = GithubConfigBuilder().build()
     http_mocker.get(HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS), _repos_page())
 
@@ -278,8 +279,7 @@ def test_data_feed_stops_at_start_date_but_boundary_page_tail_emits(http_mocker:
 
     assert not output.errors, "page 2 must never be fetched"
     nums = [r.record.data["number"] for r in output.records]
-    assert 31 in nums
-    assert 30 in nums, "boundary-page tail is expected to emit (accepted, documented)"
+    assert nums == [31], f"the in-window record emits, the older tail does not: {nums}"
 
 
 @freezegun.freeze_time(_FROZEN)
@@ -1360,3 +1360,46 @@ def test_issue_types_catalogue_gives_the_type_a_stable_key(http_mocker: HttpMock
     assert by_id["IT_bug"]["unique_key"].endswith(":acme:issue_type:IT_bug")
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "issue_types", strict=True)
+
+
+_PROXY_RESET_ACTIONS = {
+    "/v1/commits": "SPLIT_USING_CURSOR",
+    "/v1/file-changes": "SPLIT_USING_CURSOR",
+    "/v1/branches": "RESET",
+    "/v1/authors": "RESET",
+}
+
+
+def _proxy_retrievers(node, out=None):
+    """Every SimpleRetriever whose requester targets the git proxy."""
+    if out is None:
+        out = []
+    if isinstance(node, dict):
+        requester = node.get("requester", {})
+        if node.get("type") == "SimpleRetriever" and "git_proxy_url" in str(requester.get("url_base", "")):
+            out.append(node)
+        for value in node.values():
+            _proxy_retrievers(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _proxy_retrievers(item, out)
+    return out
+
+
+def test_a_superseded_proxy_snapshot_restarts_the_walk_instead_of_failing_it() -> None:
+    """A 409 means the page token points into a snapshot the proxy no longer
+    holds. Failing the partition freezes its cursor until the next run; a
+    pagination reset restarts the walk, and a walk the proxy orders by the
+    cursor restarts from the last value already seen. Commits and file
+    changes come out ordered by committed_date; branches and authors carry
+    no such order, so their restart is from the first page."""
+    manifest = load_manifest(_CONNECTOR)
+    retrievers = _proxy_retrievers(manifest["streams"])
+    assert {r["requester"]["path"] for r in retrievers} == set(_PROXY_RESET_ACTIONS)
+    for retriever in retrievers:
+        path = retriever["requester"]["path"]
+        filters = retriever["requester"]["error_handler"]["response_filters"]
+        on_409 = [f["action"] for f in filters if 409 in f.get("http_codes", [])]
+        assert on_409 == ["RESET_PAGINATION"], f"{path}: a 409 must reset pagination, got {on_409}"
+        reset = retriever.get("pagination_reset")
+        assert reset == {"type": "PaginationReset", "action": _PROXY_RESET_ACTIONS[path]}, f"{path}: {reset}"
