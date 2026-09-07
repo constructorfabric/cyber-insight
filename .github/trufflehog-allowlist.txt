@@ -43,6 +43,8 @@ ee8d1fe3c4f9e4e5  Gitlab             src/ingestion/connectors/git/gitlab/dbt/git
 24adf9f9c51d34de  Gitlab             src/ingestion/tests/e2e/identity/test_gitlab_account_binding.py  # code identifier / constant name
 2b998af6aa12a827  Gitlab             src/ingestion/tests/e2e/metrics/git_pr_gitlab_account_attribution.test.yaml  # code identifier / constant name
 9e1bf9e4933b0be4  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_gitlab.pull_request_commits.yaml  # code identifier / constant name
+db81f4ceb1b447a8  Gitlab             .github/trufflehog-allowlist.txt  # this file's own entries name the identifier, not a token
+001ef6ca495466c2  Gitlab             .github/trufflehog-allowlist.txt  # this file's own entries name the identifier, not a token
 5976017fb71ea0e2  HubSpotApiKey      docs/architecture/CONNECTOR_AUTOMATION.md  # synthetic UUID fixture
 10c14a66053d0859  SQLServer          src/backend/services/identity/.env.local.example  # placeholder in an example env file / unit test
 a41e6a136aac6865  SQLServer          src/backend/services/identity/tests/Insight.Identity.Tests.Unit/MariaDbConnectionFactoryTests.cs  # placeholder in an example env file / unit test
