@@ -170,6 +170,8 @@ pub(crate) struct CompiledQuery {
 pub(crate) enum MetricQueryError {
     #[error("`{0}` must be 1-128 characters of letters, digits or underscore")]
     Identifier(String),
+    #[error("`{0}` must name one of this query's as_name values")]
+    GroupBy(String),
     #[error("a metric must select at least one field")]
     NoFields,
     #[error("filter value for `{0}` does not match its declared type")]
@@ -207,8 +209,11 @@ impl MetricQuery {
         }
 
         for group in &self.group_by {
-            if !is_identifier(group) || !as_names.contains(group.as_str()) {
+            if !is_identifier(group) {
                 return Err(MetricQueryError::Identifier(group.clone()));
+            }
+            if !as_names.contains(group.as_str()) {
+                return Err(MetricQueryError::GroupBy(group.clone()));
             }
         }
 
@@ -530,7 +535,7 @@ mod tests {
 
         assert!(matches!(
             metric.compile(),
-            Err(MetricQueryError::Identifier(_))
+            Err(MetricQueryError::GroupBy(_))
         ));
     }
 }

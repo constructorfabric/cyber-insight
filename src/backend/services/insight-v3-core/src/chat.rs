@@ -285,6 +285,7 @@ fn system_prompt(tables: &[String]) -> String {
          - Call `answer` to answer a question: it runs one query and stores nothing.\n\
          - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition.\n\n\
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"limit\":<int>|null}.\n\
+         Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
          A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
     );
 
@@ -654,7 +655,7 @@ mod tests {
 
         assert!(matches!(
             Proposal::parse(&reply),
-            Err(ChatError::Metric(MetricQueryError::Identifier(_)))
+            Err(ChatError::Metric(MetricQueryError::GroupBy(_)))
         ));
     }
 
