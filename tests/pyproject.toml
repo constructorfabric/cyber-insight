@@ -73,7 +73,7 @@ dependencies = [
 #
 #   uv run --project tests --group datapath --no-group dev pytest tests/datapath
 datapath = [
-    "dbt-core>=1.11,<1.12",
+    "dbt-core>=1.11,<1.13",
     "dbt-clickhouse>=1.10,<1.11",
 ]
 dev = [
