@@ -24,12 +24,14 @@ DAVE = "dave@example.com"
 
 
 def test_account_first_attribution_decides_pull_request_measures(spec: SpecRun) -> None:
-    """Alice takes the squash-merge and the precedence pull request through account 9001,
-    and carol the ghost one through her commit's address. Dave gets nothing: his address
-    is on the bot's commit, whose account resolves to no person, and an account that
-    resolves to nobody ends resolution instead of falling through to the address. Bob
-    gets nothing either: his address is claimed by the account an operator gave to
-    alice, so it names no one person."""
+    """Alice takes the squash-merge and the precedence pull request through account 9001.
+    Carol gets nothing: she wrote the ghost request's commit and opened nothing, and an
+    author the source names no account and no address for stays unresolved rather than
+    reaching whoever wrote the commits. Dave gets nothing: his address is on the bot's
+    commit, whose account resolves to no person, and an account that resolves to nobody
+    ends resolution instead of falling through to the address. Bob gets nothing either:
+    his address is claimed by the account an operator gave to alice, so it names no one
+    person."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
@@ -44,7 +46,7 @@ def test_account_first_attribution_decides_pull_request_measures(spec: SpecRun) 
     assert r.status == 200
 
     r.row("git.prs_merged", "period", entity_id=ALICE).equals(value=2)
-    r.row("git.prs_merged", "period", entity_id=CAROL).equals(value=1)
+    r.row("git.prs_merged", "period", entity_id=CAROL).equals(value=None)
     r.row("git.prs_merged", "period", entity_id=DAVE).equals(value=None)
     r.row("git.prs_merged", "period", entity_id=BOB).equals(value=None)
 
@@ -54,7 +56,8 @@ def test_the_bots_pull_request_is_charged_to_nobody_in_the_repository_rollup(
 ) -> None:
     """The rollup an overview draws pools what people own. Four pull requests merged
     into the repository and every person who could hold one is named here, so a total
-    of three is the excluded account's work resting on no one."""
+    of two is the excluded account's work and the ghost author's both resting on no
+    one."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
@@ -73,4 +76,4 @@ def test_the_bots_pull_request_is_charged_to_nobody_in_the_repository_rollup(
     )
     assert r.status == 200
 
-    r.row("git.prs_merged", "rollup").equals(value=3, contributing_entity_count=2)
+    r.row("git.prs_merged", "rollup").equals(value=2, contributing_entity_count=1)
