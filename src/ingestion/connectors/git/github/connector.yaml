@@ -234,13 +234,15 @@ definitions:
         error_message: >-
           Skipping this repository: gone or refused at origin (404), or
           larger than cache.maxRepoBytes (413). Other repositories continue.
-      # The pinned snapshot was superseded mid-walk. RETRY would replay the
-      # same dead page token and 409 again; rerunning the sync resumes each
-      # partition from its own stored cursor against a fresh snapshot.
+      # The pinned snapshot was superseded mid-walk: a refresh or an eviction
+      # bumped the generation, so the page token is dead. RETRY would replay
+      # it and 409 again; RESET_PAGINATION restarts the partition's walk from
+      # its first page, and the retriever's `pagination_reset` narrows that
+      # restart to the last cursor value already seen.
       - type: HttpResponseFilter
         http_codes: [409]
-        action: FAIL
-        error_message: Proxy snapshot changed mid-walk; rerun the sync to resume from the stored cursor
+        action: RESET_PAGINATION
+        error_message: Proxy snapshot changed mid-walk; restarting the walk from the last record already seen
       - type: HttpResponseFilter
         http_codes: [500, 502, 503, 504]
         action: RETRY
@@ -591,6 +593,9 @@ streams:
           type: RequestOption
           field_name: page_token
           inject_into: request_parameter
+      pagination_reset:
+        type: PaginationReset
+        action: SPLIT_USING_CURSOR
       partition_router:
         type: SubstreamPartitionRouter
         parent_stream_configs:
@@ -703,6 +708,9 @@ streams:
           type: RequestOption
           field_name: page_token
           inject_into: request_parameter
+      pagination_reset:
+        type: PaginationReset
+        action: SPLIT_USING_CURSOR
       partition_router:
         type: SubstreamPartitionRouter
         parent_stream_configs:
@@ -796,6 +804,9 @@ streams:
           type: RequestOption
           field_name: page_token
           inject_into: request_parameter
+      pagination_reset:
+        type: PaginationReset
+        action: RESET
       partition_router:
         type: SubstreamPartitionRouter
         parent_stream_configs:
@@ -923,6 +934,9 @@ streams:
                     type: RequestOption
                     field_name: page_token
                     inject_into: request_parameter
+                pagination_reset:
+                  type: PaginationReset
+                  action: RESET
                 partition_router:
                   type: SubstreamPartitionRouter
                   parent_stream_configs:
@@ -1101,12 +1115,11 @@ streams:
       datetime_format: "%Y-%m-%dT%H:%M:%SZ"
       cursor_datetime_formats:
         - "%Y-%m-%dT%H:%M:%S%z"
-      # VERIFIED against the CDK: the data-feed stop halts pagination at the
-      # first record older than the slice start, but the boundary PAGE's tail
-      # still emits — up to one page of pre-start_date rows per partition
-      # lands in bronze. Do NOT "fix" this with a record_filter: the stop
-      # condition evaluates POST-filter records, so filtering the old tail
-      # away would keep pagination walking through all history instead.
+      # The data-feed stop halts pagination at the first record older than
+      # the slice start, and the cursor's own window check drops the boundary
+      # page's older tail. Do NOT add a record_filter for that tail: the stop
+      # condition evaluates POST-filter records, so filtering would keep
+      # pagination walking through all history instead.
       is_data_feed: true
       lookback_window: P1D
       start_datetime:
@@ -1342,12 +1355,11 @@ streams:
                 # sets `incremental_dependency`, which is what makes the bound
                 # affordable: this walk is paid once, and later syncs resume
                 # from the stored state rather than re-reading the window.
-                # VERIFIED against the CDK: the data-feed stop halts pagination at the
-                # first record older than the slice start, but the boundary PAGE's tail
-                # still emits — up to one page of pre-start_date rows per partition
-                # lands in bronze. Do NOT "fix" this with a record_filter: the stop
-                # condition evaluates POST-filter records, so filtering the old tail
-                # away would keep pagination walking through all history instead.
+                # The data-feed stop halts pagination at the first record older than
+                # the slice start, and the cursor's own window check drops the boundary
+                # page's older tail. Do NOT add a record_filter for that tail: the stop
+                # condition evaluates POST-filter records, so filtering would keep
+                # pagination walking through all history instead.
                 is_data_feed: true
                 start_datetime:
                   type: MinMaxDatetime
@@ -1701,12 +1713,11 @@ streams:
         type: MinMaxDatetime
         datetime: "{{ config['github_start_date'] }}"
         datetime_format: "%Y-%m-%d"
-      # VERIFIED against the CDK: the data-feed stop halts pagination at the
-      # first record older than the slice start, but the boundary PAGE's tail
-      # still emits — up to one page of pre-start_date rows per partition
-      # lands in bronze. Do NOT "fix" this with a record_filter: the stop
-      # condition evaluates POST-filter records, so filtering the old tail
-      # away would keep pagination walking through all history instead.
+      # The data-feed stop halts pagination at the first record older than
+      # the slice start, and the cursor's own window check drops the boundary
+      # page's older tail. Do NOT add a record_filter for that tail: the stop
+      # condition evaluates POST-filter records, so filtering would keep
+      # pagination walking through all history instead.
       is_data_feed: true
     transformations:
       - type: AddFields
@@ -2863,12 +2874,11 @@ streams:
         - "%Y-%m-%dT%H:%M:%S%z"
       # created_at is immutable: no lookback; the data-feed stop is what
       # bounds newest-first pagination at the stored state.
-      # VERIFIED against the CDK: the data-feed stop halts pagination at the
-      # first record older than the slice start, but the boundary PAGE's tail
-      # still emits — up to one page of pre-start_date rows per partition
-      # lands in bronze. Do NOT "fix" this with a record_filter: the stop
-      # condition evaluates POST-filter records, so filtering the old tail
-      # away would keep pagination walking through all history instead.
+      # The data-feed stop halts pagination at the first record older than
+      # the slice start, and the cursor's own window check drops the boundary
+      # page's older tail. Do NOT add a record_filter for that tail: the stop
+      # condition evaluates POST-filter records, so filtering would keep
+      # pagination walking through all history instead.
       is_data_feed: true
       start_datetime:
         type: MinMaxDatetime
@@ -3045,12 +3055,11 @@ streams:
                 # period the deployment does. The child carries a cursor and
                 # sets `incremental_dependency`, so this walk is paid once and
                 # later syncs resume from the stored state.
-                # VERIFIED against the CDK: the data-feed stop halts pagination at the
-                # first record older than the slice start, but the boundary PAGE's tail
-                # still emits — up to one page of pre-start_date rows per partition
-                # lands in bronze. Do NOT "fix" this with a record_filter: the stop
-                # condition evaluates POST-filter records, so filtering the old tail
-                # away would keep pagination walking through all history instead.
+                # The data-feed stop halts pagination at the first record older than
+                # the slice start, and the cursor's own window check drops the boundary
+                # page's older tail. Do NOT add a record_filter for that tail: the stop
+                # condition evaluates POST-filter records, so filtering would keep
+                # pagination walking through all history instead.
                 is_data_feed: true
                 start_datetime:
                   type: MinMaxDatetime
