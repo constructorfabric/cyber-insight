@@ -13,14 +13,15 @@ clickhouse_user="${CLICKHOUSE_USER:-insight}"
 clickhouse_password="${CLICKHOUSE_PASSWORD:-insight-local}"
 
 table_name="mvp_events_$$"
-metric_name="commits_per_day"
-widget_table_name="commits_table"
-widget_graph_name="commits_graph"
-dashboard_name="engineering"
+metric_name="commits_per_day_$$"
+widget_table_name="commits_table_$$"
+widget_graph_name="commits_graph_$$"
+dashboard_name="engineering_$$"
 
 log_file="$(mktemp)"
 body_file="$(mktemp)"
 table_created="false"
+definitions_created="false"
 
 cleanup() {
   status=$?
@@ -29,6 +30,20 @@ cleanup() {
     curl --silent --show-error --connect-timeout 2 --max-time 10 \
       --user "$clickhouse_user:$clickhouse_password" \
       --data-binary "DROP TABLE IF EXISTS $table_name" \
+      "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
+  fi
+  if [[ "$definitions_created" == "true" ]]; then
+    curl --silent --show-error --connect-timeout 2 --max-time 10 \
+      --user "$clickhouse_user:$clickhouse_password" \
+      --data-binary "ALTER TABLE metrics DELETE WHERE name = '$metric_name'" \
+      "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
+    curl --silent --show-error --connect-timeout 2 --max-time 10 \
+      --user "$clickhouse_user:$clickhouse_password" \
+      --data-binary "ALTER TABLE widgets DELETE WHERE name IN ('$widget_table_name', '$widget_graph_name')" \
+      "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
+    curl --silent --show-error --connect-timeout 2 --max-time 10 \
+      --user "$clickhouse_user:$clickhouse_password" \
+      --data-binary "ALTER TABLE dashboards DELETE WHERE name = '$dashboard_name'" \
       "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
   fi
   if [[ "$status" != "0" ]] && [[ -s "$log_file" ]]; then
@@ -124,6 +139,7 @@ status="$(http PUT "/v1/metrics/$metric_name" \
   --header 'content-type: application/json' \
   --data-binary "$metric_body")"
 expect_equal "204" "$status" "metric definition"
+definitions_created="true"
 echo "-> $status"
 
 step 4 "POST /v1/metrics/$metric_name/run"

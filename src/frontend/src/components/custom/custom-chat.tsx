@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { ChatCreated, ChatReply } from "@/api/custom-client";
 import { CustomTable } from "@/components/custom/custom-table";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useSendChat } from "@/queries/custom";
 
@@ -38,12 +39,13 @@ export function CustomChat({ onCreated }: CustomChatProps) {
         )
       );
       if (reply.created) onCreated(reply.created);
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "The chat request failed.";
+    } catch {
+      setMessage(question);
       setExchanges((prev) =>
         prev.map((exchange) =>
-          exchange.id === id ? { ...exchange, error: errorMessage } : exchange
+          exchange.id === id
+            ? { ...exchange, error: "The chat request failed." }
+            : exchange
         )
       );
     }
@@ -77,13 +79,20 @@ export function CustomChat({ onCreated }: CustomChatProps) {
         onChange={(event) => setMessage(event.target.value)}
         placeholder="Ask a question, or describe a dashboard to create"
       />
-      <Button
-        type="button"
-        onClick={() => void handleSend()}
-        disabled={sendChat.isPending}
-      >
-        Send
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          onClick={() => void handleSend()}
+          disabled={sendChat.isPending}
+        >
+          Send
+        </Button>
+        {sendChat.isPending && (
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Spinner className="size-3" /> Sending…
+          </span>
+        )}
+      </div>
     </div>
   );
 }

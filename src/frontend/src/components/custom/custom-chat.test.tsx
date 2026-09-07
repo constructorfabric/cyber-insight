@@ -7,6 +7,7 @@ import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as customClient from "@/api/custom-client";
+import type { ChatReply } from "@/api/custom-client";
 
 import { CustomChat } from "./custom-chat";
 
@@ -73,5 +74,61 @@ describe("<CustomChat>", () => {
     expect(
       await screen.findByText("commits_table already exists, left as it was")
     ).toBeInTheDocument();
+  });
+
+  it("keeps the typed question in the box when the send fails", async () => {
+    vi.mocked(customClient.sendChat).mockRejectedValue(new Error("boom"));
+    const onCreated = vi.fn();
+
+    render(<CustomChat onCreated={onCreated} />, { wrapper });
+    const textbox = screen.getByRole("textbox");
+    await userEvent.type(textbox, "how many lines on the first?");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    await screen.findByRole("alert");
+    expect(textbox).toHaveValue("how many lines on the first?");
+  });
+
+  it("shows a readable message instead of the raw API error", async () => {
+    vi.mocked(customClient.sendChat).mockRejectedValue(
+      new Error("Custom API 500")
+    );
+    const onCreated = vi.fn();
+
+    render(<CustomChat onCreated={onCreated} />, { wrapper });
+    await userEvent.type(
+      screen.getByRole("textbox"),
+      "how many lines on the first?"
+    );
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent("Custom API 500");
+    expect(alert.textContent?.trim()).not.toBe("");
+  });
+
+  it("shows a pending affordance while the send is in flight", async () => {
+    let resolveSend!: (reply: ChatReply) => void;
+    vi.mocked(customClient.sendChat).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        })
+    );
+    const onCreated = vi.fn();
+
+    render(<CustomChat onCreated={onCreated} />, { wrapper });
+    await userEvent.type(
+      screen.getByRole("textbox"),
+      "how many lines on the first?"
+    );
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(
+      await screen.findByRole("status", { name: /loading/i })
+    ).toBeInTheDocument();
+
+    resolveSend({ reply: "59 lines on 2026-09-01" });
+    await screen.findByText("59 lines on 2026-09-01");
   });
 });
