@@ -17,6 +17,9 @@ pub(crate) mod auth;
 pub(crate) mod tools;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests;
 
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;

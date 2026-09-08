@@ -1,9 +1,10 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use axum::body::{Body, to_bytes};
+use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, Request, StatusCode};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 
@@ -14,6 +15,7 @@ use crate::chat::ChatClient;
 use crate::config::McpConfig;
 use crate::definitions::memory::MemoryDefinitions;
 use crate::identity::IdentityClient;
+use crate::mcp::test_support::Issuer;
 use crate::metric_query::MetricRunner;
 use crate::raw_data::RawDataStore;
 use crate::tables::TableStore;
@@ -68,6 +70,29 @@ fn call(authorization: Option<&str>) -> Result<Request<Body>, Box<dyn Error>> {
     Ok(builder.body(Body::from(
         r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
     ))?)
+}
+
+fn mcp_request(
+    token: &str,
+    session: Option<&str>,
+    payload: &str,
+) -> Result<Request<Body>, Box<dyn Error>> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(auth::MCP_PATH)
+        .header("host", "localhost")
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
+
+    if let Some(session) = session {
+        builder = builder.header("mcp-session-id", HeaderValue::from_str(session)?);
+    }
+
+    Ok(builder.body(Body::from(payload.to_owned()))?)
 }
 
 #[tokio::test]
@@ -173,4 +198,114 @@ fn a_bearer_header_yields_its_token_and_anything_else_yields_none() {
 
     headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer abc"));
     assert_eq!(auth::bearer_token(&headers), Some("abc"));
+}
+
+#[tokio::test]
+async fn an_authorized_client_initializes_and_lists_the_tools_over_http() -> R {
+    let issuer = Issuer::start().await;
+    let config = McpConfig {
+        enabled: true,
+        bind_addr: "127.0.0.1:0".to_owned(),
+        public_url: issuer.origin.clone(),
+        allow_insecure_private_network: true,
+    };
+    let router = router(&config, surfaces(), CancellationToken::new())?;
+    let token = issuer.sign(&issuer.claims());
+
+    let initialize = router
+        .clone()
+        .oneshot(mcp_request(
+            &token,
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.0"}}}"#,
+        )?)
+        .await?;
+
+    assert_eq!(
+        initialize.status(),
+        StatusCode::OK,
+        "initialize should be accepted for a valid token"
+    );
+    // No session id: legacy_session_mode is off, so the transport is stateless
+    // and every request stands alone.
+    assert!(
+        !initialize.headers().contains_key("mcp-session-id"),
+        "a stateless transport hands out no session"
+    );
+
+    let body = to_bytes(initialize.into_body(), 64 * 1024).await?;
+    let initialized: Value = serde_json::from_slice(&body)?;
+    assert_eq!(
+        initialized["result"]["serverInfo"]["name"], "insight-custom-surfaces",
+        "{initialized}"
+    );
+
+    let listed = router
+        .oneshot(mcp_request(
+            &token,
+            None,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        )?)
+        .await?;
+
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = to_bytes(listed.into_body(), 256 * 1024).await?;
+    let listed: Value = serde_json::from_slice(&body)?;
+
+    let Some(tools) = listed["result"]["tools"].as_array() else {
+        panic!("tools/list returns an array: {listed}");
+    };
+    let mut names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    names.sort_unstable();
+
+    assert_eq!(
+        names,
+        [
+            "delete_definition",
+            "get_definition",
+            "list_definitions",
+            "list_tables",
+            "put_dashboard",
+            "put_metric",
+            "put_widget",
+            "run_metric",
+        ],
+        "{listed}"
+    );
+
+    issuer.stop();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_token_for_the_read_only_server_does_not_open_this_one_over_http() -> R {
+    let issuer = Issuer::start().await;
+    let config = McpConfig {
+        enabled: true,
+        bind_addr: "127.0.0.1:0".to_owned(),
+        public_url: issuer.origin.clone(),
+        allow_insecure_private_network: true,
+    };
+    let router = router(&config, surfaces(), CancellationToken::new())?;
+
+    let mut claims = issuer.claims();
+    claims["aud"] = serde_json::json!(format!("{}/mcp", issuer.origin));
+    claims["scope"] = serde_json::json!("openid mcp:query");
+    let token = issuer.sign(&claims);
+
+    let response = router
+        .oneshot(mcp_request(
+            &token,
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        )?)
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    issuer.stop();
+    Ok(())
 }
