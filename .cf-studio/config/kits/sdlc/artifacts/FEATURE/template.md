@@ -137,7 +137,8 @@ Use the [quality-vector guide](../../guides/quality-vectors.md) for shared
 obligations, test attribution and scenario changes.}
 
 - [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
-  **Requirements**: `cpt-{system}-nfr-{slug}`.
+  **Requirements**: {the FR/NFR subset this proves, e.g. `cpt-{system}-fr-{slug}`, `cpt-{system}-nfr-{slug}`}.
+  **Covers**: {the feature criterion it verifies, where one applies — a `cpt-{system}-dod-{feature-slug}-{slug}` or a section 6 acceptance criterion; omit when none does}.
   **Test**: {exact test link when implemented, otherwise "Not implemented"}.
 
 {When useful, explain a considered vector with no applicable obligation as
@@ -145,4 +146,5 @@ obligations, test attribution and scenario changes.}
 
 {Each requirement above is also declared in section 1.2. Implemented tests cite
 the feature ID, FEATURE path and scenario number, and carry the suite's vector
-attribution. Passing evidence separately identifies revision and conditions.}
+attribution; a scenario naming a covered criterion keeps that reference once
+implemented. Passing evidence separately identifies revision and conditions.}

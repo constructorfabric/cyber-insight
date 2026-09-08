@@ -41,9 +41,12 @@ IDs may remain for compatibility; they are not this skill's traceability key.
 
 Each scenario belongs to the FEATURE identified once by `**Feature**` in Testing.
 Its `**Requirements**` field cites the relevant upstream FR/NFR subset already
-listed in section 1.2, and may name a feature-defined id such as a `cpt-*-dod-*`
-where that adds something. This makes a precise path through the feature without
-inserting an AC layer. An applicable NFR needs a scenario or a shared-test link;
+listed in section 1.2. A separate `**Covers**` field names the feature criterion
+the scenario verifies where one applies — a `cpt-*-dod-*` or a section 6
+acceptance criterion — and is omitted where none does. Requirements say what the
+scenario proves upstream; Covers says which of the feature's own criteria it
+discharges. Neither turns section 6 into a coverage map: the canonical checklist
+stays there, and a scenario cites what it verifies rather than the reverse. An applicable NFR needs a scenario or a shared-test link;
 where neither is possible yet, the blocking decision belongs in feature context
 with its owner, not as a placeholder scenario.
 
