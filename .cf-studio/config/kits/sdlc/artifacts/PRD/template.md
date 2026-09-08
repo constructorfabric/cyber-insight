@@ -82,6 +82,8 @@ Functional requirements define WHAT the system must do. Group by feature area or
 
 - [ ] `p1` - **ID**: `cpt-{system}-fr-{slug}`
 
+**Vector** (when the requirement carries a quality claim): {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+
 The system **MUST** {do something specific and verifiable}.
 
 **Rationale**: {Why this requirement exists — business value or stakeholder need.}
@@ -94,7 +96,10 @@ The system **MUST** {do something specific and verifiable}.
 
 ## 6. Non-Functional Requirements
 
-{One short paragraph: what quality means for this module. Which of the five vectors — Efficiency, Reliability, Performance, Security, Versatility, in that order of importance — carry its real risk, and why. This is orientation, not requirements: the requirements are below, each tagged with its vector, and the five-vector view is grouped from them rather than written here.}
+{Briefly explain the module's real quality concerns and business consequences.
+Use the [quality-vector guide](../../guides/quality-vectors.md) to suggest clearer
+expectations through Efficiency, Reliability, Performance, Security and Versatility.
+This is authoring guidance, not a completeness gate or priority ranking.}
 
 ### 6.1 NFR Inclusions
 
@@ -104,23 +109,25 @@ The system **MUST** {do something specific and verifiable}.
 
 - [ ] `p1` - **ID**: `cpt-{system}-nfr-{slug}`
 
-**Vector**: {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+**Vector**: {Primary quality vector for this obligation}
 
-The system **MUST** {measurable NFR with specific thresholds, e.g., "respond within 50ms at p95" (stricter than project default)}.
+The system **MUST** {agreed observable quality expectation}.
 
-**Threshold**: {Quantitative target with units and conditions}
+**Threshold**: {Agreed target or invariant, with relevant scope and conditions;
+identify open decisions and their owner without inventing a value}
 
-**Rationale**: {Why this module needs different/additional NFR}
+**Rationale**: {Business consequence that makes this obligation important}
 
 **Verification Method** (optional): {Only if non-standard approach needed}
 
 #### Inherited {NFR Name}
 
-**Vector**: {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+**Vector**: {Upstream obligation's quality vector}
 
 **Inherits**: `cpt-{system}-nfr-{upstream-slug}`
 
-**Verification**: {Shared test/evidence reference and its owner; preserve the upstream target and conditions}
+**Verification**: {Responsible role and intended shared verification, linked when
+available; preserve the upstream target and conditions, and state pending evidence}
 
 ### 6.2 NFR Exclusions
 

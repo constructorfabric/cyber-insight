@@ -11,7 +11,11 @@ description: >-
 
 Attach tests to the feature they verify. The trace is:
 
-`PRD FR/NFR → FEATURE Requirements + feature ID → vector-attributed scenario → test`
+`PRD FR/NFR → DESIGN allocation → FEATURE Requirements + feature ID → scenario → test`
+
+Read the [quality-vector authoring guide](../../../.cf-studio/config/kits/sdlc/guides/quality-vectors.md)
+for definitions, advisory PRD improvements, shared obligations and scenario changes.
+It is the shared product model; this skill owns the Testing format and suite mapping.
 
 The canonical SDLC kit already supplies the feature ID, the `Requirements` field
 in section 1.2, flows, DoDs and a plain Acceptance Criteria checklist. Preserve
@@ -25,6 +29,10 @@ Read the registered FEATURE, its DECOMPOSITION entry, PRD and DESIGN. In section
 1.2, retain the FR/NFR IDs that the feature implements, including inherited NFRs.
 Confirm that each inherited ID resolves to the upstream definition and that its
 target and verification owner remain applicable.
+
+Read DESIGN's NFR allocation to establish this feature's contribution and who
+assesses the complete obligation. Suggest missing allocation details within scope;
+identify measurement boundaries and any component budgets without inventing targets.
 
 Read Acceptance Criteria as the feature's observable completion conditions.
 Improve unclear criteria when that is within the user's requested scope, but do
@@ -63,25 +71,27 @@ counts, or degraded behaviour.
 
 ## 3. Choose one vector and one suite per scenario
 
-Use [vector-mapping.md](references/vector-mapping.md). Efficiency is compute cost;
-Reliability is correctness and availability; Performance is response time;
-Security is protection of access and information; Versatility is supported
-sources and surfaces. Do not classify test rigor as Efficiency. A scenario
-claiming an NFR's vector must preserve that NFR's meaning and target.
+Use [vector-mapping.md](references/vector-mapping.md) for common Insight probes
+within the guide's broader product definitions. The scenario's primary vector
+identifies its verification claim. Preserve the scope and target of the upstream
+obligations being verified; supporting assertions do not prove another obligation
+in full merely because its ID is referenced.
 
 Choose the cheapest existing suite capable of falsifying the claim:
 
 | Target component | Suite tags, cheapest adequate first |
 |---|---|
-| Frontend | `fe-unit` → `fe-component` → `stand-ui` |
-| Serving / analytics | `rust-unit` → `metric-spec` → `stand-api` |
-| Authentication | `rust-unit` → `auth-rig` → `stand-api` / `stand-ui` |
+| Frontend | `fe-unit` (vitest `unit` project) → `fe-component` (vitest `storybook` project) → `stand-ui` (`tests/stand/ui`) |
+| Serving / analytics | `rust-unit` (inline `#[cfg(test)]`) → `metric-spec` (`tests/datapath/metrics/<class>`) → `stand-api` (`tests/stand/api`) |
+| Authentication | `rust-unit` → `auth-rig` (`src/backend/services/authenticator/tests`) → `stand-api` / `stand-ui` |
 | Identity | `rust-unit` → `identity-e2e` (`tests/datapath/identity`) → `stand-api` |
-| Ingestion | `connector-tests` → `dbt-tests` → `metric-spec` |
-| Cross-cutting | `ci-static` or `manual` |
+| Ingestion | `connector-tests` (`src/ingestion/connectors/*/*/tests`) → `dbt-tests` (`src/ingestion/dbt/tests`) → `metric-spec` |
+| Cross-cutting | `ci-static` (scans and gates in `.github/`) or `manual` |
 
 Verify tools before naming them: inspect the relevant test directory, package
-scripts or CI workflows. A browser scenario must need browser-observable
+scripts or CI workflows. `scripts/counts.sh` takes repo-wide denominators
+and reports MOVED rather than a misleading zero when a source has shifted; take a
+count from it rather than quoting one. A browser scenario must need browser-observable
 behaviour. Performance and Efficiency may use `manual` when no suitable load or
 soak lane exists, but must identify the missing procedure and conditions.
 Measure them on the same approved reference fixture at each NFR's own load.
@@ -118,9 +128,16 @@ another requirement namespace.
   lines, never additional checkboxes.
 - Keep numbers stable once published. Append new numbers; retain a dropped
   number with its disposition. Do not renumber tests to match changed ACs.
+- Editorial changes retain their number. Changes to a target, scope or expected
+  behavior require reassessing linked tests; clear the implementation checkbox
+  until the complete revised claim is mapped. Record successor numbers for a
+  split or merge, and keep passing evidence tied to the specification/test revision.
 - `*(main gate)*` after a scenario name is optional for the parity gate.
 - `**Requirements**` names exact upstream IDs. A shared test can satisfy several
-  features, but each feature must link to its applicable scenario and target.
+  features when its assertions prove each claim and scope. A scenario may reference
+  several requirements and a requirement may have several scenarios. For independent
+  claims in different vectors, use assertion-focused tests sharing setup; retain
+  one primary native vector marker per test.
 - `**Test**` links to the exact file and function or case when implemented.
   Otherwise distinguish `Not implemented` from `Not yet mapped to the complete
   scenario`; a directory is not implementation evidence.
@@ -128,21 +145,18 @@ another requirement namespace.
   or executed. Preserve its number, vector, requirement reference and owner.
   If the requirement itself is missing, say so and link the decision that must
   establish it; do not cite an unrelated NFR.
-- Account for all five vectors through scenarios or justified n/a declarations.
-  Inheriting unchanged Security or Performance obligations still requires shared
-  evidence, not n/a.
+- Consider all five vectors and suggest missing scenarios for applicable obligations.
+  Explain exclusions when useful; missing categories alone do not add a requirement
+  or readiness gate. An inherited obligation still needs its applicable evidence.
 - Group by risk; keep prose understandable without reading implementation code.
   Keep feature and requirement IDs because they are the traceability links.
-
-See [example-feature.md](references/example-feature.md) for a worked synthetic
-PRD → FEATURE → test example. The older port, migration and lean examples are
-historical scope studies, not the current output contract.
 
 ## 5. Link executable tests back to the feature
 
 When implementing or mapping a scenario:
 
-1. Verify that the test asserts the full outcome and the same vector.
+1. Verify that the assertions prove the complete scenario claim. Its primary vector
+   should describe that claim; a supporting requirement may have another vector.
 2. Put the FEATURE path, its existing `cpt-…-feature-…` ID and stable scenario
    number in test metadata, a docstring, or an appropriate test reference.
    Keep the native vector marker where the suite supports one: stand API/UI tests
@@ -179,16 +193,14 @@ For a FEATURE:
 cfs toc docs/<path>/FEATURE.md
 cfs validate --artifact docs/<path>/FEATURE.md
 cfs validate-toc docs/<path>/FEATURE.md
-.claude/skills/quality-vector-tests/scripts/rollup.sh docs/<path>/FEATURE.md
 ```
 
-Apply `QV-FDESIGN-001` after deterministic validation. Check the chain in both
-directions: PRD IDs resolve; the FEATURE declares them; scenarios reference the
-right subset; implemented test links resolve and tests cite their owner.
-Inspect all applicable NFRs for missing or deferred evidence. CFS validates the
-canonical artifact references; the rollup counts vector declarations only and
-does not validate test metadata or prove requirement coverage.
+Use the guide for advisory improvement suggestions after canonical validation.
+Review the chain in both directions: PRD IDs resolve; DESIGN allocates responsibility;
+the FEATURE declares its requirements; scenarios reference the right subset;
+implemented test links resolve and tests cite their owner. Explain missing or
+deferred evidence without certifying an unmet requirement. This review adds no
+QV pass/fail gate. CFS validates canonical artifact references; nothing here
+certifies coverage or results.
 
-The rollup retains older criterion-tagged lines for compatibility and reports
-deferred scenarios separately. It ignores fenced examples and comments.
-Do not use a ratio of ACs to scenarios as a quality or traceability gate.
+Do not use a ratio of requirements to scenarios as a quality or traceability gate.
