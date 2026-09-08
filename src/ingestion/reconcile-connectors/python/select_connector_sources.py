@@ -7,12 +7,10 @@ CLI:
 
 Args:   `known_connectors_file` holds `extract_descriptor_names.py` output — the
         JSON array of every connector this build ships. `definitions_file` holds
-        `ab_list_definitions` output, which is what actually says whose a source
-        is.
+        `ab_list_definitions` output, which is what says whose a source is.
 Stdin:  the `sources/list` payload (a JSON array of source objects).
 Stdout: TSV `airbyte_source_id<TAB>instance_source_id` per matching source.
-Exit:   0 always; 2 on bad arg count, 1 on a payload that is not a source
-        listing or an unreadable connector or definition list.
+Exit:   0 always; 2 on bad arg count, 1 on an unreadable listing or file.
 
 Sources are named `{connector}-{source_id}-{tenant}` by the reconcile loop, so
 the instance's own id is what is left once the two known ends are removed. A
@@ -20,17 +18,14 @@ source whose name does not carry both ends is emitted with an empty instance id
 rather than dropped: the caller still has to delete it, and guessing an id for
 it would name an instance that never existed.
 
-INVARIANT: ownership comes from the source's definition, not from its name —
-see `airbyte_sources.owner_of`. This pass runs on the way to deleting what it
-selects, and a source id is arbitrary, so one connector's source can spell
-another connector's name exactly.
+INVARIANT: ownership is `airbyte_sources.owner_of` — the definition, and the
+name only as a fail-closed fallback. This pass runs on the way to deleting what
+it selects.
 """
 
-import json
 import sys
-from pathlib import Path
 
-from airbyte_sources import decode, load_definitions, owner_of
+from airbyte_sources import decode, load_definitions, owner_of, read_json_list
 
 SUBJECT = "select_connector_sources"
 
@@ -44,18 +39,6 @@ def instance_of(name: str, connector: str, tenant: str) -> str:
     return name[len(head) : len(name) - len(tail)]
 
 
-def _known_connectors(path: str) -> set[str] | None:
-    try:
-        listed = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        sys.stderr.write(f"{SUBJECT}: cannot read the connector list: {exc}\n")
-        return None
-    if not isinstance(listed, list):
-        sys.stderr.write(f"{SUBJECT}: the connector list is not a list\n")
-        return None
-    return {name for name in listed if isinstance(name, str) and name}
-
-
 def main() -> int:
     if len(sys.argv) != 5:
         sys.stderr.write(
@@ -65,16 +48,13 @@ def main() -> int:
         return 2
     connector, tenant = sys.argv[1], sys.argv[2]
 
-    known = _known_connectors(sys.argv[3])
-    if known is None:
+    listed = read_json_list(sys.argv[3], SUBJECT, "connector list")
+    definitions = load_definitions(sys.argv[4], SUBJECT)
+    if listed is None or definitions is None:
         return 1
     # The connector being cascaded is one of them whether or not the caller's
     # listing named it, or nothing it owns would ever be selected.
-    known.add(connector)
-
-    definitions = load_definitions(sys.argv[4], SUBJECT)
-    if definitions is None:
-        return 1
+    known = {name for name in listed if isinstance(name, str) and name} | {connector}
 
     sources = decode(sys.stdin, SUBJECT)
     if sources is None:

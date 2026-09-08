@@ -182,10 +182,9 @@ reconcile_cascade_delete() {
   local connections_json
   connections_json="$(ab_list_connections "${workspace_id}")"
 
-  # Which connector a source belongs to is answered by the definition Airbyte
-  # created it against, and only failing that by its name — a source id is
-  # arbitrary, so `claude-team` with the source id `invoices-main` is named
-  # exactly as a source of `claude-team-invoices` would be.
+  # Whose a source is comes from the definition Airbyte created it against, and
+  # only failing that from its name — see the INVARIANT in
+  # python/airbyte_sources.py.
   local known_file definitions_file
   known_file="$(mktemp -t insight-connectors.XXXXXX)" || return 1
   definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${known_file}"; return 1; }
@@ -1521,8 +1520,7 @@ reconcile_prune_removed_instances() {
   sources_json="$(ab_list_sources "${workspace_id}")" || return 0
   plan_file="$(mktemp -t insight-plan.XXXXXX)" || return 0
   printf '%s\n' "${plan_tsv}" > "${plan_file}"
-  # The definition is what says whose a source is; its name cannot, since a
-  # source id is arbitrary and one connector's source can spell another's name.
+  # Whose a source is — same rule as the cascade's.
   definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${plan_file}"; return 0; }
   ab_list_definitions "${workspace_id}" > "${definitions_file}" 2>/dev/null || printf '[]' > "${definitions_file}"
 

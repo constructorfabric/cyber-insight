@@ -23,10 +23,8 @@ Three refusals, each of them load-bearing:
 * A source whose name does not carry both the connector and the tenant is left
   alone. The instance it belongs to cannot be read out of it, and deleting a
   source whose owner is unknown is how a healthy connector loses its data.
-* The connector is resolved from the source's DEFINITION, not from its name —
-  see `airbyte_sources.owner_of`. Connector slugs prefix one another and a
-  source id is arbitrary, so a name can be spelled by two connectors and no
-  reading of it can say which one wrote it.
+* The connector comes from `airbyte_sources.owner_of` — the source's definition,
+  with its name only as a fail-closed fallback.
 """
 
 import sys

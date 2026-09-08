@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -42,7 +41,7 @@ def deadlines(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Every timeout the ledger hands urllib, in call order."""
     seen: list[int] = []
 
-    def fake_urlopen(request: Any, timeout: int) -> _Response:
+    def fake_urlopen(request: object, timeout: int) -> _Response:
         seen.append(timeout)
         return _Response()
 

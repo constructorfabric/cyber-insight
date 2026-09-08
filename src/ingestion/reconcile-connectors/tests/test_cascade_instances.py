@@ -1,10 +1,10 @@
 """What the cascade deletes, and what it refuses to attribute to itself.
 
-The cascade runs for a connector with no Secret at all, so both questions it
-asks are answered from source names alone: which sources are this connector's,
-and which instance each one is. Both have a wrong answer that deletes live data
-— a sibling connector's sources under a shared name prefix, and a schedule named
-after an instance that was guessed rather than read.
+The cascade runs for a connector with no Secret at all, so it has to establish
+two things before it deletes anything: which sources are this connector's, and
+which instance each one is. Both have a wrong answer that costs live data — a
+neighbour connector's sources, and a schedule named after an instance that was
+guessed rather than read.
 
 Run: pytest src/ingestion/reconcile-connectors/tests
 """
@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+
+from reconcile_inputs import Definition, Source, listing
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,10 +45,10 @@ argo_delete_superseded_cronworkflows() {
 
 
 def cascade(
-    sources: list[dict],
+    sources: list[Source],
     tmp_path: Path,
     connector: str = CONNECTOR,
-    definitions: list[dict] | None = None,
+    definitions: list[Definition] | None = None,
 ) -> tuple[int, list[str], str]:
     calls = tmp_path / "calls"
     script = f"""
@@ -56,10 +58,10 @@ def cascade(
     export AIRBYTE_URL=http://127.0.0.1:1
     export INSIGHT_TENANT_ID={TENANT}
     export CALLS="{calls}"
-    export DEFINITIONS={json.dumps(json.dumps(definitions or []))}
+    export DEFINITIONS={json.dumps(listing(definitions or []))}
     source "{ROOT}/lib/reconcile.sh"
     {STUBS}
-    ab_list_sources() {{ printf '%s' {json.dumps(json.dumps(sources))}; }}
+    ab_list_sources() {{ printf '%s' {json.dumps(listing(sources))}; }}
     reconcile_cascade_delete "{connector}"
     """
     result = subprocess.run(
@@ -69,27 +71,15 @@ def cascade(
     return result.returncode, recorded, result.stderr
 
 
-def source(name: str, airbyte_id: str, definition: str = "") -> dict:
-    record = {"name": name, "sourceId": airbyte_id}
-    if definition:
-        record["sourceDefinitionId"] = definition
-    return record
-
-
-def definition(connector: str, definition_id: str) -> dict:
-    """One Airbyte source definition, the way this loop publishes them."""
-    return {"name": connector, "sourceDefinitionId": definition_id, "custom": True}
-
-
 class TestASourceThatNamesNoInstance:
-    def test_its_source_goes_and_no_instance_schedule_is_touched(
+    def test_its_source_goes_and_no_instance_schedule_is_guessed(
         self, tmp_path: Path
     ) -> None:
-        code, calls, _ = cascade(
-            [source(f"{CONNECTOR}-legacy", "src-legacy")], tmp_path
+        code, calls, stderr = cascade(
+            [Source(f"{CONNECTOR}-legacy", "src-legacy")], tmp_path
         )
 
-        assert code == 0
+        assert code == 0, stderr
         assert "DELETE-SOURCE src-legacy" in calls
         assert not any(line.startswith("DELETE-CRONWORKFLOW") for line in calls), (
             "an instance was invented for a source that named none"
@@ -97,13 +87,7 @@ class TestASourceThatNamesNoInstance:
         assert f"DELETE-SUPERSEDED {CONNECTOR}" in calls, (
             "the shapes that name no instance are still the cascade's to remove"
         )
-
-    def test_the_log_says_what_was_left_behind(self, tmp_path: Path) -> None:
-        _, _, stderr = cascade(
-            [source(f"{CONNECTOR}-legacy", "src-legacy")], tmp_path
-        )
-
-        assert "names no instance" in stderr
+        assert "names no instance" in stderr, "and the operator is told which one"
 
 
 class TestASourceThatNamesOne:
@@ -111,7 +95,7 @@ class TestASourceThatNamesOne:
         """The other half: reading the instance out of the name is what the
         cascade does, and it must keep doing it."""
         code, calls, stderr = cascade(
-            [source(f"{CONNECTOR}-{CONNECTOR}-main-{TENANT}", "src-main")], tmp_path
+            [Source(f"{CONNECTOR}-{CONNECTOR}-main-{TENANT}", "src-main")], tmp_path
         )
 
         assert code == 0, stderr
@@ -129,8 +113,8 @@ class TestASiblingConnectorSharingTheNamePrefix:
         the two are separate installations of separate connectors."""
         code, calls, stderr = cascade(
             [
-                source(f"{CONNECTOR}-{CONNECTOR}-main-{TENANT}", "src-main"),
-                source(
+                Source(f"{CONNECTOR}-{CONNECTOR}-main-{TENANT}", "src-main"),
+                Source(
                     f"{CONNECTOR}-invoices-{CONNECTOR}-invoices-main-{TENANT}", "src-inv"
                 ),
             ],
@@ -145,36 +129,34 @@ class TestASiblingConnectorSharingTheNamePrefix:
         assert not any("invoices" in line for line in calls if "CRONWORKFLOW" in line)
 
 
+#: `claude-team` with the source id `invoices-main` is named exactly as an
+#: instance of `claude-team-invoices` would be — the INVARIANT in
+#: `python/airbyte_sources.py`. Both live, each with the definition this loop
+#: published for its connector.
+BOTH_LIVE = [
+    Source(f"{CONNECTOR}-invoices-main-{TENANT}", "src-team-owned", "def-team"),
+    Source(
+        f"{CONNECTOR}-invoices-{CONNECTOR}-invoices-main-{TENANT}",
+        "src-invoices-owned",
+        "def-invoices",
+    ),
+]
+BOTH_PUBLISHED = [
+    Definition(CONNECTOR, "def-team"),
+    Definition(f"{CONNECTOR}-invoices", "def-invoices"),
+]
+
+
 class TestANameTwoConnectorsCanSpell:
-    """A source id is arbitrary and need not repeat its connector, so
-    `claude-team` with the source id `invoices-main` is named exactly as an
-    instance of `claude-team-invoices` would be:
-    `claude-team-invoices-main-default`. Reading the name cannot say which of
-    the two wrote it; the definition Airbyte created it against can.
-    """
-
-    #: The two connectors, each with the definition this loop published for it.
-    DEFINITIONS = [
-        definition(CONNECTOR, "def-team"),
-        definition(f"{CONNECTOR}-invoices", "def-invoices"),
-    ]
-
     def test_the_neighbours_cascade_leaves_it_alone(self, tmp_path: Path) -> None:
         """The destructive case: removing `claude-team-invoices`'s Secret must
         not take a live source of `claude-team` with it, however the name
         reads."""
         code, calls, stderr = cascade(
-            [
-                source(f"{CONNECTOR}-invoices-main-{TENANT}", "src-team-owned", "def-team"),
-                source(
-                    f"{CONNECTOR}-invoices-{CONNECTOR}-invoices-main-{TENANT}",
-                    "src-invoices-owned",
-                    "def-invoices",
-                ),
-            ],
+            BOTH_LIVE,
             tmp_path,
             connector=f"{CONNECTOR}-invoices",
-            definitions=self.DEFINITIONS,
+            definitions=BOTH_PUBLISHED,
         )
 
         assert code == 0, stderr
@@ -188,18 +170,7 @@ class TestANameTwoConnectorsCanSpell:
         """The other half: the source really is `claude-team`'s, so removing
         `claude-team`'s Secret must take it — and its instance is
         `invoices-main`, not `main`."""
-        code, calls, stderr = cascade(
-            [
-                source(f"{CONNECTOR}-invoices-main-{TENANT}", "src-team-owned", "def-team"),
-                source(
-                    f"{CONNECTOR}-invoices-{CONNECTOR}-invoices-main-{TENANT}",
-                    "src-invoices-owned",
-                    "def-invoices",
-                ),
-            ],
-            tmp_path,
-            definitions=self.DEFINITIONS,
-        )
+        code, calls, stderr = cascade(BOTH_LIVE, tmp_path, definitions=BOTH_PUBLISHED)
 
         assert code == 0, stderr
         assert "DELETE-SOURCE src-team-owned" in calls
@@ -213,10 +184,8 @@ class TestANameTwoConnectorsCanSpell:
         two connectors can spell it — so neither may delete it, and it waits for
         an operator rather than for whichever cascade runs first."""
         code, calls, stderr = cascade(
-            [source(f"{CONNECTOR}-invoices-main-{TENANT}", "src-ambiguous")],
-            tmp_path,
-            definitions=[],
+            [BOTH_LIVE[0]._replace(definition_id="")], tmp_path, definitions=[]
         )
 
         assert code == 0, stderr
-        assert "DELETE-SOURCE src-ambiguous" not in calls
+        assert "DELETE-SOURCE src-team-owned" not in calls

@@ -7,20 +7,18 @@ delete the second Secret — and its source and schedule have to go with it whil
 the first instance is left untouched.
 
 Every case here is about a refusal as much as a removal: this pass deletes live
-Airbyte sources, so what it declines to touch is the part worth pinning. Which
-connector a source belongs to is read from the definition Airbyte created it
-against; its name is asked only when nothing else can answer, and then only
-when one connector could have written it.
+Airbyte sources, so what it declines to touch is the part worth pinning.
 
 Run: pytest src/ingestion/reconcile-connectors/tests
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
+
+from reconcile_inputs import Definition, Source, listing, plan_row
 
 ROOT = Path(__file__).resolve().parents[1]
 FINDER = ROOT / "python" / "find_removed_instances.py"
@@ -28,44 +26,32 @@ FINDER = ROOT / "python" / "find_removed_instances.py"
 TENANT = "example-tenant"
 
 
-def plan_row(connector: str, source_id: str = "", secret: str = "") -> str:
-    namespace = "bronze_" + connector.replace("-", "_")
-    return "\t".join(
-        [connector, "dir", "1", "nocode", "", "", "", namespace, source_id, secret, "hash"]
-    )
-
-
-def source(name: str, airbyte_id: str, definition: str = "") -> dict:
-    record = {"name": name, "sourceId": airbyte_id}
-    if definition:
-        record["sourceDefinitionId"] = definition
-    return record
-
-
-def definition(connector: str, definition_id: str) -> dict:
-    """One Airbyte source definition, the way this loop publishes them."""
-    return {"name": connector, "sourceDefinitionId": definition_id, "custom": True}
-
-
 def find(
     tmp_path: Path,
     plan: list[str],
-    sources: list[dict],
+    sources: list[Source],
     connector: str | None = None,
-    definitions: list[dict] | None = None,
-) -> list[tuple[str, str, str]]:
+    definitions: list[Definition] | None = None,
+) -> list[tuple[str, ...]]:
     plan_file = tmp_path / "plan.tsv"
     plan_file.write_text("\n".join(plan) + "\n", encoding="utf-8")
     definitions_file = tmp_path / "definitions.json"
-    definitions_file.write_text(json.dumps(definitions or []), encoding="utf-8")
+    definitions_file.write_text(listing(definitions or []), encoding="utf-8")
     argv = [sys.executable, str(FINDER), str(plan_file), TENANT, str(definitions_file)]
     if connector is not None:
         argv.append(connector)
     result = subprocess.run(
-        argv, input=json.dumps(sources), capture_output=True, text=True, check=False
+        argv, input=listing(sources), capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
     return [tuple(line.split("\t")) for line in result.stdout.splitlines()]
+
+
+#: One connector installed twice, as Airbyte holds it.
+SIBLINGS = [
+    Source(f"claude-team-claude-team-main-{TENANT}", "src-main"),
+    Source(f"claude-team-claude-team-second-{TENANT}", "src-second"),
+]
 
 
 class TestTheSiblingCase:
@@ -73,10 +59,7 @@ class TestTheSiblingCase:
         removed = find(
             tmp_path,
             [plan_row("claude-team", "claude-team-main", "secret-main")],
-            [
-                source(f"claude-team-claude-team-main-{TENANT}", "src-main"),
-                source(f"claude-team-claude-team-second-{TENANT}", "src-second"),
-            ],
+            SIBLINGS,
         )
 
         assert removed == [("src-second", "claude-team", "claude-team-second")]
@@ -90,10 +73,7 @@ class TestTheSiblingCase:
                 plan_row("claude-team", "claude-team-main", "secret-main"),
                 plan_row("claude-team", "claude-team-second", "secret-second"),
             ],
-            [
-                source(f"claude-team-claude-team-main-{TENANT}", "src-main"),
-                source(f"claude-team-claude-team-second-{TENANT}", "src-second"),
-            ],
+            SIBLINGS,
         )
 
         assert removed == []
@@ -108,7 +88,7 @@ class TestWhatThisPassRefusesToTouch:
         removed = find(
             tmp_path,
             [plan_row("claude-team")],
-            [source(f"claude-team-claude-team-main-{TENANT}", "src-main")],
+            [Source(f"claude-team-claude-team-main-{TENANT}", "src-main")],
         )
 
         assert removed == []
@@ -121,7 +101,7 @@ class TestWhatThisPassRefusesToTouch:
         removed = find(
             tmp_path,
             [plan_row("claude-team", "claude-team-main", "secret-main")],
-            [source("claude-team-claude-team-second-someone-else", "src-elsewhere")],
+            [Source("claude-team-claude-team-second-someone-else", "src-elsewhere")],
         )
 
         assert removed == []
@@ -137,22 +117,25 @@ class TestWhatThisPassRefusesToTouch:
                 plan_row("claude-team-invoices", "claude-team-invoices-main", "secret-b"),
             ],
             [
-                source(f"claude-team-claude-team-main-{TENANT}", "src-team"),
-                source(f"claude-team-invoices-claude-team-invoices-main-{TENANT}", "src-invoices"),
+                Source(f"claude-team-claude-team-main-{TENANT}", "src-team"),
+                Source(f"claude-team-invoices-claude-team-invoices-main-{TENANT}", "src-invoices"),
             ],
         )
 
         assert removed == []
 
 
-class TestANameTwoConnectorsCanSpell:
-    """A source id is arbitrary and need not repeat its connector, so
-    `claude-team` with the source id `invoices-main` is named exactly as an
-    instance of `claude-team-invoices` would be:
-    `claude-team-invoices-main-default`. No reading of that name can say which
-    of the two wrote it — only the definition Airbyte created it against can.
-    """
+#: `claude-team` with the source id `invoices-main` is named exactly as an
+#: instance of `claude-team-invoices` would be — the INVARIANT in
+#: `python/airbyte_sources.py`.
+AMBIGUOUS = Source(f"claude-team-invoices-main-{TENANT}", "src-ambiguous", "def-team")
+BOTH_PUBLISHED = [
+    Definition("claude-team", "def-team"),
+    Definition("claude-team-invoices", "def-invoices"),
+]
 
+
+class TestANameTwoConnectorsCanSpell:
     def test_a_live_source_is_not_pruned_as_its_neighbours_removed_instance(
         self, tmp_path: Path
     ) -> None:
@@ -165,11 +148,8 @@ class TestANameTwoConnectorsCanSpell:
                 plan_row("claude-team", "invoices-main", "secret-a"),
                 plan_row("claude-team-invoices", "claude-team-invoices-main", "secret-b"),
             ],
-            [source(f"claude-team-invoices-main-{TENANT}", "src-ambiguous", "def-team")],
-            definitions=[
-                definition("claude-team", "def-team"),
-                definition("claude-team-invoices", "def-invoices"),
-            ],
+            [AMBIGUOUS],
+            definitions=BOTH_PUBLISHED,
         )
 
         assert removed == [], "a live source was pruned under another connector's name"
@@ -186,11 +166,8 @@ class TestANameTwoConnectorsCanSpell:
                 plan_row("claude-team", "claude-team-main", "secret-a"),
                 plan_row("claude-team-invoices", "claude-team-invoices-main", "secret-b"),
             ],
-            [source(f"claude-team-invoices-main-{TENANT}", "src-ambiguous", "def-team")],
-            definitions=[
-                definition("claude-team", "def-team"),
-                definition("claude-team-invoices", "def-invoices"),
-            ],
+            [AMBIGUOUS],
+            definitions=BOTH_PUBLISHED,
         )
 
         assert removed == [("src-ambiguous", "claude-team", "invoices-main")]
@@ -207,7 +184,7 @@ class TestANameTwoConnectorsCanSpell:
                 plan_row("claude-team", "claude-team-main", "secret-a"),
                 plan_row("claude-team-invoices", "claude-team-invoices-main", "secret-b"),
             ],
-            [source(f"claude-team-invoices-main-{TENANT}", "src-ambiguous")],
+            [AMBIGUOUS._replace(definition_id="")],
         )
 
         assert removed == []
@@ -224,8 +201,8 @@ class TestANameTwoConnectorsCanSpell:
                 plan_row("zulip", "zulip-main", "secret-b"),
             ],
             [
-                source(f"claude-team-claude-team-gone-{TENANT}", "src-gone"),
-                source(f"zulip-zulip-gone-{TENANT}", "src-zulip-gone"),
+                Source(f"claude-team-claude-team-gone-{TENANT}", "src-gone"),
+                Source(f"zulip-zulip-gone-{TENANT}", "src-zulip-gone"),
             ],
             connector="zulip",
         )

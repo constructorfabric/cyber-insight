@@ -18,6 +18,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from reconcile_inputs import plan_row
+
 ROOT = Path(__file__).resolve().parents[1]
 
 #: The real plan reader, naming, and guard; everything else answers harmlessly.
@@ -36,16 +38,11 @@ _reconcile_one_connector()          { printf 'RECONCILE %s %s\\n' "$1" "$9" >> "
 """
 
 
-def plan_row(connector: str, source_id: str, secret: str) -> str:
-    namespace = "bronze_" + connector.replace("-", "_")
-    return "\\t".join(
-        [connector, "dir", "1", "nocode", "", "", "", namespace, source_id, secret, "hash"]
-    )
-
-
 def run_tick(rows: list[str], tmp_path: Path) -> tuple[int, list[str], str]:
     calls = tmp_path / "calls"
-    plan = "\\n".join(rows)
+    # The plan reaches bash through `printf '%b'`, so its tabs travel as the
+    # two characters `\t` and are interpreted there.
+    plan = "\\n".join(row.replace("\t", "\\t") for row in rows)
     script = f"""
     set -uo pipefail
     export INSIGHT_NAMESPACE=insight
@@ -122,11 +119,7 @@ class TestDistinctInstancesAreLeftAlone:
         """Its three instance columns are empty, and two empty source ids are
         not two instances naming one schedule."""
         code, calls, stderr = run_tick(
-            [
-                "\\t".join(["alpha", "dir", "1", "nocode", "", "", "", "bronze_alpha", "", "", ""]),
-                "\\t".join(["beta", "dir", "1", "nocode", "", "", "", "bronze_beta", "", "", ""]),
-            ],
-            tmp_path,
+            [plan_row("alpha"), plan_row("beta")], tmp_path
         )
 
         assert code == 0, stderr
