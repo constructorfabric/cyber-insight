@@ -26,6 +26,9 @@ data:
         {{- with .auth }}
         auth: {{ . }}
         {{- end }}
+        {{- with .mcpScope }}
+        mcp_scope: {{ . | quote }}
+        {{- end }}
         {{- with .timeoutMs }}
         timeout_ms: {{ . }}
         {{- end }}

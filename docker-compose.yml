@@ -470,6 +470,12 @@ services:
       APP__gears__insight_v3_core__config__anthropic_token: "${ANTHROPIC_API_KEY:-}"
       APP__gears__insight_v3_core__config__chat_mode: "${INSIGHT_V3_CHAT_MODE:-canned}"
       APP__gears__insight_v3_core__config__chat_model: "${INSIGHT_V3_CHAT_MODEL:-claude-haiku-4-5-20251001}"
+      # The same MCP_ENABLED that serves the warehouse server serves this one;
+      # the gateway reaches it at insight-v3-core:8087 on the compose network.
+      APP__gears__insight_v3_core__config__mcp__enabled: "${MCP_ENABLED:-false}"
+      APP__gears__insight_v3_core__config__mcp__bind_addr: "0.0.0.0:8087"
+      APP__gears__insight_v3_core__config__mcp__public_url: "${MCP_PUBLIC_URL:-}"
+      APP__gears__insight_v3_core__config__mcp__allow_insecure_private_network: "true"
     command:
       - "/app/insight-v3-core" # <watched path>
       - "--"

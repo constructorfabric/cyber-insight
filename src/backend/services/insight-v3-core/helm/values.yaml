@@ -6,6 +6,17 @@ global:
     logs:
       level: info
       format: json
+  # Turning MCP on serves the custom-surface server too, against the same
+  # published origin the read-only warehouse server verifies tokens for.
+  mcp:
+    enabled: false
+    publicUrl: ""
+
+# The custom-surface MCP server's own listener. Enabled by global.mcp.
+mcp:
+  port: 8087
+  # Permits an http origin on a private network, for a stand without TLS.
+  allowInsecurePrivateNetwork: false
 
 podAnnotations: {}
 
