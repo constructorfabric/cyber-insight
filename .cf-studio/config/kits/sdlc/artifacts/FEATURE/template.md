@@ -139,9 +139,6 @@ obligations, test attribution and scenario changes.}
 - [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
   **Requirements**: `cpt-{system}-nfr-{slug}`.
   **Test**: {exact test link when implemented, otherwise "Not implemented"}.
-- **deferred** 2. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
-  **Requirements**: `cpt-{system}-nfr-{other-slug}`.
-  **Blocked by**: {owner, reason and resolution point}.
 
 {When useful, explain a considered vector with no applicable obligation as
 `**{Vector}** — n/a: {reason}.` Categories do not impose new requirements.}
