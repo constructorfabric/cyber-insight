@@ -7,9 +7,11 @@
 ## Release: `grafana` in the infra namespace (inventory `namespaces.infra`,
 ## `insight-infra` by default).
 ##
-## The `${NS_*}` placeholders below are the namespaces of the datasource
-## releases, resolved by scripts/render-system-values.sh before helm reads
-## the file (see system/README.md § Values layout).
+## The `${NS_*}` placeholders below are resolved by
+## scripts/render-system-values.sh before helm reads the file (see
+## system/README.md § Values layout): NS_INFRA / NS_MONITORING for
+## datasource hostnames, NS_APP for the app-namespace selectors in every
+## dashboard query and alert rule (inventory `namespaces.services`).
 ##
 ## Per-env overrides go in environments/<env>/grafana-values.yaml
 ## (ingress host, OIDC, admin secret).
@@ -183,29 +185,29 @@ dashboards:
           "annotations": {"list": [
             {"name": "Deploys", "enable": true, "iconColor": "purple",
              "datasource": {"type": "loki", "uid": "loki"},
-             "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"}
+             "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"}
           ]},
           "panels": [
             {"id": 1, "type": "logs", "title": "Reconcile",
              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
              "datasource": {"type": "loki", "uid": "loki"},
              "options": {"showTime": true, "wrapLogMessage": true, "sortOrder": "Descending"},
-             "targets": [{"refId": "A", "expr": "{namespace=\"insight\", pod=~\".*reconcile.*\"}"}]},
+             "targets": [{"refId": "A", "expr": "{namespace=\"${NS_APP}\", pod=~\".*reconcile.*\"}"}]},
             {"id": 2, "type": "logs", "title": "Airbyte syncs (trigger / poll)",
              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
              "datasource": {"type": "loki", "uid": "loki"},
              "options": {"showTime": true, "wrapLogMessage": true, "sortOrder": "Descending"},
-             "targets": [{"refId": "A", "expr": "{namespace=\"insight\", pod=~\".*-sync-.*\"}"}]},
+             "targets": [{"refId": "A", "expr": "{namespace=\"${NS_APP}\", pod=~\".*-sync-.*\"}"}]},
             {"id": 3, "type": "logs", "title": "dbt",
              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
              "datasource": {"type": "loki", "uid": "loki"},
              "options": {"showTime": true, "wrapLogMessage": true, "sortOrder": "Descending"},
-             "targets": [{"refId": "A", "expr": "{namespace=\"insight\", pod=~\".*dbt.*\"}"}]},
+             "targets": [{"refId": "A", "expr": "{namespace=\"${NS_APP}\", pod=~\".*dbt.*\"}"}]},
             {"id": 4, "type": "logs", "title": "Deploy: hook pods (migrations, configuration)",
              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
              "datasource": {"type": "loki", "uid": "loki"},
              "options": {"showTime": true, "wrapLogMessage": true, "sortOrder": "Descending"},
-             "targets": [{"refId": "A", "expr": "{namespace=\"insight\", pod=~\"insight-(configuration|post-install|post-upgrade).*\"}"}]},
+             "targets": [{"refId": "A", "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-(configuration|post-install|post-upgrade).*\"}"}]},
             {"id": 5, "type": "logs", "title": "Deploy: helm/make output (push-deploy-log.sh)",
              "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
              "datasource": {"type": "loki", "uid": "loki"},
@@ -224,7 +226,7 @@ dashboards:
           "annotations": {"list": [
             {"name": "Deploys", "enable": true, "iconColor": "purple",
              "datasource": {"type": "loki", "uid": "loki"},
-             "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"}
+             "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"}
           ]},
           "panels": [
             {"id": 1, "type": "timeseries", "title": "Request rate by service",
@@ -289,7 +291,7 @@ dashboards:
           "annotations": {"list": [
             {"name": "Deploys", "enable": true, "iconColor": "purple",
              "datasource": {"type": "loki", "uid": "loki"},
-             "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"}
+             "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"}
           ]},
           "panels": [
             {"id": 1, "type": "timeseries", "title": "Request rate (nginx)",
@@ -353,7 +355,7 @@ dashboards:
           "annotations": {"list": [
             {"name": "Deploys", "enable": true, "iconColor": "purple",
              "datasource": {"type": "loki", "uid": "loki"},
-             "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"}
+             "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"}
           ]},
           "panels": [
             {"id": 1, "type": "table", "title": "Last sync per connector",
@@ -446,7 +448,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -576,25 +578,25 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 200 | status < 300 [$__range]))",
+                  "expr": "sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 200 | status < 300 [$__range]))",
                   "instant": true,
                   "legendFormat": "2xx",
                   "refId": "A"
                 },
                 {
-                  "expr": "sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 300 | status < 400 [$__range]))",
+                  "expr": "sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 300 | status < 400 [$__range]))",
                   "instant": true,
                   "legendFormat": "3xx",
                   "refId": "B"
                 },
                 {
-                  "expr": "sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | status < 500 [$__range]))",
+                  "expr": "sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | status < 500 [$__range]))",
                   "instant": true,
                   "legendFormat": "4xx",
                   "refId": "C"
                 },
                 {
-                  "expr": "sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 500 [$__range]))",
+                  "expr": "sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 500 [$__range]))",
                   "instant": true,
                   "legendFormat": "5xx",
                   "refId": "D"
@@ -664,7 +666,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (route, status) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 [$__range]))",
+                  "expr": "sum by (route, status) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 [$__range]))",
                   "instant": true,
                   "refId": "A"
                 }
@@ -720,7 +722,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (route, status) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 500 [$__auto]))",
+                  "expr": "sum by (route, status) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 500 [$__auto]))",
                   "legendFormat": "{{route}} · {{status}}",
                   "refId": "A"
                 }
@@ -762,7 +764,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (route, status) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | status < 500 [$__auto]))",
+                  "expr": "sum by (route, status) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | status < 500 [$__auto]))",
                   "legendFormat": "{{route}} · {{status}}",
                   "refId": "A"
                 }
@@ -803,7 +805,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "100 * sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 [$__auto])) / sum by (route) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` [$__auto]))",
+                  "expr": "100 * sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 [$__auto])) / sum by (route) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` [$__auto]))",
                   "legendFormat": "{{route}}",
                   "refId": "A"
                 }
@@ -842,7 +844,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (route) (rate({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` [$__auto]))",
+                  "expr": "sum by (route) (rate({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` [$__auto]))",
                   "legendFormat": "{{route}}",
                   "refId": "A"
                 }
@@ -894,7 +896,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "topk(10, 1000 * quantile_over_time(0.95, {namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | unwrap request_time [$__auto]) by (route))",
+                  "expr": "topk(10, 1000 * quantile_over_time(0.95, {namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | unwrap request_time [$__auto]) by (route))",
                   "legendFormat": "{{route}}",
                   "refId": "A"
                 }
@@ -932,17 +934,17 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "1000 * quantile_over_time(0.50, {namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
+                  "expr": "1000 * quantile_over_time(0.50, {namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
                   "legendFormat": "p50",
                   "refId": "A"
                 },
                 {
-                  "expr": "1000 * quantile_over_time(0.95, {namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
+                  "expr": "1000 * quantile_over_time(0.95, {namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
                   "legendFormat": "p95",
                   "refId": "B"
                 },
                 {
-                  "expr": "1000 * quantile_over_time(0.99, {namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
+                  "expr": "1000 * quantile_over_time(0.99, {namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | unwrap request_time [$__auto]) by ()",
                   "legendFormat": "p99",
                   "refId": "C"
                 }
@@ -984,7 +986,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "{namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | line_format `{{.status}} {{.method}} {{.uri}} {{.request_time}}s`",
+                  "expr": "{namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | label_format route=`{{ regexReplaceAll \"(/[0-9a-fA-F][0-9a-fA-F_-]{11,}|/[0-9]+|/[^/?]*(?:%40|@)[^/?]*)\" (regexReplaceAll \"^/assets/.+$\" .uri \"/assets/*\") \"/{id}\" }}` | route=~`$route` | status >= 400 | line_format `{{.status}} {{.method}} {{.uri}} {{.request_time}}s`",
                   "refId": "A"
                 }
               ],
@@ -1013,7 +1015,7 @@ dashboards:
               "targets": [
                 {
                   "refId": "A",
-                  "expr": "{namespace=\"insight\", container=~\"api-gateway|analytics|identity-resolution\"} |= \"ERROR\""
+                  "expr": "{namespace=\"${NS_APP}\", container=~\"api-gateway|analytics|identity-resolution\"} |= \"ERROR\""
                 }
               ]
             }
@@ -1060,7 +1062,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -1633,7 +1635,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (code, kind) (count_over_time({namespace=\"insight-infra\", container=\"clickhouse\"} |~ `<Error>` | regexp `Code: (?P<code>\\d+)\\..*\\((?P<kind>[A-Z_]+)\\)` [$__auto]))",
+                  "expr": "sum by (code, kind) (count_over_time({namespace=\"${NS_INFRA}\", container=\"clickhouse\"} |~ `<Error>` | regexp `Code: (?P<code>\\d+)\\..*\\((?P<kind>[A-Z_]+)\\)` [$__auto]))",
                   "legendFormat": "Code {{code}} · {{kind}}",
                   "refId": "A"
                 }
@@ -1660,7 +1662,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "{namespace=\"insight-infra\", container=\"clickhouse\"} |~ `<Error>`",
+                  "expr": "{namespace=\"${NS_INFRA}\", container=\"clickhouse\"} |~ `<Error>`",
                   "refId": "A"
                 }
               ],
@@ -1721,12 +1723,12 @@ dashboards:
                 "allValue": ".+",
                 "current": {
                   "text": [
-                    "insight",
-                    "insight-infra"
+                    "${NS_APP}",
+                    "${NS_INFRA}"
                   ],
                   "value": [
-                    "insight",
-                    "insight-infra"
+                    "${NS_APP}",
+                    "${NS_INFRA}"
                   ]
                 },
                 "datasource": {
@@ -1806,7 +1808,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -1894,7 +1896,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range])) or (sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range])) * 0)) / sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))))",
+                  "expr": "100 * (1 - ((sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range])) or (sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range])) * 0)) / sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -1970,7 +1972,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range])) or (sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range])) * 0)) / sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))))",
+                  "expr": "100 * (1 - ((sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range])) or (sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range])) * 0)) / sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -2037,7 +2039,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range]))",
+                  "expr": "sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [$__range]))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -2100,7 +2102,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))",
+                  "expr": "sum(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` [$__range]))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -2240,7 +2242,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [$__range])) or (sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range])) * 0)) / sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range]))))",
+                  "expr": "100 * (1 - ((sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [$__range])) or (sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range])) * 0)) / sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range]))))",
                   "legendFormat": "{{component}}",
                   "queryType": "instant",
                   "refId": "A"
@@ -2250,7 +2252,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range]))",
+                  "expr": "sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [$__range]))",
                   "legendFormat": "{{component}}",
                   "queryType": "instant",
                   "refId": "B"
@@ -2260,7 +2262,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [$__range]))",
+                  "expr": "sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [$__range]))",
                   "legendFormat": "{{component}}",
                   "queryType": "instant",
                   "refId": "C"
@@ -2333,7 +2335,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum by (status) (count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [1d]))",
+                  "expr": "sum by (status) (count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 [1d]))",
                   "interval": "1d",
                   "legendFormat": "{{status}}",
                   "queryType": "range",
@@ -2394,7 +2396,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [1h])) or (sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [1h])) * 0)) / sum by (component)(count_over_time({namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [1h]))))",
+                  "expr": "100 * (1 - ((sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` | status >= 500 or status == 499 [1h])) or (sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [1h])) * 0)) / sum by (component)(count_over_time({namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | upstream_addr!=`` | label_format component=`{{ regexReplaceAll \"^$\" (regexReplaceAll \"^[0-9.]+:8085$\" (regexReplaceAll \"^[0-9.]+:80$\" (regexReplaceAll \"^[0-9.]+:8083$\" (regexReplaceAll \"^[0-9.]+:8082$\" (regexReplaceAll \"^[0-9.]+:8081$\" .upstream_addr \"analytics\") \"identity-resolution\") \"authenticator\") \"frontend\") \"keycloak\") \"gateway\" }}` [1h]))))",
                   "interval": "1h",
                   "legendFormat": "{{component}}",
                   "queryType": "range",
@@ -2429,7 +2431,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "{namespace=\"insight\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 | line_format `{{.status}} {{.method}} {{.uri}} {{.request_time}}s upstream={{.upstream_addr}}`",
+                  "expr": "{namespace=\"${NS_APP}\", container=\"gateway\"} | json | __error__=`` | uri!~`/grafana.*|/apis/.*|/favicon.ico|/apple-touch-icon.*|/.well-known/.*` | status >= 500 or status == 499 | line_format `{{.status}} {{.method}} {{.uri}} {{.request_time}}s upstream={{.upstream_addr}}`",
                   "queryType": "range",
                   "refId": "A"
                 }
@@ -2517,7 +2519,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * avg_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)))[$__range:30s])",
+                  "expr": "100 * avg_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)))[$__range:30s])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -2581,7 +2583,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "avg(100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s]))",
+                  "expr": "avg(100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s]))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -2653,7 +2655,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "0.5 * sum_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)) == bool 0)[$__range:30s])",
+                  "expr": "0.5 * sum_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)) == bool 0)[$__range:30s])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -2730,7 +2732,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "(0.5 * sum_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)) == bool 1)[$__range:30s])) / (resets((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)))[$__range:30s]) > 0)",
+                  "expr": "(0.5 * sum_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)) == bool 1)[$__range:30s])) / (resets((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)))[$__range:30s]) > 0)",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -2794,7 +2796,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}))",
+                  "expr": "count(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -2870,7 +2872,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "bottomk(1, 100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s]))",
+                  "expr": "bottomk(1, 100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s]))",
                   "instant": true,
                   "legendFormat": "{{deployment}}",
                   "range": false,
@@ -2968,7 +2970,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "min((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) >= bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}))))",
+                  "expr": "min((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) >= bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}))))",
                   "instant": false,
                   "interval": "30s",
                   "legendFormat": "ALL COMPONENTS",
@@ -2981,7 +2983,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) >= bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})))",
+                  "expr": "(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) >= bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})))",
                   "instant": false,
                   "interval": "30s",
                   "legendFormat": "{{deployment}}",
@@ -3177,7 +3179,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s])",
+                  "expr": "100 * avg_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1))[$__range:30s])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -3188,7 +3190,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "0.5 * sum_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) == bool 0)[$__range:30s])",
+                  "expr": "0.5 * sum_over_time((clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1) == bool 0)[$__range:30s])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -3199,7 +3201,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "0.5 * sum_over_time(((sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) < bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})) * (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) > bool 0))[$__range:30s])",
+                  "expr": "0.5 * sum_over_time(((sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) < bool sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})) * (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}) > bool 0))[$__range:30s])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -3210,7 +3212,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
+                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -3221,7 +3223,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
+                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -3313,7 +3315,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\"}[$__range])) > 0",
+                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\"}[$__range])) > 0",
                   "instant": true,
                   "legendFormat": "{{container}}",
                   "range": false,
@@ -3405,7 +3407,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
+                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
                   "instant": false,
                   "interval": "30s",
                   "legendFormat": "{{deployment}}",
@@ -3418,7 +3420,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
+                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"})",
                   "instant": false,
                   "interval": "30s",
                   "legendFormat": "{{deployment}} desired",
@@ -3543,7 +3545,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"insight\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"insight\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"insight\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
+                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"${NS_APP}\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"${NS_APP}\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"${NS_APP}\", container=\"analytics\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
                   "legendFormat": "analytics",
                   "queryType": "instant",
                   "refId": "A"
@@ -3553,7 +3555,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"insight\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"insight\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"insight\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
+                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"${NS_APP}\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"${NS_APP}\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"${NS_APP}\", container=\"authenticator\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
                   "legendFormat": "authenticator",
                   "queryType": "instant",
                   "refId": "B"
@@ -3563,7 +3565,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"insight\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"insight\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"insight\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
+                  "expr": "100 * (1 - ((sum (count_over_time({namespace=\"${NS_APP}\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range])) or (sum (count_over_time({namespace=\"${NS_APP}\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range])) * 0)) / sum (count_over_time({namespace=\"${NS_APP}\", container=\"identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))))",
                   "legendFormat": "identity-resolution",
                   "queryType": "instant",
                   "refId": "C"
@@ -3627,7 +3629,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum (count_over_time({namespace=\"insight\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))",
+                  "expr": "sum (count_over_time({namespace=\"${NS_APP}\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [$__range]))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -3706,7 +3708,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum (count_over_time({namespace=\"insight\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range]))",
+                  "expr": "sum (count_over_time({namespace=\"${NS_APP}\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 [$__range]))",
                   "queryType": "instant",
                   "refId": "A"
                 }
@@ -3761,7 +3763,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "sum by (container) (count_over_time({namespace=\"insight\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [1m]))",
+                  "expr": "sum by (container) (count_over_time({namespace=\"${NS_APP}\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` [1m]))",
                   "interval": "1m",
                   "legendFormat": "{{container}}",
                   "queryType": "range",
@@ -3813,7 +3815,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "quantile_over_time(0.95, {namespace=\"insight\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | unwrap fields_duration [$__auto]) by (container)",
+                  "expr": "quantile_over_time(0.95, {namespace=\"${NS_APP}\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | unwrap fields_duration [$__auto]) by (container)",
                   "legendFormat": "{{container}}",
                   "queryType": "range",
                   "refId": "A"
@@ -3846,7 +3848,7 @@ dashboards:
                     "type": "loki",
                     "uid": "loki"
                   },
-                  "expr": "{namespace=\"insight\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 | line_format `{{.container}} {{.fields_status}} {{.fields_uri}} {{.fields_duration}}us`",
+                  "expr": "{namespace=\"${NS_APP}\", container=~\"analytics|authenticator|identity-resolution\"} | json | fields_user_agent=~`kube-probe.*` | fields_uri=~`/health.*` | fields_status >= 400 | line_format `{{.container}} {{.fields_status}} {{.fields_uri}} {{.fields_duration}}us`",
                   "queryType": "range",
                   "refId": "A"
                 }
@@ -3886,7 +3888,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -4645,12 +4647,12 @@ dashboards:
                 {
                   "refId": "A",
                   "legendFormat": "{{deployment}} ready",
-                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\"})"
+                  "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"${NS_APP}\"})"
                 },
                 {
                   "refId": "B",
                   "legendFormat": "{{deployment}} desired",
-                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"insight\"})"
+                  "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=\"${NS_APP}\"})"
                 }
               ]
             },
@@ -4694,7 +4696,7 @@ dashboards:
                 {
                   "refId": "A",
                   "legendFormat": "{{container}} {{reason}}",
-                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"insight\", reason!=\"Completed\"})"
+                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"${NS_APP}\", reason!=\"Completed\"})"
                 }
               ]
             }
@@ -4711,12 +4713,12 @@ dashboards:
                 "allValue": ".+",
                 "current": {
                   "text": [
-                    "insight",
-                    "insight-infra"
+                    "${NS_APP}",
+                    "${NS_INFRA}"
                   ],
                   "value": [
-                    "insight",
-                    "insight-infra"
+                    "${NS_APP}",
+                    "${NS_INFRA}"
                   ]
                 },
                 "datasource": {
@@ -4759,7 +4761,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -4834,7 +4836,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"}))",
+                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"}))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -4897,7 +4899,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]))",
+                  "expr": "sum(quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -4968,7 +4970,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})) - sum(quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]))",
+                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})) - sum(quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -5031,7 +5033,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"}))",
+                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"}))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -5094,7 +5096,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]))",
+                  "expr": "sum(quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -5468,7 +5470,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5479,7 +5481,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5490,7 +5492,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "avg_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
+                  "expr": "avg_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5501,7 +5503,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5512,7 +5514,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5523,7 +5525,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5534,7 +5536,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5545,7 +5547,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "clamp_min(ceil(20 * quantile_over_time(0.95, (max by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])) / 20, 0.05)",
+                  "expr": "clamp_min(ceil(20 * quantile_over_time(0.95, (max by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m])) / 20, 0.05)",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -5641,7 +5643,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "instant": true,
                   "legendFormat": "{{container}}",
                   "range": false,
@@ -5698,7 +5700,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -5755,7 +5757,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m]))",
+                  "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}} · {{pod}}",
                   "range": true,
@@ -6055,7 +6057,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6066,7 +6068,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6077,7 +6079,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "avg_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
+                  "expr": "avg_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6088,7 +6090,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6099,7 +6101,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6110,7 +6112,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6121,7 +6123,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6132,7 +6134,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "clamp_min(ceil(quantile_over_time(0.95, (max by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / 33554432) * 33554432, 33554432)",
+                  "expr": "clamp_min(ceil(quantile_over_time(0.95, (max by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / 33554432) * 33554432, 33554432)",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6224,7 +6226,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "instant": true,
                   "legendFormat": "{{container}}",
                   "range": false,
@@ -6280,7 +6282,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
+                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -6336,7 +6338,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
+                  "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
                   "instant": false,
                   "legendFormat": "{{container}} · {{pod}}",
                   "range": true,
@@ -6392,7 +6394,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_cache{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
+                  "expr": "sum by (container) (container_memory_cache{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"})",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -6461,7 +6463,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (svc) (label_replace(rate(container_network_receive_bytes_total{namespace=\"insight\", pod=~\"insight-(gateway|authenticator|analytics|identity-resolution|frontend|git-cli-proxy)-.*\"}[5m]), \"svc\", \"$1\", \"pod\", \"^insight-(.*)-[^-]+-[^-]+$\"))",
+                  "expr": "sum by (svc) (label_replace(rate(container_network_receive_bytes_total{namespace=\"${NS_APP}\", pod=~\"insight-(gateway|authenticator|analytics|identity-resolution|frontend|git-cli-proxy)-.*\"}[5m]), \"svc\", \"$1\", \"pod\", \"^insight-(.*)-[^-]+-[^-]+$\"))",
                   "instant": false,
                   "legendFormat": "{{svc}}",
                   "range": true,
@@ -6517,7 +6519,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (svc) (label_replace(rate(container_network_transmit_bytes_total{namespace=\"insight\", pod=~\"insight-(gateway|authenticator|analytics|identity-resolution|frontend|git-cli-proxy)-.*\"}[5m]), \"svc\", \"$1\", \"pod\", \"^insight-(.*)-[^-]+-[^-]+$\"))",
+                  "expr": "sum by (svc) (label_replace(rate(container_network_transmit_bytes_total{namespace=\"${NS_APP}\", pod=~\"insight-(gateway|authenticator|analytics|identity-resolution|frontend|git-cli-proxy)-.*\"}[5m]), \"svc\", \"$1\", \"pod\", \"^insight-(.*)-[^-]+-[^-]+$\"))",
                   "instant": false,
                   "legendFormat": "{{svc}}",
                   "range": true,
@@ -6587,7 +6589,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * sum by (container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m])) / sum by (container) (rate(container_cpu_cfs_periods_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m]))",
+                  "expr": "100 * sum by (container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m])) / sum by (container) (rate(container_cpu_cfs_periods_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -6644,7 +6646,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * sum by (container) (rate(container_pressure_cpu_waiting_seconds_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m]))",
+                  "expr": "100 * sum by (container) (rate(container_pressure_cpu_waiting_seconds_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[15m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -6738,7 +6740,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (container) (kube_pod_container_info{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) unless sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
+                  "expr": "count by (container) (kube_pod_container_info{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) unless sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6749,7 +6751,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (container) (kube_pod_container_info{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) unless sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
+                  "expr": "count by (container) (kube_pod_container_info{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) unless sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6892,7 +6894,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[$__range])) > 0",
+                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[$__range])) > 0",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6903,7 +6905,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) > 0",
+                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}) > 0",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -6914,7 +6916,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (increase(container_oom_events_total{namespace=\"insight\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[$__range])) > 0",
+                  "expr": "sum by (container) (increase(container_oom_events_total{namespace=\"${NS_APP}\", container=~\"gateway|authenticator|authn-tls|analytics|identity-resolution|frontend|git-cli-proxy\", pod=~\"insight-.*\"}[$__range])) > 0",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7127,7 +7129,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", container!=\"\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", container!=\"\"}[5m]))",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7138,7 +7140,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", container!=\"\"}[5m])))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", container!=\"\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7149,7 +7151,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight-infra\", container!=\"\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_INFRA}\", container!=\"\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7160,7 +7162,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", container!=\"\"})",
+                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", container!=\"\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7171,7 +7173,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", container!=\"\"}))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", container!=\"\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7182,7 +7184,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container!=\"\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container!=\"\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -7256,7 +7258,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", container!=\"\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", container!=\"\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -7312,7 +7314,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", container!=\"\"})",
+                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", container!=\"\"})",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -7354,7 +7356,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -7405,7 +7407,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval]))",
+                  "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval]))",
                   "legendFormat": "{{pod}}",
                   "refId": "A"
                 }
@@ -7447,7 +7449,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"})",
+                  "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"})",
                   "legendFormat": "{{pod}}",
                   "refId": "A"
                 }
@@ -7504,7 +7506,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "100 * max by (pod) ( max by (pod, container) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0\", container!=\"\"}) / on (pod, container) max by (pod, container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0\", resource=\"memory\"}) )",
+                  "expr": "100 * max by (pod) ( max by (pod, container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0\", container!=\"\"}) / on (pod, container) max by (pod, container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0\", resource=\"memory\"}) )",
                   "legendFormat": "{{pod}}",
                   "refId": "A"
                 }
@@ -7557,7 +7559,7 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (pod, container) (kube_pod_container_status_restarts_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\"})",
+                  "expr": "sum by (pod, container) (kube_pod_container_status_restarts_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\"})",
                   "format": "table",
                   "instant": true,
                   "refId": "A"
@@ -7609,12 +7611,12 @@ dashboards:
               },
               "targets": [
                 {
-                  "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) > 0",
+                  "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) > 0",
                   "legendFormat": "{{pod}} read",
                   "refId": "A"
                 },
                 {
-                  "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) > 0",
+                  "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) > 0",
                   "legendFormat": "{{pod}} write",
                   "refId": "B"
                 }
@@ -8078,7 +8080,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8089,7 +8091,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8100,7 +8102,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8111,7 +8113,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8122,7 +8124,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8133,7 +8135,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
+                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8393,7 +8395,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8404,7 +8406,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8415,7 +8417,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8426,7 +8428,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8437,7 +8439,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8448,7 +8450,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
+                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8531,7 +8533,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * sum by (pod, container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) / sum by (pod, container) (rate(container_cpu_cfs_periods_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval]))",
+                  "expr": "100 * sum by (pod, container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval])) / sum by (pod, container) (rate(container_cpu_cfs_periods_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__rate_interval]))",
                   "legendFormat": "{{pod}} · {{container}}",
                   "refId": "A"
                 }
@@ -8595,7 +8597,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[$__rate_interval])) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight-infra\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
+                  "expr": "100 * sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container=~\"clickhouse|mariadb|redis|redpanda|loki\"}[$__rate_interval])) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_INFRA}\", container=~\"clickhouse|mariadb|redis|redpanda|loki\", resource=\"cpu\"})",
                   "legendFormat": "{{container}}",
                   "refId": "A"
                 }
@@ -8649,7 +8651,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(increase(container_oom_events_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__range]))",
+                  "expr": "sum(increase(container_oom_events_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\", container!=\"\"}[$__range]))",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -8709,7 +8711,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"insight-infra\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\"}[$__range]))",
+                  "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"${NS_INFRA}\", pod=~\"clickhouse-shard0-0|mariadb-0|redis-master-0|redpanda-0|loki-0\"}[$__range]))",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -9003,7 +9005,7 @@ dashboards:
                 {
                   "refId": "A",
                   "legendFormat": "slow queries",
-                  "expr": "sum(count_over_time({namespace=\"insight-infra\", pod=~\"mariadb-.*\", container=\"slow-log\"} |= \"# Query_time\" [$__auto]))"
+                  "expr": "sum(count_over_time({namespace=\"${NS_INFRA}\", pod=~\"mariadb-.*\", container=\"slow-log\"} |= \"# Query_time\" [$__auto]))"
                 }
               ]
             },
@@ -9029,7 +9031,7 @@ dashboards:
               "targets": [
                 {
                   "refId": "A",
-                  "expr": "{namespace=\"insight-infra\", pod=~\"mariadb-.*\", container=\"slow-log\"}"
+                  "expr": "{namespace=\"${NS_INFRA}\", pod=~\"mariadb-.*\", container=\"slow-log\"}"
                 }
               ]
             }
@@ -9061,7 +9063,7 @@ dashboards:
                   "type": "loki",
                   "uid": "loki"
                 },
-                "expr": "{namespace=\"insight\", pod=~\"insight-post-upgrade.*\"}"
+                "expr": "{namespace=\"${NS_APP}\", pod=~\"insight-post-upgrade.*\"}"
               }
             ]
           },
@@ -9136,7 +9138,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"}))",
+                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"}))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9199,7 +9201,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, ((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, ((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9262,7 +9264,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time(((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m])",
+                  "expr": "max_over_time(((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9337,7 +9339,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time(((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m]) / sum(kube_node_status_allocatable{resource=\"cpu\"})",
+                  "expr": "100 * max_over_time(((sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))) + ((sum(rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0))))[$__range:5m]) / sum(kube_node_status_allocatable{resource=\"cpu\"})",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9400,7 +9402,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"}))",
+                  "expr": "sum(sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"}))",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9463,7 +9465,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, ((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, ((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9526,7 +9528,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time(((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m])",
+                  "expr": "max_over_time(((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9601,7 +9603,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time(((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m]) / sum(kube_node_status_allocatable{resource=\"memory\"})",
+                  "expr": "100 * max_over_time(((sum(sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})) + ((sum(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))))[$__range:5m]) / sum(kube_node_status_allocatable{resource=\"memory\"})",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -9660,7 +9662,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))",
+                  "expr": "sum(sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))",
                   "instant": false,
                   "legendFormat": "machinery · persistent",
                   "range": true,
@@ -9671,7 +9673,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "(sum(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0)",
+                  "expr": "(sum(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0)",
                   "instant": false,
                   "legendFormat": "sync pods · ephemeral",
                   "range": true,
@@ -9732,7 +9734,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))",
+                  "expr": "sum(sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))",
                   "instant": false,
                   "legendFormat": "machinery · persistent",
                   "range": true,
@@ -9743,7 +9745,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "(sum(rate(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0)",
+                  "expr": "(sum(rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]))) or vector(0)",
                   "instant": false,
                   "legendFormat": "sync pods · ephemeral",
                   "range": true,
@@ -10003,7 +10005,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10014,7 +10016,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10025,7 +10027,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10036,7 +10038,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10047,7 +10049,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10058,7 +10060,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
+                  "expr": "100 * max_over_time((sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m])))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10322,7 +10324,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10333,7 +10335,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10344,7 +10346,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m])",
+                  "expr": "quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10355,7 +10357,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m])",
+                  "expr": "max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m])",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10366,7 +10368,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "100 * quantile_over_time(0.95, (sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10377,7 +10379,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -10451,7 +10453,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -10507,7 +10509,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})",
+                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"})",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -10584,7 +10586,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count(sum by (pod) (container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0)",
+                  "expr": "count(sum by (pod) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0)",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -10647,7 +10649,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time((count(sum by (pod) (container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))[$__range:5m])",
+                  "expr": "max_over_time((count(sum by (pod) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -10710,7 +10712,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "(sum(increase(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[$__range])) / 3600) or vector(0)",
+                  "expr": "(sum(increase(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[$__range])) / 3600) or vector(0)",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -10773,7 +10775,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "max_over_time(((sum(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))[$__range:5m])",
+                  "expr": "max_over_time(((sum(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"})) or vector(0))[$__range:5m])",
                   "instant": true,
                   "range": false,
                   "refId": "A"
@@ -10832,7 +10834,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (family) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}, \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
+                  "expr": "sum by (family) (label_replace(label_replace(label_replace(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}, \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
                   "instant": false,
                   "legendFormat": "{{family}}",
                   "range": true,
@@ -10893,7 +10895,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (family) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]), \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
+                  "expr": "sum by (family) (label_replace(label_replace(label_replace(rate(container_cpu_usage_seconds_total{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}[5m]), \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
                   "instant": false,
                   "legendFormat": "{{family}}",
                   "range": true,
@@ -10954,7 +10956,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (family) (label_replace(label_replace(label_replace(sum by (pod) (container_memory_working_set_bytes{namespace=\"insight\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}), \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
+                  "expr": "count by (family) (label_replace(label_replace(label_replace(sum by (pod) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\".*-default-(sync|manual|now|fixtest)-.*|replication-job-[0-9]+-attempt-[0-9]+.*|insight-reconcile-loop-[0-9]+.*\", container!=\"\"}), \"family\", \"connector step\", \"pod\", \".*-default-(sync|manual|now|fixtest)-.*\"), \"family\", \"airbyte replication\", \"pod\", \"replication-job-[0-9]+-attempt-[0-9]+.*\"), \"family\", \"reconcile loop\", \"pod\", \"insight-reconcile-loop-[0-9]+.*\"))",
                   "instant": false,
                   "legendFormat": "{{family}}",
                   "range": true,
@@ -11014,7 +11016,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", pod=~\"replication-job-[0-9]+-attempt-[0-9]+.*\", container!=\"\"})",
+                  "expr": "sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\"replication-job-[0-9]+-attempt-[0-9]+.*\", container!=\"\"})",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -11084,7 +11086,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * sum by (container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[15m])) / sum by (container) (rate(container_cpu_cfs_periods_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[15m]))",
+                  "expr": "100 * sum by (container) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[15m])) / sum by (container) (rate(container_cpu_cfs_periods_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[15m]))",
                   "instant": false,
                   "legendFormat": "{{container}}",
                   "range": true,
@@ -11158,7 +11160,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "100 * max_over_time((sum by (container) (container_memory_working_set_bytes{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}))[$__range:5m]) / sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "instant": true,
                   "legendFormat": "{{container}}",
                   "range": false,
@@ -11264,7 +11266,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[$__range])) > 0",
+                  "expr": "sum by (container) (increase(kube_pod_container_status_restarts_total{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}[$__range])) > 0",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11275,7 +11277,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) > 0",
+                  "expr": "sum by (container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) > 0",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11386,7 +11388,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (container) (kube_pod_container_info{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) unless sum by (container) (kube_pod_container_resource_requests{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
+                  "expr": "count by (container) (kube_pod_container_info{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) unless sum by (container) (kube_pod_container_resource_requests{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"cpu\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11397,7 +11399,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (container) (kube_pod_container_info{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) unless sum by (container) (kube_pod_container_resource_limits{namespace=\"insight\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
+                  "expr": "count by (container) (kube_pod_container_info{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\"}) unless sum by (container) (kube_pod_container_resource_limits{namespace=\"${NS_APP}\", container=~\"airbyte-connector-builder-server|airbyte-cron|airbyte-db-container|airbyte-minio|airbyte-server-container|airbyte-temporal|airbyte-worker-container|airbyte-workload-api-server-container|airbyte-workload-launcher-container|argo-server|controller\", pod=~\"airbyte-.*|argo-workflows-.*\", resource=\"memory\"})",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11519,7 +11521,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "count by (jobid) (label_replace(count by (pod) (max_over_time(container_memory_working_set_bytes{namespace=\"insight\", pod=~\"replication-job-[0-9]+-attempt-[0-9]+.*\", container!=\"\"}[$__range])), \"jobid\", \"$1\", \"pod\", \"replication-job-([0-9]+)-attempt-.*\"))",
+                  "expr": "count by (jobid) (label_replace(count by (pod) (max_over_time(container_memory_working_set_bytes{namespace=\"${NS_APP}\", pod=~\"replication-job-[0-9]+-attempt-[0-9]+.*\", container!=\"\"}[$__range])), \"jobid\", \"$1\", \"pod\", \"replication-job-([0-9]+)-attempt-.*\"))",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11585,7 +11587,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_fs_writes_bytes_total{namespace=\"insight\", container=~\"airbyte-db-container|airbyte-minio\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_fs_writes_bytes_total{namespace=\"${NS_APP}\", container=~\"airbyte-db-container|airbyte-minio\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}} · write",
                   "range": true,
@@ -11596,7 +11598,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "sum by (container) (rate(container_fs_reads_bytes_total{namespace=\"insight\", container=~\"airbyte-db-container|airbyte-minio\"}[5m]))",
+                  "expr": "sum by (container) (rate(container_fs_reads_bytes_total{namespace=\"${NS_APP}\", container=~\"airbyte-db-container|airbyte-minio\"}[5m]))",
                   "instant": false,
                   "legendFormat": "{{container}} · read",
                   "range": true,
@@ -11674,7 +11676,7 @@ dashboards:
                     "type": "prometheus",
                     "uid": "vm"
                   },
-                  "expr": "kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace=\"insight\", persistentvolumeclaim=~\"airbyte-.*|insight-reconcile-logs\"}",
+                  "expr": "kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace=\"${NS_APP}\", persistentvolumeclaim=~\"airbyte-.*|insight-reconcile-logs\"}",
                   "format": "table",
                   "instant": true,
                   "range": false,
@@ -11742,7 +11744,7 @@ alerting:
           datasourceUid: vm
           model:
             refId: A
-            expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"insight.*"}[15m]))
+            expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~"${NS_APP}.*"}[15m]))
             instant: true
             range: false
         - refId: B
@@ -11788,8 +11790,8 @@ alerting:
           datasourceUid: vm
           model:
             refId: A
-            expr: (kube_deployment_spec_replicas{namespace=~"insight.*"} - kube_deployment_status_replicas_ready{namespace=~"insight.*"})
-              or (kube_statefulset_replicas{namespace=~"insight.*"} - kube_statefulset_status_replicas_ready{namespace=~"insight.*"})
+            expr: (kube_deployment_spec_replicas{namespace=~"${NS_APP}.*"} - kube_deployment_status_replicas_ready{namespace=~"${NS_APP}.*"})
+              or (kube_statefulset_replicas{namespace=~"${NS_APP}.*"} - kube_statefulset_status_replicas_ready{namespace=~"${NS_APP}.*"})
             instant: true
             range: false
         - refId: B
@@ -11835,7 +11837,7 @@ alerting:
           datasourceUid: vm
           model:
             refId: A
-            expr: sum by (namespace, pod, reason) (kube_pod_container_status_waiting_reason{namespace=~"insight.*",
+            expr: sum by (namespace, pod, reason) (kube_pod_container_status_waiting_reason{namespace=~"${NS_APP}.*",
               reason=~"CrashLoopBackOff|ImagePullBackOff"})
             instant: true
             range: false
@@ -12170,7 +12172,7 @@ alerting:
           datasourceUid: loki
           model:
             refId: A
-            expr: sum(count_over_time({namespace="insight", pod=~"insight-(post-upgrade|post-install).*"}
+            expr: sum(count_over_time({namespace="${NS_APP}", pod=~"insight-(post-upgrade|post-install).*"}
               |~ `(?i)\berror\b` [30m]))
             queryType: instant
         - refId: B
@@ -12215,7 +12217,7 @@ alerting:
           datasourceUid: vm
           model:
             refId: A
-            expr: 100 * kubelet_volume_stats_used_bytes{namespace=~"insight.*"} / kubelet_volume_stats_capacity_bytes{namespace=~"insight.*"}
+            expr: 100 * kubelet_volume_stats_used_bytes{namespace=~"${NS_APP}.*"} / kubelet_volume_stats_capacity_bytes{namespace=~"${NS_APP}.*"}
             instant: true
             range: false
         - refId: B
