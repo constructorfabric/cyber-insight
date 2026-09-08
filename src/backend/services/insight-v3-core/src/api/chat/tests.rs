@@ -25,8 +25,14 @@ struct TestHarness {
 }
 
 impl TestHarness {
-    #[allow(clippy::unused_async)]
     async fn new(chat: ChatClient) -> Self {
+        Self::with_metrics(chat, None).await
+    }
+
+    /// A harness whose metric queries go somewhere that answers them, for the
+    /// cases about what an answer does with the rows it got back.
+    #[allow(clippy::unused_async)]
+    async fn with_metrics(chat: ChatClient, metrics: Option<&str>) -> Self {
         let mut mock = Mock::new();
         mock.non_exhaustive();
         let openapi = OpenApiRegistryImpl::new();
@@ -41,7 +47,10 @@ impl TestHarness {
             )),
             definitions.clone(),
             MetricRunner::new(
-                insight_clickhouse::Client::new(insight_clickhouse::Config::new(url, "insight")),
+                insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                    metrics.unwrap_or(url),
+                    "insight",
+                )),
                 crate::metric_query::People::new("identity"),
             ),
             chat,
@@ -176,6 +185,23 @@ struct ChatCreatedBody {
     updated: TestCreated,
 }
 
+/// An answer that promises rows over a table with none in it.
+fn empty_answer_proposal() -> Proposal {
+    Proposal::Answer {
+        reply: "Here is who has committed the most overall.".to_owned(),
+        query: Some(
+            serde_json::from_value(json!({
+                "database": "silver",
+                "table": "fct_git_commit",
+                "fields": [{ "column": "author_email", "type": "string", "as_name": "author" }],
+                "group_by": ["author"],
+                "filters": []
+            }))
+            .unwrap_or_else(|error| panic!("test query must parse: {error}")),
+        ),
+    }
+}
+
 fn single_existing_widget_proposal() -> Proposal {
     Proposal::Create {
         reply: "ok".to_owned(),
@@ -255,4 +281,77 @@ async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
         body["updated"],
         json!({ "metric": null, "widgets": [], "dashboard": null })
     );
+}
+
+/// Serves one ClickHouse JSON result, and hands back where to reach it.
+async fn upstream_returning(
+    result: serde_json::Value,
+) -> Result<(String, tokio::task::JoinHandle<Result<(), std::io::Error>>), Box<dyn std::error::Error>>
+{
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let router = Router::new().route(
+        "/",
+        axum::routing::post(move || {
+            let result = result.clone();
+            async move { axum::Json(result) }
+        }),
+    );
+
+    Ok((
+        format!("http://{address}"),
+        tokio::spawn(async move { axum::serve(listener, router).await }),
+    ))
+}
+
+#[tokio::test]
+async fn an_answer_whose_query_found_nothing_says_there_is_no_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The stand holds empty tables beside full ones, and the reply is written
+    // before the query runs - so the model's sentence claimed rows it never
+    // saw, and the panel showed prose with nothing under it.
+    let (metrics, server) = upstream_returning(json!({
+        "meta": [{ "name": "author", "type": "String" }],
+        "data": []
+    }))
+    .await?;
+    let harness =
+        TestHarness::with_metrics(ChatClient::scripted(empty_answer_proposal), Some(&metrics))
+            .await;
+    harness.queue_chat_context();
+
+    let response = harness.post_chat("who has committed the most?").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.json().await;
+
+    assert_eq!(
+        body["reply"],
+        "No data: that query returned no rows from silver.fct_git_commit."
+    );
+    server.abort();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_answer_with_rows_keeps_the_reply_it_came_with() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (metrics, server) = upstream_returning(json!({
+        "meta": [{ "name": "author", "type": "String" }],
+        "data": [{ "author": "Liam Nguyen" }]
+    }))
+    .await?;
+    let harness =
+        TestHarness::with_metrics(ChatClient::scripted(empty_answer_proposal), Some(&metrics))
+            .await;
+    harness.queue_chat_context();
+
+    let response = harness.post_chat("who has committed the most?").await;
+    let body = response.json().await;
+
+    assert_eq!(body["reply"], "Here is who has committed the most overall.");
+    assert_eq!(body["result"]["rows"][0][0], "Liam Nguyen");
+    server.abort();
+
+    Ok(())
 }

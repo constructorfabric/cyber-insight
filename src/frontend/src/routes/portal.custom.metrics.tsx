@@ -57,6 +57,19 @@ function MetricRow({ name }: { name: string }) {
   );
 }
 
+/** Where a field or filter reads its value: a column, or a payload key. */
+function source(of: { column?: string; json?: string }): string {
+  return of.column ?? of.json ?? "";
+}
+
+/** One field, as the query reads it. */
+function reads(field: MetricDefinition["fields"][number]): string {
+  const read = field.agg ? `${field.agg}(${source(field)})` : source(field);
+  const named = field.person ? `${read} by name` : read;
+
+  return `${named} as ${field.as_name}`;
+}
+
 function MetricSummary({ definition }: { definition: MetricDefinition }) {
   const grouped = definition.group_by ?? [];
   const filters = definition.filters ?? [];
@@ -64,18 +77,14 @@ function MetricSummary({ definition }: { definition: MetricDefinition }) {
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
       <Row label="Table">
-        <code className="font-mono">{definition.table}</code>
+        <code className="font-mono">
+          {definition.database
+            ? `${definition.database}.${definition.table}`
+            : definition.table}
+        </code>
       </Row>
       <Row label="Fields">
-        <span className="font-mono">
-          {definition.fields
-            .map((field) =>
-              field.agg
-                ? `${field.agg}(${field.json}) as ${field.as_name}`
-                : `${field.json} as ${field.as_name}`
-            )
-            .join(", ")}
-        </span>
+        <span className="font-mono">{definition.fields.map(reads).join(", ")}</span>
       </Row>
       {grouped.length ? (
         <Row label="Grouped by">
@@ -86,7 +95,7 @@ function MetricSummary({ definition }: { definition: MetricDefinition }) {
         <Row label="Filtered">
           <span className="font-mono">
             {filters
-              .map((f) => `${f.json} ${f.op} ${String(f.value)}`)
+              .map((f) => `${source(f)} ${f.op} ${String(f.value)}`)
               .join(", ")}
           </span>
         </Row>

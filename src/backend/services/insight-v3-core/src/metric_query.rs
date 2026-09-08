@@ -424,6 +424,14 @@ impl MetricQuery {
         }
     }
 
+    /// The table as the query addressed it, database and all.
+    pub(crate) fn qualified(&self) -> String {
+        match self.split() {
+            (Some(database), table) => format!("{database}.{table}"),
+            (None, table) => table.to_owned(),
+        }
+    }
+
     /// The columns a result carries, in order — each field's `as_name`. What
     /// a widget must name to draw anything.
     pub(crate) fn column_names(&self) -> Vec<String> {

@@ -87,6 +87,49 @@ impl TestHarness {
         TestResponse::from_response(response).await
     }
 
+    async fn post_json(&self, path: &str, body: serde_json::Value) -> TestResponse {
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap_or_else(
+                |error| panic!("test JSON must serialize: {error}"),
+            )))
+            .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
+
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|error| panic!("router must respond: {error}"));
+
+        TestResponse::from_response(response).await
+    }
+
+    /// A metric, a widget drawing it, and a dashboard holding that widget -
+    /// the chain a rename has to keep intact.
+    async fn seed_chain(&self) {
+        self.put_json(
+            "/v1/metrics/commits_per_day",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+        self.put_json(
+            "/v1/widgets/commits_table",
+            json!({ "type": "table", "metric": "commits_per_day", "columns": ["day"] }),
+        )
+        .await;
+        self.put_json(
+            "/v1/dashboards/engineering",
+            json!({ "title": "Engineering", "widgets": ["commits_table"] }),
+        )
+        .await;
+    }
+
     async fn get_json(&self, path: &str) -> TestResponse {
         let request = Request::builder()
             .method("GET")
@@ -396,6 +439,149 @@ async fn a_caller_without_the_admin_role_cannot_remove_anything() {
     let harness = TestHarness::with_caller(false).await;
 
     let refused = harness.delete_json("/v1/metrics/anything").await;
+
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn renaming_a_metric_rewrites_the_widgets_that_draw_it() {
+    // A name is the only handle a widget has on its metric, so renaming the
+    // metric alone would leave the widget drawing something that is gone.
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let renamed = harness
+        .post_json(
+            "/v1/metrics/commits_per_day/rename",
+            json!({ "to": "commits_daily" }),
+        )
+        .await;
+
+    assert_eq!(renamed.status(), StatusCode::OK);
+    let body = renamed.json().await;
+    assert_eq!(body["name"], "commits_daily");
+    assert_eq!(body["rewritten"], json!(["commits_table"]));
+
+    assert_eq!(
+        harness
+            .get_json("/v1/metrics/commits_per_day")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let widget = harness.get_json("/v1/widgets/commits_table").await;
+    assert_eq!(widget.json().await["metric"], "commits_daily");
+}
+
+#[tokio::test]
+async fn renaming_a_widget_rewrites_the_dashboards_holding_it() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let renamed = harness
+        .post_json(
+            "/v1/widgets/commits_table/rename",
+            json!({ "to": "daily_table" }),
+        )
+        .await;
+
+    assert_eq!(renamed.status(), StatusCode::OK);
+    assert_eq!(renamed.json().await["rewritten"], json!(["engineering"]));
+
+    let dashboard = harness.get_json("/v1/dashboards/engineering").await;
+    assert_eq!(dashboard.json().await["widgets"], json!(["daily_table"]));
+}
+
+#[tokio::test]
+async fn a_dashboard_renames_with_nothing_to_rewrite() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let renamed = harness
+        .post_json(
+            "/v1/dashboards/engineering/rename",
+            json!({ "to": "delivery" }),
+        )
+        .await;
+
+    assert_eq!(renamed.status(), StatusCode::OK);
+    assert_eq!(renamed.json().await["rewritten"], json!([]));
+    assert_eq!(
+        harness.get_json("/v1/dashboards/delivery").await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn renaming_onto_a_name_in_use_changes_nothing() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+    harness
+        .put_json(
+            "/v1/metrics/already_here",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+
+    let refused = harness
+        .post_json(
+            "/v1/metrics/commits_per_day/rename",
+            json!({ "to": "already_here" }),
+        )
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    // Neither name moved, and the widget still draws the one it did.
+    assert_eq!(
+        harness
+            .get_json("/v1/metrics/commits_per_day")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let widget = harness.get_json("/v1/widgets/commits_table").await;
+    assert_eq!(widget.json().await["metric"], "commits_per_day");
+}
+
+#[tokio::test]
+async fn renaming_something_that_is_not_there_is_not_found() {
+    let harness = TestHarness::new().await;
+
+    let missing = harness
+        .post_json(
+            "/v1/metrics/nothing_here/rename",
+            json!({ "to": "something" }),
+        )
+        .await;
+
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_new_name_outside_the_charset_is_refused() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let refused = harness
+        .post_json(
+            "/v1/metrics/commits_per_day/rename",
+            json!({ "to": "drop table metrics" }),
+        )
+        .await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn renaming_needs_the_admin_role() {
+    let harness = TestHarness::with_caller(false).await;
+
+    let refused = harness
+        .post_json("/v1/metrics/anything/rename", json!({ "to": "other" }))
+        .await;
 
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 }

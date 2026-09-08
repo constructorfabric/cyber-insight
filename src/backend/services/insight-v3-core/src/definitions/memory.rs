@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use super::{DefinitionKind, DefinitionName, DefinitionStoreError, Definitions};
+use super::{Change, DefinitionKind, DefinitionName, DefinitionStoreError, Definitions};
 
 #[derive(Debug, Default)]
 pub(crate) struct MemoryDefinitions {
@@ -87,18 +87,22 @@ impl Definitions for MemoryDefinitions {
         Ok(self.lock().remove(&Self::key(kind, name)).is_some())
     }
 
-    async fn put_all(
-        &self,
-        writes: &[(DefinitionKind, DefinitionName, serde_json::Value)],
-    ) -> Result<(), DefinitionStoreError> {
+    async fn apply(&self, changes: &[Change]) -> Result<(), DefinitionStoreError> {
         if self.failing {
             return Err(Self::refuse());
         }
         // All or nothing, as the transaction is: the map is held for the whole
         // batch, so a reader never sees half of it.
         let mut stored = self.lock();
-        for (kind, name, body) in writes {
-            stored.insert(Self::key(*kind, name), body.clone());
+        for change in changes {
+            match change {
+                Change::Put(kind, name, body) => {
+                    stored.insert(Self::key(*kind, name), body.clone());
+                }
+                Change::Delete(kind, name) => {
+                    stored.remove(&Self::key(*kind, name));
+                }
+            }
         }
 
         Ok(())

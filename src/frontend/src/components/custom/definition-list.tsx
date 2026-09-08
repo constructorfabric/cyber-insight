@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { DefinitionKind } from "@/api/custom-client";
 import { RemoveDefinition } from "@/components/custom/remove-definition";
+import { RenameDefinition } from "@/components/custom/rename-definition";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
@@ -78,7 +79,8 @@ export function DefinitionCard({
         <CardTitle className={cn(TEXT_HEADING, "min-w-0 truncate font-mono")}>
           {name}
         </CardTitle>
-        <span className="ms-auto shrink-0">
+        <span className="ms-auto flex shrink-0 items-center gap-1">
+          <RenameDefinition kind={kind} name={name} />
           <RemoveDefinition kind={kind} name={name} />
         </span>
       </CardHeader>

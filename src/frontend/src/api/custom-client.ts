@@ -18,18 +18,28 @@ export interface LineWidget {
 
 export type Widget = TableWidget | LineWidget;
 
-/** A metric's stored query, as the service interprets it. */
+/**
+ * A metric's stored query, as the service interprets it.
+ *
+ * A field reads either a key inside an ingested payload (`json`) or a real
+ * column of a table on the stand (`column`) — never both, and a lone `count`
+ * needs neither.
+ */
 export interface MetricDefinition {
+  database?: string;
   table: string;
   fields: {
-    json: string;
+    json?: string;
+    column?: string;
     type: string;
     agg?: string;
     as_name: string;
+    person?: "email" | "id";
   }[];
   group_by?: string[];
   filters?: {
-    json: string;
+    json?: string;
+    column?: string;
     type: string;
     op: string;
     value: unknown;
@@ -108,6 +118,34 @@ export async function deleteDefinition(
   if (!res.ok) {
     throw new CustomApiError(res.status, await res.json().catch(() => null));
   }
+}
+
+/** The new name, and what the service pointed at it. */
+export interface Renamed {
+  name: string;
+  rewritten: string[];
+}
+
+/**
+ * Renames a definition, and everything that named the old one.
+ *
+ * Refused when the new name is taken — a rename that silently replaced
+ * another definition would lose it.
+ */
+export async function renameDefinition(
+  kind: DefinitionKind,
+  name: string,
+  to: string
+): Promise<Renamed> {
+  const res = await fetchWithAuth(
+    `${BASE}/${kind}/${encodeURIComponent(name)}/rename`,
+    { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ to }) }
+  );
+  if (!res.ok) {
+    throw new CustomApiError(res.status, await res.json().catch(() => null));
+  }
+
+  return (await res.json()) as Renamed;
 }
 
 export async function fetchDashboardNames(): Promise<string[]> {

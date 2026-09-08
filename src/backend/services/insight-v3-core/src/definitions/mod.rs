@@ -62,6 +62,17 @@ impl DefinitionName {
     }
 }
 
+/// One write in a batch.
+///
+/// A rename is a put under the new name, a delete of the old one, and a put
+/// per dependent that pointed at it - which is only a rename if all of them
+/// land together.
+#[derive(Debug)]
+pub(crate) enum Change {
+    Put(DefinitionKind, DefinitionName, serde_json::Value),
+    Delete(DefinitionKind, DefinitionName),
+}
+
 /// What the API and the chat need of the store, so neither has to know where
 /// definitions live — and so their tests can hold them in a map rather than
 /// answer a database's wire protocol.
@@ -90,15 +101,12 @@ pub(crate) trait Definitions: Send + Sync + fmt::Debug {
         name: &DefinitionName,
     ) -> Result<bool, DefinitionStoreError>;
 
-    /// Stores every definition or none of them.
+    /// Applies every change or none of them.
     ///
     /// A chat request builds a metric, its widgets and the dashboard that
     /// holds them; written one at a time, a failure partway through left the
     /// reader a metric, no dashboard, and no way to tell.
-    async fn put_all(
-        &self,
-        writes: &[(DefinitionKind, DefinitionName, serde_json::Value)],
-    ) -> Result<(), DefinitionStoreError>;
+    async fn apply(&self, changes: &[Change]) -> Result<(), DefinitionStoreError>;
 }
 
 /// The name is the primary key, so a write is an upsert and two writers cannot
@@ -208,15 +216,18 @@ impl Definitions for MariaDefinitions {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn put_all(
-        &self,
-        writes: &[(DefinitionKind, DefinitionName, serde_json::Value)],
-    ) -> Result<(), DefinitionStoreError> {
+    async fn apply(&self, changes: &[Change]) -> Result<(), DefinitionStoreError> {
         let transaction = self.db.begin().await?;
-        for (kind, name, body) in writes {
-            transaction
-                .execute_raw(Self::upsert(*kind, name, body)?)
-                .await?;
+        for change in changes {
+            let statement = match change {
+                Change::Put(kind, name, body) => Self::upsert(*kind, name, body)?,
+                Change::Delete(kind, name) => Statement::from_sql_and_values(
+                    DbBackend::MySql,
+                    sql(DELETE_ONE, *kind),
+                    [name.as_str().into()],
+                ),
+            };
+            transaction.execute_raw(statement).await?;
         }
         transaction.commit().await?;
 

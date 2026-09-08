@@ -16,7 +16,9 @@ use utoipa::ToSchema;
 use super::AppState;
 use crate::catalog::{Catalog, Layer, TableSchema};
 use crate::chat::{Ask, Catalogue, ChatError, KnownTable, Proposal, Schemas, Turn};
-use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
+use crate::definitions::{
+    Change, DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError,
+};
 use crate::metric_query::{MetricQuery, MetricQueryError, RunResult};
 use crate::tables::TableName;
 
@@ -114,7 +116,12 @@ async fn handle_chat(
 
     match proposal {
         Proposal::Answer { reply, query } => {
+            let queried = query.as_ref().map(MetricQuery::qualified);
             let result = answered_with(&state, query).await?;
+            let reply = match &result {
+                Some(rows) if rows.rows.is_empty() => no_rows(queried.as_deref()),
+                _ => reply,
+            };
 
             Ok(Json(ChatAnswerResponse { reply, result }).into_response())
         }
@@ -174,11 +181,11 @@ async fn handle_chat(
 
             let batch: Vec<_> = writes
                 .into_iter()
-                .map(|(kind, parsed, body, _)| (kind, parsed, body))
+                .map(|(kind, parsed, body, _)| Change::Put(kind, parsed, body))
                 .collect();
             state
                 .definitions()
-                .put_all(&batch)
+                .apply(&batch)
                 .await
                 .map_err(definition_store_error)?;
 
@@ -400,6 +407,18 @@ async fn known_tables(state: &AppState) -> Vec<KnownTable> {
     }
 
     described
+}
+
+/// What an answer says when its query found nothing.
+///
+/// The reply is written before the query runs, so a model that promised rows
+/// and got none would present its own sentence over an empty result. It does
+/// not get to be the one talking about data that is not there.
+fn no_rows(table: Option<&str>) -> String {
+    match table {
+        Some(table) => format!("No data: that query returned no rows from {table}."),
+        None => "No data: that query returned no rows.".to_owned(),
+    }
 }
 
 /// The rows behind an answer.

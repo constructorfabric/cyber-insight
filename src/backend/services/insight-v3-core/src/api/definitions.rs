@@ -6,11 +6,30 @@ use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
 use toolkit::api::{OpenApiRegistry, OperationBuilder, ParamLocation, ParamSpec};
 use toolkit_canonical_errors::{CanonicalError, resource_error};
+use utoipa::ToSchema;
 
 use super::AppState;
-use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
+use crate::definitions::{
+    Change, DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError,
+};
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct RenameRequest {
+    /// The name it should answer to from now on.
+    to: String,
+}
+
+impl toolkit::api::api_dto::RequestApiDto for RenameRequest {}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct RenameResponse {
+    name: String,
+    /// The definitions that pointed at the old name and now point here.
+    rewritten: Vec<String>,
+}
 
 #[resource_error("gts.cf.insight.insight_v3_core.definitions.v1~")]
 struct DefinitionApiError;
@@ -64,6 +83,7 @@ fn register_kind(
     };
 
     let delete_param = name_param.clone();
+    let rename_param = name_param.clone();
 
     let put = OperationBuilder::put(format!("/v1/{segment}/{{name}}"))
         .operation_id(format!("insight_v3_core.{segment}.put"))
@@ -123,10 +143,33 @@ fn register_kind(
         .error_504(openapi)
         .handler(delete_definition)
         .register(Router::new(), openapi)
+        .layer(Extension(state.clone()))
+        .layer(Extension(kind));
+
+    let rename = OperationBuilder::post(format!("/v1/{segment}/{{name}}/rename"))
+        .operation_id(format!("insight_v3_core.{segment}.rename"))
+        .summary("Rename a definition, and everything that points at it")
+        .anonymous()
+        .exposed()
+        .param(rename_param)
+        .json_request::<RenameRequest>(openapi, "The new name")
+        .json_response(StatusCode::OK, "The new name, and what was rewritten")
+        .error_400(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_504(openapi)
+        .handler(rename_definition)
+        .register(Router::new(), openapi)
         .layer(Extension(state))
         .layer(Extension(kind));
 
-    host_router.merge(put).merge(get).merge(list).merge(remove)
+    host_router
+        .merge(put)
+        .merge(get)
+        .merge(list)
+        .merge(remove)
+        .merge(rename)
 }
 
 /// What still draws the definition the caller is removing.
@@ -140,11 +183,8 @@ async fn dependents_of(
     kind: DefinitionKind,
     name: &DefinitionName,
 ) -> Result<Vec<String>, CanonicalError> {
-    let (holder, needle) = match kind {
-        // A widget names its metric; a dashboard names its widgets.
-        DefinitionKind::Metric => (DefinitionKind::Widget, "metric"),
-        DefinitionKind::Widget => (DefinitionKind::Dashboard, "widgets"),
-        DefinitionKind::Dashboard => return Ok(Vec::new()),
+    let Some((holder, needle)) = held_by(kind) else {
+        return Ok(Vec::new());
     };
 
     let mut used_by = Vec::new();
@@ -179,6 +219,131 @@ async fn dependents_of(
     }
 
     Ok(used_by)
+}
+
+/// Which kind names this one, and under which field.
+///
+/// A widget names its metric; a dashboard names its widgets. Nothing names a
+/// dashboard.
+fn held_by(kind: DefinitionKind) -> Option<(DefinitionKind, &'static str)> {
+    match kind {
+        DefinitionKind::Metric => Some((DefinitionKind::Widget, "metric")),
+        DefinitionKind::Widget => Some((DefinitionKind::Dashboard, "widgets")),
+        DefinitionKind::Dashboard => None,
+    }
+}
+
+/// The same body, pointed at the new name.
+fn pointed_at(mut body: serde_json::Value, field: &str, from: &str, to: &str) -> serde_json::Value {
+    match body.get_mut(field) {
+        Some(serde_json::Value::String(one)) if one == from => to.clone_into(one),
+        Some(serde_json::Value::Array(many)) => {
+            for entry in many {
+                if entry.as_str() == Some(from) {
+                    *entry = serde_json::Value::String(to.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    body
+}
+
+/// Renames a definition, and rewrites whatever drew it under the old name.
+///
+/// A name is the only handle a widget has on its metric, and a dashboard on
+/// its widgets, so renaming one alone would break the others - the same
+/// broken chart the widget check exists to prevent. The new name, the removal
+/// of the old, and every rewritten dependent are one transaction.
+async fn rename_definition(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(kind): Extension<DefinitionKind>,
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<RenameRequest>,
+) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        DefinitionApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
+    let from = DefinitionName::parse(&name).map_err(definition_error)?;
+    let to = DefinitionName::parse(&request.to).map_err(definition_error)?;
+
+    let body = state
+        .definitions()
+        .get(kind, &from)
+        .await
+        .map_err(definition_store_error)?
+        .ok_or_else(|| {
+            DefinitionApiError::not_found(format!("`{}` was not found", from.as_str()))
+                .with_resource(from.as_str())
+                .create()
+        })?;
+
+    if to == from {
+        return Ok(Json(RenameResponse {
+            name: to.as_str().to_owned(),
+            rewritten: Vec::new(),
+        })
+        .into_response());
+    }
+
+    if state
+        .definitions()
+        .get(kind, &to)
+        .await
+        .map_err(definition_store_error)?
+        .is_some()
+    {
+        return Err(DefinitionApiError::already_exists(format!(
+            "`{}` is already taken",
+            to.as_str()
+        ))
+        .with_resource(to.as_str())
+        .create());
+    }
+
+    let mut changes = vec![
+        Change::Put(kind, to.clone(), body),
+        Change::Delete(kind, from.clone()),
+    ];
+    let mut rewritten = Vec::new();
+    if let Some((holder, field)) = held_by(kind) {
+        for holder_name in dependents_of(&state, kind, &from).await? {
+            let parsed = DefinitionName::parse(&holder_name).map_err(definition_error)?;
+            let Some(body) = state
+                .definitions()
+                .get(holder, &parsed)
+                .await
+                .map_err(definition_store_error)?
+            else {
+                continue;
+            };
+
+            changes.push(Change::Put(
+                holder,
+                parsed,
+                pointed_at(body, field, from.as_str(), to.as_str()),
+            ));
+            rewritten.push(holder_name);
+        }
+    }
+
+    state
+        .definitions()
+        .apply(&changes)
+        .await
+        .map_err(definition_store_error)?;
+
+    Ok(Json(RenameResponse {
+        name: to.as_str().to_owned(),
+        rewritten,
+    })
+    .into_response())
 }
 
 async fn delete_definition(

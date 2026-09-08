@@ -14,6 +14,7 @@ import {
   fetchMetricNames,
   fetchWidget,
   fetchWidgetNames,
+  renameDefinition,
   runMetric,
   sendChat,
 } from "@/api/custom-client";
@@ -77,6 +78,25 @@ export function useRemoveDefinition() {
       deleteDefinition(kind, name),
     // Every catalogue and the pane read these lists.
     onSuccess: () => invalidateDashboardList(queryClient),
+  });
+}
+
+export function useRenameDefinition() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      kind,
+      name,
+      to,
+    }: {
+      kind: DefinitionKind;
+      name: string;
+      to: string;
+    }) => renameDefinition(kind, name, to),
+    // A rename moves a body to a new key and rewrites its dependents, so
+    // every cached definition is suspect, not just the lists.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["custom"] }),
   });
 }
 

@@ -63,6 +63,55 @@ describe("/portal/custom/metrics", () => {
     expect(await screen.findByText("100")).toBeInTheDocument();
   });
 
+  it("reads back a query over a real table, by column and by person", async () => {
+    // Metrics grew columns, a database and a resolved person after this card
+    // was written, and it printed `undefined` for every one of them.
+    vi.mocked(customClient.fetchMetricNames).mockResolvedValue([
+      "pr_merged_by_author",
+    ]);
+    vi.mocked(customClient.fetchMetric).mockResolvedValue({
+      database: "silver",
+      table: "class_git_pull_requests",
+      fields: [
+        {
+          column: "author_email",
+          type: "string",
+          as_name: "author_name",
+          person: "email",
+        },
+        { column: "pr_id", type: "int", agg: "count", as_name: "merged" },
+      ],
+      group_by: ["author_name"],
+      filters: [{ column: "state", type: "string", op: "eq", value: "MERGED" }],
+    });
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByText("silver.class_git_pull_requests")
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "author_email by name as author_name, count(pr_id) as merged"
+      )
+    ).toBeInTheDocument();
+    expect(await screen.findByText("state eq MERGED")).toBeInTheDocument();
+  });
+
+  it("counts rows without naming a column", async () => {
+    vi.mocked(customClient.fetchMetricNames).mockResolvedValue(["how_many"]);
+    vi.mocked(customClient.fetchMetric).mockResolvedValue({
+      table: "silver.class_git_commits",
+      fields: [{ type: "int", agg: "count", as_name: "commits" }],
+      group_by: [],
+      filters: [],
+    });
+
+    render(<Component />, { wrapper });
+
+    expect(await screen.findByText("count() as commits")).toBeInTheDocument();
+  });
+
   it("leaves out the rows a metric does not use", async () => {
     vi.mocked(customClient.fetchMetricNames).mockResolvedValue(["everything"]);
     vi.mocked(customClient.fetchMetric).mockResolvedValue({

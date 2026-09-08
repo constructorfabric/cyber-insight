@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Trash2 } from "lucide-react";
 
-import { CustomApiError, type DefinitionKind } from "@/api/custom-client";
+import type { DefinitionKind } from "@/api/custom-client";
+import { refusal } from "@/components/custom/refusal";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useRemoveDefinition } from "@/queries/custom";
@@ -27,7 +28,7 @@ export function RemoveDefinition({
   if (remove.isError) {
     return (
       <span role="alert" className={cn(TEXT_LABEL, "text-destructive")}>
-        {refusal(remove.error)}
+        {refusal(remove.error, "Couldn't remove it.")}
       </span>
     );
   }
@@ -63,22 +64,4 @@ export function RemoveDefinition({
       </Button>
     </span>
   );
-}
-
-/**
- * What the service said, when it said anything readable.
- *
- * The canonical error carries its precondition violations under
- * `context.violations` — read off a live refusal, not guessed.
- */
-function refusal(error: unknown): string {
-  if (error instanceof CustomApiError) {
-    const body = error.body as
-      | { context?: { violations?: { description?: string }[] } }
-      | null;
-    const said = body?.context?.violations?.[0]?.description;
-    if (said) return said;
-  }
-
-  return "Couldn't remove it.";
 }
