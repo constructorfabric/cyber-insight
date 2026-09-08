@@ -102,6 +102,8 @@ The system **MUST** {do something specific and verifiable}.
 
 - [ ] `p1` - **ID**: `cpt-{system}-nfr-{slug}`
 
+**Vector**: {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+
 The system **MUST** {measurable NFR with specific thresholds, e.g., "respond within 50ms at p95" (stricter than project default)}.
 
 **Threshold**: {Quantitative target with units and conditions}
