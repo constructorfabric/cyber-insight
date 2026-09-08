@@ -94,6 +94,8 @@ The system **MUST** {do something specific and verifiable}.
 
 ## 6. Non-Functional Requirements
 
+{One short paragraph: what quality means for this module. Which of the five vectors — Efficiency, Reliability, Performance, Security, Versatility, in that order of importance — carry its real risk, and why. This is orientation, not requirements: the requirements are below, each tagged with its vector, and the five-vector view is grouped from them rather than written here.}
+
 ### 6.1 NFR Inclusions
 
 {Only include this section if there are NFRs that deviate from or extend project defaults.}
@@ -116,7 +118,7 @@ The system **MUST** {measurable NFR with specific thresholds, e.g., "respond wit
 
 {Document any project-default NFRs that do NOT apply to this module}
 
-- {Default NFR name}: {Reason for exclusion}
+- {Quality vector with no NFR, or a default NFR name}: {Reason for exclusion}
 
 ## 7. Public Library Interfaces
 
