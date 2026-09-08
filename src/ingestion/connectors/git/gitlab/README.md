@@ -119,7 +119,7 @@ survive it. Gold needs nothing.
 
 | Stream | Upstream | Sync Mode | Cursor |
 |--------|----------|-----------|--------|
-| `repositories` | GitLab projects listing per scope | incremental | `last_activity_at` |
+| `repositories` | GitLab projects listing per scope | full refresh | — |
 | `commits` | proxy `/v1/commits` | incremental, per project | `committed_date` |
 | `file_changes` | proxy `/v1/file-changes` | incremental, per project | `committed_date` |
 | `branches` | proxy `/v1/branches` | full refresh, per project | — |

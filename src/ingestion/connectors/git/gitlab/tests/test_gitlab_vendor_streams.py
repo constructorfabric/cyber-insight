@@ -138,6 +138,23 @@ def test_a_configured_project_is_read_as_a_single_object(http_mocker: HttpMocker
     assert "include_subgroups" not in url and "order_by" not in url and "sort" not in url
 
 
+def test_an_archived_configured_project_yields_no_roster_row(http_mocker: HttpMocker) -> None:
+    """The single-object endpoint has no `archived` filter, so the roster
+    applies the rule the group listing gets from its query parameter."""
+    config = (
+        GitlabConfigBuilder().with_field("gitlab_groups", []).with_field("gitlab_projects", ["acme/tools/cli"]).build()
+    )
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/projects/acme%2Ftools%2Fcli", query_params=ANY_QUERY_PARAMS),
+        _ok(_project(id=21, path_with_namespace="acme/tools/cli", archived=True)),
+    )
+
+    output = read_stream(_CONNECTOR, "repositories", config)
+
+    assert not output.errors
+    assert output.records == []
+
+
 @freezegun.freeze_time(_FROZEN)
 def test_nothing_configured_walks_the_instance_with_keyset_pagination(http_mocker: HttpMocker) -> None:
     config = GitlabConfigBuilder().with_field("gitlab_groups", []).build()

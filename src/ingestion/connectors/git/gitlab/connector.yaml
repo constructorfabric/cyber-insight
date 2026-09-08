@@ -333,7 +333,8 @@ definitions:
     record_filter:
       type: RecordFilter
       condition: >-
-        {{ (config.get('gitlab_include_forks') == 'true' or not record.get('forked_from_project'))
+        {{ not record.get('archived')
+           and (config.get('gitlab_include_forks') == 'true' or not record.get('forked_from_project'))
            and not (record['path_with_namespace'] | regex_search('(' ~ ((config.get('gitlab_exclude_projects') or ['$^']) | join('|')) ~ ')')) }}
 
   # Slim project roster the proxy streams partition over. Client-side
@@ -558,18 +559,8 @@ streams:
       record_selector: *projects_selector
       paginator: *link_paginator
       partition_router: *scope_router
-    incremental_sync:
-      type: DatetimeBasedCursor
-      cursor_field: last_activity_at
-      datetime_format: "%Y-%m-%dT%H:%M:%S.%f%z"
-      cursor_datetime_formats:
-        - "%Y-%m-%dT%H:%M:%S.%f%z"
-        - "%Y-%m-%dT%H:%M:%S%z"
-      is_client_side_incremental: true
-      start_datetime:
-        type: MinMaxDatetime
-        datetime: "{{ config['gitlab_start_date'] }}"
-        datetime_format: "%Y-%m-%d"
+    # Full refresh: the roster is one listing per scope, and a project's
+    # default branch, visibility or archived flag changes without any activity.
     transformations:
       - type: AddFields
         fields: *standard_fields
