@@ -6,6 +6,9 @@ use sha2::{Digest as _, Sha256};
 use super::metrics::{self, ErrorClass, QueryKind, QueryOutcome};
 
 const QUERY_FETCH_TIMEOUT: Duration = Duration::from_mins(1);
+/// The most an answer may weigh before decoding: a row limit bounds rows, not
+/// the strings in them.
+pub(crate) const MAX_ANSWER_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum QueryFetchError {
@@ -27,6 +30,150 @@ impl QueryFetchError {
             Self::Parse(_) => ErrorClass::ParseFailed,
         }
     }
+}
+
+/// What a bounded fetch can fail with: anything a fetch can, or the ceiling.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum BoundedFetchError {
+    #[error(transparent)]
+    Fetch(#[from] QueryFetchError),
+    #[error("query result exceeded {MAX_ANSWER_BYTES} bytes")]
+    TooLarge,
+}
+
+impl BoundedFetchError {
+    fn class(&self) -> ErrorClass {
+        match self {
+            Self::Fetch(error) => error.class(),
+            Self::TooLarge => ErrorClass::ResourceExhausted,
+        }
+    }
+}
+
+// WORKAROUND: ClickHouse quotes every 64-bit integer by default, which would
+// make an answer's number column arrive as a string.
+pub(crate) async fn fetch_bound_rows(
+    client: &insight_clickhouse::Client,
+    sql: &str,
+    params: &[serde_json::Value],
+    kind: QueryKind,
+    log_comment: &str,
+) -> Result<Vec<serde_json::Value>, BoundedFetchError> {
+    let started = Instant::now();
+    let result = fetch_bound_rows_inner(client, sql, params, log_comment).await;
+
+    match &result {
+        Ok(_) => metrics::record_query(kind, QueryOutcome::Success, started.elapsed()),
+        Err(error) => {
+            metrics::record_query(kind, QueryOutcome::Error, started.elapsed());
+            metrics::record_clickhouse_error(kind, error.class());
+        }
+    }
+    result
+}
+
+async fn fetch_bound_rows_inner(
+    client: &insight_clickhouse::Client,
+    sql: &str,
+    params: &[serde_json::Value],
+    log_comment: &str,
+) -> Result<Vec<serde_json::Value>, BoundedFetchError> {
+    let mut query = client
+        .query(sql)
+        .with_setting("log_comment", log_comment)
+        .with_setting("output_format_json_quote_64bit_integers", "0");
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let mut cursor = query.fetch_bytes("JSONEachRow").map_err(|error| {
+        log_query_failure(
+            &error.to_string(),
+            log_comment,
+            sql,
+            "ClickHouse query failed",
+        );
+        QueryFetchError::Submit(error.to_string())
+    })?;
+
+    let raw_bytes = tokio::time::timeout(QUERY_FETCH_TIMEOUT, collect_bounded(&mut cursor))
+        .await
+        .map_err(|_| {
+            log_query_failure(
+                "timeout",
+                log_comment,
+                sql,
+                "ClickHouse query fetch timed out",
+            );
+            QueryFetchError::Timeout
+        })?
+        .map_err(|error| match error {
+            ChunkError::TooLarge => {
+                tracing::warn!(
+                    comment = log_comment,
+                    "ClickHouse query result exceeded the byte ceiling"
+                );
+                BoundedFetchError::TooLarge
+            }
+            ChunkError::Fetch(message) => {
+                log_query_failure(&message, log_comment, sql, "ClickHouse query fetch failed");
+                BoundedFetchError::Fetch(QueryFetchError::Fetch(message))
+            }
+        })?;
+
+    let parsed = tokio::task::spawn_blocking(move || parse_json_rows(&raw_bytes))
+        .await
+        .map_err(|error| {
+            log_query_failure(
+                &error.to_string(),
+                log_comment,
+                sql,
+                "ClickHouse row parsing task failed",
+            );
+            QueryFetchError::Parse(error.to_string())
+        })?;
+
+    parsed.map_err(|error| {
+        log_query_failure(
+            &error.to_string(),
+            log_comment,
+            sql,
+            "failed to parse ClickHouse query rows",
+        );
+        BoundedFetchError::Fetch(QueryFetchError::Parse(error.to_string()))
+    })
+}
+
+fn parse_json_rows(raw_bytes: &[u8]) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+    raw_bytes
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(serde_json::from_slice)
+        .collect()
+}
+
+enum ChunkError {
+    TooLarge,
+    Fetch(String),
+}
+
+// SAFETY: the ceiling is enforced chunk by chunk while receiving, so an
+// oversized result is abandoned rather than buffered and then measured.
+async fn collect_bounded(
+    cursor: &mut clickhouse::query::BytesCursor,
+) -> Result<Vec<u8>, ChunkError> {
+    let mut buffer: Vec<u8> = Vec::new();
+    while let Some(chunk) = cursor
+        .next()
+        .await
+        .map_err(|error| ChunkError::Fetch(error.to_string()))?
+    {
+        if buffer.len() + chunk.len() > MAX_ANSWER_BYTES {
+            return Err(ChunkError::TooLarge);
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer)
 }
 
 pub(crate) async fn fetch_json_rows<T>(

@@ -6,6 +6,11 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::domain::query::contract::dto::{
+    DEFAULT_ROW_LIMIT, MAX_AGGREGATES, MAX_FILTER_VALUES, MAX_FILTERS, MAX_GROUP_AXES,
+    MAX_NAME_CHARS, MAX_ORDER_TERMS, MAX_ROW_LIMIT,
+};
+
 use super::declaration::{Dataset, Dimension, Measurable, TimeField};
 use crate::domain::datasets::label_column_name;
 
@@ -25,6 +30,8 @@ pub struct DatasetDescription {
     pub dimensions: Vec<DimensionDescription>,
     /// The columns an aggregate may fold.
     pub measurables: Vec<MeasurableDescription>,
+    /// The bounds a request against this dataset must stay inside.
+    pub limits: QueryLimits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
@@ -54,12 +61,45 @@ pub struct MeasurableDescription {
     pub field: String,
 }
 
+/// The contract's request bounds, identical for every dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = QueryLimits)]
+pub struct QueryLimits {
+    pub max_filters: usize,
+    pub max_filter_values: usize,
+    pub max_aggregates: usize,
+    pub max_group_axes: usize,
+    pub max_order_terms: usize,
+    /// Longest an aggregate's name may be, in characters.
+    pub max_name_chars: usize,
+    /// Rows a query gets when it sets no ceiling of its own.
+    pub default_limit: u32,
+    /// Rows a query may ask for at most; over it the query is refused, not clipped.
+    pub max_limit: u32,
+}
+
+impl QueryLimits {
+    const fn contract() -> Self {
+        Self {
+            max_filters: MAX_FILTERS,
+            max_filter_values: MAX_FILTER_VALUES,
+            max_aggregates: MAX_AGGREGATES,
+            max_group_axes: MAX_GROUP_AXES,
+            max_order_terms: MAX_ORDER_TERMS,
+            max_name_chars: MAX_NAME_CHARS,
+            default_limit: DEFAULT_ROW_LIMIT,
+            max_limit: MAX_ROW_LIMIT,
+        }
+    }
+}
+
 pub fn describe(dataset: &Dataset) -> DatasetDescription {
     DatasetDescription {
         key: dataset.key.to_string(),
         time_fields: dataset.time_fields.iter().map(time_field).collect(),
         dimensions: dataset.dimensions.iter().map(dimension).collect(),
         measurables: dataset.measurables.iter().map(measurable).collect(),
+        limits: QueryLimits::contract(),
     }
 }
 
@@ -203,6 +243,20 @@ mod tests {
                 "the description leaks `{internal}`: {json}"
             );
         }
+    }
+
+    #[test]
+    fn the_limits_a_dataset_reports_are_the_ones_validation_enforces() {
+        let limits = description("git_commits").limits;
+
+        assert_eq!(limits.max_filters, MAX_FILTERS);
+        assert_eq!(limits.max_filter_values, MAX_FILTER_VALUES);
+        assert_eq!(limits.max_aggregates, MAX_AGGREGATES);
+        assert_eq!(limits.max_group_axes, MAX_GROUP_AXES);
+        assert_eq!(limits.max_order_terms, MAX_ORDER_TERMS);
+        assert_eq!(limits.max_name_chars, MAX_NAME_CHARS);
+        assert_eq!(limits.default_limit, DEFAULT_ROW_LIMIT);
+        assert_eq!(limits.max_limit, MAX_ROW_LIMIT);
     }
 
     #[test]

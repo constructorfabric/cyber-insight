@@ -43,6 +43,18 @@ pub fn dataset(key: &str) -> Option<&'static Dataset> {
 }
 
 /// Every key a query may name, in declaration order.
+/// Every key a query may name, in declaration order.
+pub fn declared_keys() -> Vec<&'static str> {
+    product_datasets()
+        .map(|datasets| {
+            datasets
+                .iter()
+                .map(|dataset| dataset.key.as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn load(documents: &[&str]) -> Result<Vec<Dataset>, DeclarationError> {
     let catalog =
         product_catalog().map_err(|error| DeclarationError::Document(error.to_string()))?;

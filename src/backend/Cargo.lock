@@ -142,6 +142,7 @@ dependencies = [
  "opentelemetry",
  "p256 0.14.0",
  "redis",
+ "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
  "rust_xlsxwriter",
