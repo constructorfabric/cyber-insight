@@ -29,8 +29,10 @@ GOOD_NAME = f"{CONNECTOR}-{CONNECTOR}-main-{TENANT}"
 def select(sources: list, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     known = tmp_path / "known.json"
     known.write_text(json.dumps([CONNECTOR]), encoding="utf-8")
+    definitions = tmp_path / "definitions.json"
+    definitions.write_text("[]", encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(SELECTOR), CONNECTOR, TENANT, str(known)],
+        [sys.executable, str(SELECTOR), CONNECTOR, TENANT, str(known), str(definitions)],
         input=json.dumps(sources),
         capture_output=True,
         text=True,
@@ -47,8 +49,10 @@ def find(sources: list, tmp_path: Path) -> subprocess.CompletedProcess[str]:
         + "\n",
         encoding="utf-8",
     )
+    definitions = tmp_path / "definitions.json"
+    definitions.write_text("[]", encoding="utf-8")
     return subprocess.run(
-        [sys.executable, str(FINDER), str(plan), TENANT],
+        [sys.executable, str(FINDER), str(plan), TENANT, str(definitions)],
         input=json.dumps(sources),
         capture_output=True,
         text=True,

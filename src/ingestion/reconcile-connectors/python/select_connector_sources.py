@@ -2,14 +2,17 @@
 """Which Airbyte sources belong to one connector, and which instance each is.
 
 CLI:
-  select_connector_sources.py <connector> <tenant> <known_connectors_file>
+  select_connector_sources.py <connector> <tenant> <known_connectors_file> \
+                              <definitions_file>
 
 Args:   `known_connectors_file` holds `extract_descriptor_names.py` output — the
-        JSON array of every connector this build ships.
+        JSON array of every connector this build ships. `definitions_file` holds
+        `ab_list_definitions` output, which is what actually says whose a source
+        is.
 Stdin:  the `sources/list` payload (a JSON array of source objects).
 Stdout: TSV `airbyte_source_id<TAB>instance_source_id` per matching source.
 Exit:   0 always; 2 on bad arg count, 1 on a payload that is not a source
-        listing or an unreadable connector list.
+        listing or an unreadable connector or definition list.
 
 Sources are named `{connector}-{source_id}-{tenant}` by the reconcile loop, so
 the instance's own id is what is left once the two known ends are removed. A
@@ -17,17 +20,19 @@ source whose name does not carry both ends is emitted with an empty instance id
 rather than dropped: the caller still has to delete it, and guessing an id for
 it would name an instance that never existed.
 
-INVARIANT: ownership is decided against every connector this build ships, by
-longest match. `{connector}-` alone is not ownership — a source of
-`claude-team-invoices` begins with `claude-team-` too, and this pass runs on the
-way to deleting what it selects.
+INVARIANT: ownership comes from the source's definition, not from its name —
+see `airbyte_sources.owner_of`. This pass runs on the way to deleting what it
+selects, and a source id is arbitrary, so one connector's source can spell
+another connector's name exactly.
 """
 
 import json
 import sys
 from pathlib import Path
 
-from airbyte_sources import decode, owner_of
+from airbyte_sources import decode, load_definitions, owner_of
+
+SUBJECT = "select_connector_sources"
 
 
 def instance_of(name: str, connector: str, tenant: str) -> str:
@@ -39,32 +44,44 @@ def instance_of(name: str, connector: str, tenant: str) -> str:
     return name[len(head) : len(name) - len(tail)]
 
 
+def _known_connectors(path: str) -> set[str] | None:
+    try:
+        listed = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"{SUBJECT}: cannot read the connector list: {exc}\n")
+        return None
+    if not isinstance(listed, list):
+        sys.stderr.write(f"{SUBJECT}: the connector list is not a list\n")
+        return None
+    return {name for name in listed if isinstance(name, str) and name}
+
+
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         sys.stderr.write(
-            "select_connector_sources: expected <connector> <tenant> <known_connectors_file>\n"
+            f"{SUBJECT}: expected <connector> <tenant> <known_connectors_file> "
+            "<definitions_file>\n"
         )
         return 2
-    connector, tenant, known_path = sys.argv[1], sys.argv[2], sys.argv[3]
-    try:
-        listed = json.loads(Path(known_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        sys.stderr.write(f"select_connector_sources: cannot read the connector list: {exc}\n")
+    connector, tenant = sys.argv[1], sys.argv[2]
+
+    known = _known_connectors(sys.argv[3])
+    if known is None:
         return 1
-    if not isinstance(listed, list):
-        sys.stderr.write("select_connector_sources: the connector list is not a list\n")
-        return 1
-    known = {name for name in listed if isinstance(name, str) and name}
     # The connector being cascaded is one of them whether or not the caller's
     # listing named it, or nothing it owns would ever be selected.
     known.add(connector)
 
-    sources = decode(sys.stdin, "select_connector_sources")
+    definitions = load_definitions(sys.argv[4], SUBJECT)
+    if definitions is None:
+        return 1
+
+    sources = decode(sys.stdin, SUBJECT)
     if sources is None:
         return 1
 
     for source in sources:
-        if owner_of(source.name, known) != connector:
+        if owner_of(source, definitions, known) != connector:
             continue
         print(f"{source.source_id}\t{instance_of(source.name, connector, tenant)}")
     return 0

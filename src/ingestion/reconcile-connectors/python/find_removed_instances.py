@@ -2,8 +2,10 @@
 """Sources belonging to an instance the install no longer configures.
 
 CLI:
-  find_removed_instances.py <plan_tsv> <tenant> [connector]
+  find_removed_instances.py <plan_tsv> <tenant> <definitions_file> [connector]
 
+Args:   `definitions_file` holds `ab_list_definitions` output, which is what
+        says whose a source is.
 Stdin:  the `sources/list` payload.
 Stdout: TSV `airbyte_source_id<TAB>connector<TAB>instance` per source to remove.
 Exit:   0 always; 2 on bad arg count; 1 on a payload that is not a source listing.
@@ -21,19 +23,21 @@ Three refusals, each of them load-bearing:
 * A source whose name does not carry both the connector and the tenant is left
   alone. The instance it belongs to cannot be read out of it, and deleting a
   source whose owner is unknown is how a healthy connector loses its data.
-* The connector is resolved by LONGEST-prefix match against the planned names,
-  never by the first that fits. `claude-team` is a prefix of
-  `claude-team-invoices`, so the short one would otherwise claim the long one's
-  sources and delete every one of them.
+* The connector is resolved from the source's DEFINITION, not from its name —
+  see `airbyte_sources.owner_of`. Connector slugs prefix one another and a
+  source id is arbitrary, so a name can be spelled by two connectors and no
+  reading of it can say which one wrote it.
 """
 
 import sys
 from pathlib import Path
 
-from airbyte_sources import decode, owner_of
+from airbyte_sources import decode, load_definitions, owner_of
 
 PLAN_SOURCE_ID = 8
 PLAN_SECRET_NAME = 9
+
+SUBJECT = "find_removed_instances"
 
 
 def _planned(plan_path: str) -> tuple[dict[str, set[str]], set[str]]:
@@ -61,14 +65,19 @@ def instance_of(source_name: str, connector: str, tenant: str) -> str:
 
 
 def main() -> int:
-    if not 3 <= len(sys.argv) <= 4:
-        sys.stderr.write("find_removed_instances: expected <plan_tsv> <tenant> [connector]\n")
+    if not 4 <= len(sys.argv) <= 5:
+        sys.stderr.write(
+            f"{SUBJECT}: expected <plan_tsv> <tenant> <definitions_file> [connector]\n"
+        )
         return 2
     plan_path, tenant = sys.argv[1], sys.argv[2]
-    only = sys.argv[3] if len(sys.argv) == 4 else ""
+    only = sys.argv[4] if len(sys.argv) == 5 else ""
 
-    instances, _known = _planned(plan_path)
-    sources = decode(sys.stdin, "find_removed_instances")
+    instances, known = _planned(plan_path)
+    definitions = load_definitions(sys.argv[3], SUBJECT)
+    if definitions is None:
+        return 1
+    sources = decode(sys.stdin, SUBJECT)
     if sources is None:
         return 1
 
@@ -79,8 +88,11 @@ def main() -> int:
         configured &= {only}
 
     for source in sources:
-        connector = owner_of(source.name, configured)
-        if connector is None:
+        # Asked against every connector the plan knows, not only the configured
+        # ones: a name two connectors can spell is ambiguous whatever the other
+        # one's install state, and narrowing the question first would answer it.
+        connector = owner_of(source, definitions, known)
+        if connector is None or connector not in configured:
             continue
         instance = instance_of(source.name, connector, tenant)
         if not instance or instance in instances[connector]:

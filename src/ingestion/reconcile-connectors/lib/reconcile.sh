@@ -182,13 +182,16 @@ reconcile_cascade_delete() {
   local connections_json
   connections_json="$(ab_list_connections "${workspace_id}")"
 
-  # Which connector a source belongs to is decided against every connector this
-  # build ships, not against this one's name alone: connector slugs prefix one
-  # another, and a source of `claude-team-invoices` starts with `claude-team-`.
-  local known_file
+  # Which connector a source belongs to is answered by the definition Airbyte
+  # created it against, and only failing that by its name — a source id is
+  # arbitrary, so `claude-team` with the source id `invoices-main` is named
+  # exactly as a source of `claude-team-invoices` would be.
+  local known_file definitions_file
   known_file="$(mktemp -t insight-connectors.XXXXXX)" || return 1
+  definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${known_file}"; return 1; }
   disc_load_descriptors 2>/dev/null \
     | python3 "${_RECONCILE_PY_DIR}/extract_descriptor_names.py" > "${known_file}"
+  ab_list_definitions "${workspace_id}" > "${definitions_file}" 2>/dev/null || printf '[]' > "${definitions_file}"
 
   # Delete every source this connector owns, and with each one the schedule of
   # the instance it belongs to. The instance's own id is read back out of the
@@ -216,9 +219,9 @@ reconcile_cascade_delete() {
     cron_out+="$(argo_delete_cronworkflow "${connector}" "${tenant}" "${instance}" 2>/dev/null || true)"
   done < <(printf '%s' "${sources_json}" \
     | python3 "${_RECONCILE_PY_DIR}/select_connector_sources.py" \
-        "${connector}" "${tenant}" "${known_file}" \
+        "${connector}" "${tenant}" "${known_file}" "${definitions_file}" \
       2>/dev/null | tr '\t' '\037' || true)
-  rm -f "${known_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
+  rm -f "${known_file}" "${definitions_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
 
   # A connector with no source left to read an instance out of still has the
   # schedule shapes that name no instance, from a release before one did.
@@ -1513,11 +1516,15 @@ reconcile_prune_removed_instances() {
   fi
 
   local tenant="${INSIGHT_TENANT_ID:-}"
-  local workspace_id sources_json plan_file
+  local workspace_id sources_json plan_file definitions_file
   workspace_id="$(ab_workspace_id)" || return 0
   sources_json="$(ab_list_sources "${workspace_id}")" || return 0
   plan_file="$(mktemp -t insight-plan.XXXXXX)" || return 0
   printf '%s\n' "${plan_tsv}" > "${plan_file}"
+  # The definition is what says whose a source is; its name cannot, since a
+  # source id is arbitrary and one connector's source can spell another's name.
+  definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${plan_file}"; return 0; }
+  ab_list_definitions "${workspace_id}" > "${definitions_file}" 2>/dev/null || printf '[]' > "${definitions_file}"
 
   local airbyte_source_id connector instance
   # Re-delimited on US for the same reason the cascade does it: an empty column
@@ -1536,9 +1543,10 @@ reconcile_prune_removed_instances() {
     _RECONCILE_CHANGED=$((_RECONCILE_CHANGED + 1))
   done < <(printf '%s' "${sources_json}" \
     | python3 "${_RECONCILE_PY_DIR}/find_removed_instances.py" \
-        "${plan_file}" "${tenant}" "${opt_connector}" 2>/dev/null | tr '\t' '\037' || true)
+        "${plan_file}" "${tenant}" "${definitions_file}" "${opt_connector}" \
+      2>/dev/null | tr '\t' '\037' || true)
 
-  rm -f "${plan_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
+  rm -f "${plan_file}" "${definitions_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
 }
 
 # ---------------------------------------------------------------------------
