@@ -82,6 +82,8 @@ Functional requirements define WHAT the system must do. Group by feature area or
 
 - [ ] `p1` - **ID**: `cpt-{system}-fr-{slug}`
 
+**Vector** (when the requirement carries a quality claim): {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+
 The system **MUST** {do something specific and verifiable}.
 
 **Rationale**: {Why this requirement exists — business value or stakeholder need.}
