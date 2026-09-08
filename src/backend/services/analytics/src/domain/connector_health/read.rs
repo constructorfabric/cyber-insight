@@ -25,12 +25,13 @@ pub(crate) const HISTORY_WINDOW: u32 = 50;
 
 /// Connector instances the summary will serve.
 ///
-/// The set is bounded by the build's descriptor list times the Secrets naming
-/// each, so this is a backstop rather than a page: an install cannot reach it by
-/// configuring more connectors, only by accumulating identities in the ledger
-/// that no build has. It exists because an unbounded response is a bug however
-/// unlikely the input — and because reaching it should be visible rather than
-/// silent, the read logs when it truncates.
+/// One row per instance, and an install decides how many instances it has: a
+/// descriptor can be configured as often as Secrets name it, so this is
+/// reachable by configuration in principle rather than only by accumulating
+/// identities in the ledger that no build ships. It sits far above what an
+/// install of this shape holds, which is what makes it a backstop rather than a
+/// page — and because it is reachable, the read logs when it truncates rather
+/// than dropping rows silently.
 ///
 /// INVARIANT: applied to the merged response, not only to the statement that
 /// carries it into SQL. The summary is the union of two relations, and the
@@ -146,7 +147,7 @@ const INSTANCE_COLUMNS: &str = "connector, tenant_id, source_id";
 ///
 /// An aggregate, not a sort. Sorting the relation by a column outside its sort
 /// key reads and orders the whole retention window to answer with one row per
-/// connector — measured at hundreds of megabytes where this stays at single
+/// instance — measured at hundreds of megabytes where this stays at single
 /// digits, and the service caps its own query memory.
 static LAST_SYNC_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -700,9 +701,9 @@ mod guards {
     }
 
     /// The configured set is the one read with no row limit, deliberately: it is
-    /// filtered to a single tick, so its size is the number of connectors that
-    /// tick managed — and dropping members of a snapshot would make it read as a
-    /// smaller set than the one that was sealed.
+    /// filtered to a single tick, so its size is the number of connector
+    /// instances that tick managed — and dropping members of a snapshot would
+    /// make it read as a smaller set than the one that was sealed.
     #[test]
     fn the_configured_set_is_bounded_by_its_tick_not_by_a_limit() {
         let sql = normalised(&CONFIGURED_SET_SQL);

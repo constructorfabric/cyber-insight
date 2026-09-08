@@ -174,7 +174,7 @@ One table holds three kinds of row, told apart by `event`.
 | Event | Written when | Carries |
 |---|---|---|
 | `sync.completed` | the sweep sees a job in the mover's history | job identity, connector, outcome, timestamps, duration, reported records |
-| `connector.configured` | each tick, one row per configured connector | connector, tick identity |
+| `connector.configured` | each tick, one row per configured connector instance | the instance identity, tick identity |
 | `sweep.completed` | each tick, last | tick identity — the marker that seals the snapshot |
 
 **Configured is what it means to the reconcile loop: a shipped descriptor that has a
@@ -282,7 +282,8 @@ that never happened and still leave the cursor on the wrong axis.
 **The listing reports no creation time, and this is load-bearing.** It accepts a creation
 filter, so a creation stamp looks available from the query surface alone; the entries carry a
 start and a last update and nothing else. A sweep that asks by one field and reads back
-another refuses every entry, and the page then reports every connector as never synced —
+another refuses every entry, and the page then reports every configured instance as never
+synced —
 which is indistinguishable from a mover that has run no syncs at all. The sort key, the
 filter and the field read off an entry are therefore one stamp, and both halves of that are
 asserted: the request's shape in the mover's tests, the response's shape in the planner's.
@@ -336,7 +337,7 @@ row that never existed. The tuple is never NULL, so one row wins all six.
 
 **An aggregate rather than a sort, for a measured reason.** Ordering the relation by a column
 outside its sort key reads and sorts the whole retention window to answer with one row per
-connector. At two million rows that was 259 MiB and 541 ms against 5 MiB and 42 ms for the
+connector instance. At two million rows that was 259 MiB and 541 ms against 5 MiB and 42 ms for the
 aggregate — and the service caps its own query memory, so the page whose reason for existing
 is answering during an incident would be the thing that fails first.
 
@@ -382,8 +383,8 @@ swallow is visible at the call site rather than hidden in the worker.
 ##### Why this component exists
 
 The page needs one merged answer from several statements over the ledger — newest sync per
-connector, the sealed configured set, a connector's recent syncs — which is domain logic that
-belongs in one tested module, not in a handler.
+connector instance, the sealed configured set, the recent syncs of a connector or of one
+instance of it — which is domain logic that belongs in one tested module, not in a handler.
 
 ##### Responsibility scope
 
@@ -415,8 +416,10 @@ answered a different question.
 
 ##### Responsibility scope
 
-One row per connector with the fields of FR-5; a row expands to that connector's recent
-syncs. Decides the displayed state from the served facts in one documented function, so the
+One row per connector instance with the fields of FR-5; a row expands to the recent syncs of
+that instance, not of every instance sharing its connector's name. Two installations of one
+connector are told apart by the identity cell, which is the only thing in the row that
+differs. Decides the displayed state from the served facts in one documented function, so the
 precedence lives in one place rather than scattered across cells. Every state carries words
 as well as a tone, so colour is never the only signal. Dates the whole page by when the mover
 was last read, and says so when that read stands out against the ones before it (FR-12).
@@ -518,11 +521,14 @@ Shape rules that the generated contract enforces:
   instead of implying health.
 - `window` is the largest number of rows the per-connector list can hold, so the page can say
   the list is a window rather than the whole retained history (FR-6).
-- **The summary carries a row cap too.** The set is bounded in practice by the build's
-  descriptor list — and below it, by the descriptors this install holds a Secret for — so an
-  install cannot reach the cap by configuring connectors, only by accumulating names in the
-  ledger that no build has. It is a backstop rather than a page, and the read logs
-  when it truncates, because reaching it should be visible rather than silent.
+- **The summary carries a row cap too.** The set is one row per connector instance, and an
+  install decides how many instances it has: a descriptor can be configured as often as
+  Secrets name it, so the cap is reachable by configuration in principle rather than only by
+  accumulating identities in the ledger that no build ships. It sits far above what an install
+  of this shape holds, which is what makes it a backstop rather than a page — and because it
+  is reachable, the read logs when it truncates rather than dropping rows silently. The cap
+  applies to the merged answer, not only to the statement that reads the syncs: the summary is
+  the union of two relations, and bounding one of them bounds nothing.
 
 ### 3.4 Internal Dependencies
 
@@ -650,12 +656,12 @@ sequenceDiagram
     P->>A: GET /v1/connector-health
     A->>L: newest sealed tick
     A->>L: gaps between the recent sealed ticks
-    A->>L: newest sync per connector
+    A->>L: newest sync per connector instance
     A->>L: configured set at that tick
-    A-->>P: one row per connector, ordered by attention
-    P->>A: GET /v1/connector-health/{connector}/syncs
-    A->>L: that connector's recent syncs
-    A-->>P: bounded window, newest first
+    A-->>P: one row per connector instance, ordered by attention
+    P->>A: GET /v1/connector-health/{connector}/syncs (optionally scoped to one instance)
+    A->>L: that connector's recent syncs, narrowed to the instance when one was named
+    A-->>P: bounded window, newest first, echoing the scope it answered for
 ```
 
 The sealed tick is resolved first and bound into the configured-set read. Resolving it per
