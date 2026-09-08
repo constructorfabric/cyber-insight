@@ -1,7 +1,8 @@
 ---
 name: quality-vector-tests
 description: >-
-  Write or reformat the **Testing** section inside a constructorfabric/insight feature issue as
+  Write or reformat the **Testing** section of a constructorfabric/insight feature — either a
+  GitHub issue or a FEATURE.md spec artifact under docs/ — as
   tracked scenarios: one checkbox line per scenario, each attributed to one quality vector
   (Efficiency, Reliability, Performance, Security, Versatility), one target suite (the layer),
   and the acceptance criteria it covers, with a do → expect pass criterion — so that after
@@ -10,7 +11,8 @@ description: >-
   is to add, fix, format, clean up, or standardize the Testing / QA section of an Insight feature
   or epic — "format the testing section of #<n>", "add quality-vector tests to this feature",
   "the testing block is messy, clean it up", "make the testing section consistent", "put the
-  tests into the feature", "simplify the testing section", "track test scenarios in the feature" —
+  tests into the feature", "simplify the testing section", "track test scenarios in the feature",
+  "add the Testing section to this FEATURE.md", "fill section 7 of the feature spec" —
   or when a feature's Testing section has loose bullets, open questions (`coverage?`,
   `Lighthouse?`), mispaired vectors, vague pass criteria, or broken numbering. This is the
   *authoring/formatting* counterpart to scope-feature-tests: reach for scope-feature-tests to
@@ -59,6 +61,23 @@ Security and Versatility, and that ranking reflects importance to the customer �
 order of the section, which follows risk. Each scenario belongs to exactly one vector; getting the
 assignment right is half the value.
 
+## Two targets: an issue or a FEATURE artifact
+
+The section is identical either way. Only where it lands, what it cites, and how it is written
+back differ.
+
+| | GitHub issue | FEATURE artifact |
+|---|---|---|
+| Location | `## Testing` in the issue body | `## 7. Testing` in `FEATURE.md` |
+| Criterion ids | issue-native (`BR-n`, `REQ-n`), else `AC-n` | the feature's own `cpt-{system}-dod-{feature-slug}-{slug}` ids, else `AC-n` over `## 6. Acceptance Criteria` |
+| Write-back | `gh issue edit --body-file` (step 6) | edit the file, then `cfs toc` and `cfs validate` (step 6) |
+| Gap audit | GitHub's checked/total counter | the unchecked boxes, plus `cfs spec-coverage` |
+
+Pick the target the user names. When a feature has both — a `FEATURE.md` under `docs/` and an
+issue — the section goes in the **FEATURE artifact** and the issue links to it. The long-lived
+artifact holds the content and the short-lived one points at it, never the reverse; that is
+what keeps the reference resolvable after the issue closes.
+
 ## Workflow
 
 ### 1. Review the acceptance criteria first
@@ -83,8 +102,10 @@ yet is marked **deferred** with a reason and owner in the Testing section — ne
 
 Three mechanics that make the tags resolvable:
 
-- **Issue-native criterion ids win.** When the issue defines its own ids (`BR-n`, `REQ-n`), cite
-  those verbatim; `AC-n` is the fallback for unlabelled checkbox criteria.
+- **Artifact-native criterion ids win.** When the issue defines its own ids (`BR-n`, `REQ-n`),
+  cite those verbatim. In a FEATURE artifact the native ids are the Definitions of Done —
+  `cpt-{system}-dod-{feature-slug}-{slug}` — and a scenario cites the DoD it proves; `AC-n`
+  over `## 6. Acceptance Criteria` is the fallback in both targets for unlabelled checkboxes.
 - **File the numbering back.** The same edit that lands the Testing section prefixes each
   acceptance criterion with its id (`AC-1.` …) — a numbering-only change that needs no
   confirmation — otherwise the section cites ids no reader can resolve.
@@ -111,6 +132,7 @@ way `scope-feature-tests` does — pull the issue (`gh issue view n --repo const
 --json title,body,labels,parent`), check for a branch or merged PR (`gh pr list --repo
 constructorfabric/insight --search "n" --state all`), then read the code — all in this repo:
 backend, ingestion and dbt, and `src/frontend` for UI.
+Read the code to check the description against reality, never to source the scenarios — see 2a.
 
 Three things this grounding is *for*, beyond correctness:
 
@@ -142,6 +164,29 @@ reuses its reasoning and only differs in the **output format and location**.
 To *run* the vectors against a change that has already merged rather than write scenarios into an
 issue, hand over to `probe-merged-change`. It takes vector semantics from
 [vector-mapping.md](./references/vector-mapping.md) and owns execution.
+
+### 2a. Grounding isolation — what may inform what
+
+Scenarios come from the feature description. Test code may consult the implementation. Keep the
+two apart: a scenario derived from the code asserts what the code does, so it passes by
+construction — and a behaviour the code never implemented produces no scenario at all, which
+makes the gap invisible.
+
+| Artefact | May be informed by | Must NOT be informed by |
+|---|---|---|
+| The scenario list, each **do → expect**, its vector, its criterion tag | the feature description only — Goal/Scope, actor flows, processes, states, Definitions of Done, acceptance criteria | the implementation under test |
+| The **suite tag**, denominators, and whether a named lane exists | the repo's test infrastructure — suite directories, the markers declared in `tests/pyproject.toml`, CI workflows | the implementation under test |
+| The **test code** that later implements a scenario | anything, the implementation included | — |
+
+Step 2's grounding pass exists to catch **contradictions** — scope that shipped differently from
+the description, a denominator that moved, a component malfunction with no defined degraded
+behaviour. It reports those as findings for the author to resolve in the description. It never
+quietly rewrites an expect half to match what the code turned out to do: when the code and the
+description disagree, that disagreement **is** the finding.
+
+When a feature is already implemented, say so in the framing paragraph. A Testing section
+retrofitted onto shipped code is weaker evidence than one written from the description, and a
+reader deserves to know which one they are holding.
 
 ### 3. Verify every tool you are about to name
 This is where drafts quietly lie. "Semgrep + Trivy in CI" is a sentence anyone can type; whether
@@ -227,6 +272,19 @@ gh issue edit <n> --repo constructorfabric/insight --body-file "$BODY"
 Re-fetch the body immediately before every edit. These issues are actively co-authored, and a body
 built from a stale copy silently reverts someone else's work — if the fresh copy differs from what
 you last saw, rebuild on the new one and tell the user what changed.
+
+For a FEATURE artifact, edit the file directly — replacing only the `## 7. Testing` block — then
+regenerate the TOC and validate. A new or edited heading is a validation error until `cfs toc`
+runs:
+
+```sh
+cfs toc docs/<path>/FEATURE.md
+cfs validate --artifact docs/<path>/FEATURE.md   # must report Errors: 0
+cfs validate-toc docs/<path>/FEATURE.md          # must report PASS
+```
+
+Unlike an issue body, the artifact is version-controlled — so there is no re-fetch race, and the
+diff is the review. Commit the section with the feature's other spec changes, not on its own.
 
 ## The format
 
