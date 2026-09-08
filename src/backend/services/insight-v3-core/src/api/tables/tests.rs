@@ -34,6 +34,7 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
             insight_clickhouse::Config::new(url, "insight"),
         )),
         ChatClient::canned(),
+        crate::identity::IdentityClient::fixed(true),
     ));
 
     register_routes(

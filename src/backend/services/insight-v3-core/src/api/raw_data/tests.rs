@@ -59,6 +59,7 @@ fn state(mock: &Mock) -> Arc<AppState> {
             insight_clickhouse::Config::new(url, "insight"),
         )),
         ChatClient::canned(),
+        crate::identity::IdentityClient::fixed(true),
     ))
 }
 

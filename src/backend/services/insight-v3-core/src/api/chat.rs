@@ -78,8 +78,16 @@ pub(crate) fn register_routes(
 
 async fn handle_chat(
     Extension(state): Extension<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<ChatRequest>,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        ChatApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let tables = known_tables(&state).await;
     let catalogue = catalogue(&state).await;
     let proposal = state

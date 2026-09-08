@@ -25,8 +25,13 @@ struct TestHarness {
 }
 
 impl TestHarness {
-    #[allow(clippy::unused_async)]
     async fn new() -> Self {
+        Self::with_caller(true).await
+    }
+
+    /// A caller who does or does not hold the admin role.
+    #[allow(clippy::unused_async)]
+    async fn with_caller(is_admin: bool) -> Self {
         let mut mock = Mock::new();
         mock.non_exhaustive();
         let openapi = OpenApiRegistryImpl::new();
@@ -44,6 +49,7 @@ impl TestHarness {
                 insight_clickhouse::Config::new(url, "insight"),
             )),
             ChatClient::canned(),
+            crate::identity::IdentityClient::fixed(is_admin),
         ));
         let router = register_routes(Router::new(), &openapi, state);
 
@@ -217,4 +223,31 @@ async fn put_then_get_a_widget_definition_round_trips() {
         got.json().await,
         json!({ "type": "table", "metric": "commits_per_day" })
     );
+}
+
+#[tokio::test]
+async fn a_caller_without_the_admin_role_reaches_nothing() {
+    let harness = TestHarness::with_caller(false).await;
+
+    // Every custom surface: the catalogues, one definition, and a write.
+    for (method, path) in [
+        ("GET", "/v1/metrics"),
+        ("GET", "/v1/metrics/commits_per_day"),
+        ("PUT", "/v1/widgets/commits_table"),
+    ] {
+        let response = match method {
+            "PUT" => {
+                harness
+                    .put_json(path, json!({ "type": "table", "metric": "m" }))
+                    .await
+            }
+            _ => harness.list_json(path).await,
+        };
+
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {path} must refuse a caller without the role"
+        );
+    }
 }

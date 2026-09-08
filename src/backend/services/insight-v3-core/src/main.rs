@@ -3,6 +3,7 @@ mod chat;
 mod config;
 mod definitions;
 mod gear;
+mod identity;
 mod metric_query;
 mod migration;
 mod raw_data;

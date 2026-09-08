@@ -44,6 +44,7 @@ impl TestHarness {
                 insight_clickhouse::Config::new(url, "insight"),
             )),
             chat,
+            crate::identity::IdentityClient::fixed(true),
         ));
         let router =
             crate::api::definitions::register_routes(Router::new(), &openapi, state.clone());

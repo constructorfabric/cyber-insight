@@ -115,8 +115,16 @@ async fn put_definition(
     Extension(state): Extension<Arc<AppState>>,
     Extension(kind): Extension<DefinitionKind>,
     Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        DefinitionApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
     if kind == DefinitionKind::Widget {
@@ -173,7 +181,15 @@ async fn get_definition(
     Extension(state): Extension<Arc<AppState>>,
     Extension(kind): Extension<DefinitionKind>,
     Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        DefinitionApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
     let body = state
@@ -191,7 +207,15 @@ async fn get_definition(
 async fn list_definitions(
     Extension(state): Extension<Arc<AppState>>,
     Extension(kind): Extension<DefinitionKind>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        DefinitionApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let names = state
         .definitions()
         .list(kind)

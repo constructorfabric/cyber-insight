@@ -50,7 +50,15 @@ pub(crate) fn register_routes(
 async fn create_table(
     Path(table): Path<String>,
     Extension(state): Extension<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        TableApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let table = TableName::parse(&table).map_err(table_error)?;
 
     state

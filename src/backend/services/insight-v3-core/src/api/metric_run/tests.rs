@@ -49,6 +49,7 @@ impl TestHarness {
             definitions.clone(),
             MetricRunner::new(metrics_client),
             ChatClient::canned(),
+            crate::identity::IdentityClient::fixed(true),
         ));
         let router = register_routes(Router::new(), &openapi, state);
 

@@ -51,7 +51,15 @@ pub(crate) fn register_routes(
 async fn run_metric(
     Extension(state): Extension<Arc<AppState>>,
     Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        MetricRunApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
     let body = state

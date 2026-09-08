@@ -29,8 +29,21 @@ import { authStore } from "@/auth/auth-store";
 import { makeSession } from "@/test/session";
 import { routeTree } from "@/routeTree.gen";
 import * as customClient from "@/api/custom-client";
+import * as identityClient from "@/api/identity-client";
+import { ADMIN_ROLE_ID } from "@/queries/identity-me";
 
 vi.mock("@/api/custom-client");
+vi.mock("@/api/identity-client");
+
+/** The caller `GET /v1/me` describes, which is what the zone gates on. */
+function signedInAs({ admin }: { admin: boolean }) {
+  vi.mocked(identityClient.getMe).mockResolvedValue({
+    person_id: "00000000-0000-4000-8000-000000000001",
+    insight_tenant_id: "00000000-0000-4000-8000-0000000000ff",
+    roles: admin ? [{ role_id: ADMIN_ROLE_ID, name: "admin" }] : [],
+    visibility_policy: "org_chart",
+  });
+}
 
 function renderAt(path: string) {
   const router = createRouter({
@@ -65,8 +78,8 @@ beforeEach(() => {
         dispatchEvent: () => false,
       }) as unknown as MediaQueryList
   );
-  // Empty personId skips the root's viewer-identity prefetch, so this test
-  // needs no `@/api/identity-client` mock.
+  signedInAs({ admin: true });
+  // Empty personId skips the root's viewer-identity prefetch.
   authStore.setAuthenticated(makeSession({ personId: "" }));
 });
 
@@ -183,5 +196,23 @@ describe("the /portal/custom routes, through the real router", () => {
     expect(
       await screen.findByRole("cell", { name: "100" })
     ).toBeInTheDocument();
+  });
+
+  it("refuses the zone to a caller without the admin role", async () => {
+    signedInAs({ admin: false });
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+      "engineering",
+    ]);
+
+    renderAt("/portal/custom");
+
+    expect(
+      await screen.findByText(/administrators only/i)
+    ).toBeInTheDocument();
+    // Nothing of the zone renders, not even the list it would have shown.
+    expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Custom" })
+    ).not.toBeInTheDocument();
   });
 });

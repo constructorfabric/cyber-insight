@@ -13,7 +13,7 @@ import { useIsAdmin } from "@/queries/identity-me";
  * Zones that still make sense when the viewer manages no one — everything else
  * rolls up a (non-existent) subtree. An IC's portal collapses to these.
  */
-const IC_ZONES = new Set(["person", "custom"]);
+const IC_ZONES = new Set(["person"]);
 
 /**
  * The zone list the viewer may see plus the selection behaviour, shared by the
@@ -41,12 +41,16 @@ export function useZoneNav(): {
   // a rail entry that vanishes is worse than one that appears a beat late.
   const { isAdmin } = useIsAdmin();
 
-  const zones = ZONES.filter(
-    (z) =>
-      !zoneHidden(z.id) &&
-      (orgZonesVisible || IC_ZONES.has(z.id) || (z.id === "manage" && isAdmin)) &&
-      (!zonePlanned(z.id) || showPlanned),
-  );
+  const zones = ZONES.filter((z) => {
+    if (zoneHidden(z.id) || (zonePlanned(z.id) && !showPlanned)) return false;
+    // Custom writes definitions and spends the model budget, so the role
+    // decides on its own: having a cohort does not open it, and the service
+    // refuses the surfaces either way. (Manage keeps its older rule below,
+    // where a viewer with a cohort sees the entry and its view refuses them.)
+    if (z.id === "custom") return isAdmin;
+
+    return orgZonesVisible || IC_ZONES.has(z.id) || (z.id === "manage" && isAdmin);
+  });
 
   function selectZone(zone: Zone) {
     // ONE navigation per click. Three separate writes (clear item, clear zone,
