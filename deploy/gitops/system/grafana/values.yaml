@@ -2489,7 +2489,7 @@ dashboards:
               },
               "gridPos": {
                 "h": 5,
-                "w": 6,
+                "w": 5,
                 "x": 0,
                 "y": 29
               },
@@ -2507,7 +2507,7 @@ dashboards:
                 },
                 "text": {
                   "titleSize": 13,
-                  "valueSize": 44
+                  "valueSize": 36
                 },
                 "textMode": "auto"
               },
@@ -2553,8 +2553,8 @@ dashboards:
               },
               "gridPos": {
                 "h": 5,
-                "w": 5,
-                "x": 6,
+                "w": 4,
+                "x": 5,
                 "y": 29
               },
               "id": 12,
@@ -2626,7 +2626,7 @@ dashboards:
               "gridPos": {
                 "h": 5,
                 "w": 4,
-                "x": 11,
+                "x": 9,
                 "y": 29
               },
               "id": 13,
@@ -2667,6 +2667,83 @@ dashboards:
                 "type": "prometheus",
                 "uid": "vm"
               },
+              "description": "Time with every component serving divided by the number of transitions to down within the selected range. Shows 'No failures' when the range holds none.",
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 1,
+                  "mappings": [
+                    {
+                      "options": {
+                        "match": "null",
+                        "result": {
+                          "color": "green",
+                          "index": 0,
+                          "text": "No failures"
+                        }
+                      },
+                      "type": "special"
+                    }
+                  ],
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "text",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "m"
+                },
+                "overrides": []
+              },
+              "gridPos": {
+                "h": 5,
+                "w": 4,
+                "x": 13,
+                "y": 29
+              },
+              "id": 28,
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "text": {
+                  "titleSize": 13,
+                  "valueSize": 30
+                },
+                "textMode": "auto"
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "vm"
+                  },
+                  "expr": "(0.5 * sum_over_time((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)) == bool 1)[$__range:30s])) / (resets((min(clamp_max(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"insight\", deployment=~\"insight-gateway|insight-authenticator|insight-analytics|insight-identity-resolution|insight-frontend|insight-git-cli-proxy\"}), 1)))[$__range:30s]) > 0)",
+                  "instant": true,
+                  "range": false,
+                  "refId": "A"
+                }
+              ],
+              "title": "MTBF · mean time between failures",
+              "type": "stat"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "vm"
+              },
               "fieldConfig": {
                 "defaults": {
                   "color": {
@@ -2689,8 +2766,8 @@ dashboards:
               },
               "gridPos": {
                 "h": 5,
-                "w": 5,
-                "x": 15,
+                "w": 3,
+                "x": 17,
                 "y": 29
               },
               "id": 14,
