@@ -307,7 +307,7 @@ issue itself uses — AC-n, BR-n, REQ-n — never renumbered.
 - [ ] 2. **<Scenario name>** — <Vector> · <suite-tag> · <criterion-id> — <do → expect>.
 …
 
-<Vector with nothing to check> — n/a: <one line saying why, e.g. no new query path of its own;
+**<Vector with nothing to check>** — n/a: <one line saying why, e.g. no new query path of its own;
 latency is measured on the shared runtime.>
 ```
 

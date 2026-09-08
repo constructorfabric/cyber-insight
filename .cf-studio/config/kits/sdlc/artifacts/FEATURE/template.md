@@ -135,4 +135,4 @@ All {N}/{N} acceptance criteria covered: {criterion-id} → 1,4 · {criterion-id
 - [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect, one sentence; the expect half restates the criterion's outcome; a number only where the number is the oracle}.
 - [ ] 2. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect}.
 
-{Vector with nothing to check} — n/a: {one line saying why}.
+**{Vector with nothing to check}** — n/a: {one line saying why}.
