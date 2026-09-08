@@ -71,19 +71,19 @@ back differ.
 | Location | `## Testing` in the issue body | `## 7. Testing` in `FEATURE.md` |
 | Criterion ids | issue-native (`BR-n`, `REQ-n`), else `AC-n` | `AC-n` over `## 6. Acceptance Criteria`, numbered in reading order; a DoD id may be named additionally |
 | Write-back | `gh issue edit --body-file` (step 6) | edit the file, then `cfs toc` and `cfs validate` (step 6) |
-| Gap audit | GitHub's checked/total counter | the unchecked boxes, plus `cfs spec-coverage` |
+| Gap audit | GitHub's checked/total counter | the unchecked boxes |
 
 Pick the target the user names. When a feature has both — a `FEATURE.md` under `docs/` and an
 issue — the section goes in the **FEATURE artifact** and the issue links to it. The long-lived
 artifact holds the content and the short-lived one points at it, never the reverse; that is
 what keeps the reference resolvable after the issue closes.
 
-`scripts/rollup.sh <artifact>` prints the five-vector view for either target by grouping the
-tags. It reports `MISSING` for a vector that is neither claimed nor explicitly `n/a` — the
-rollup is derived, so a gap in it is a gap in the artifact, not in a summary someone forgot to
-update. The PRD side reads `**Vector**:` lines, and treats a vector named in `### 6.2 NFR Exclusions` as
-an explicit n/a. It has no artifact to read until the next PRD is authored; existing PRDs are
-deliberately not backfilled.
+`.claude/skills/quality-vector-tests/scripts/rollup.sh <artifact>` prints the five-vector view
+for either target by grouping the tags. It reports `MISSING` for a vector that is neither
+claimed nor explicitly `n/a` — the rollup is derived, so a gap in it is a gap in the artifact,
+not in a summary someone forgot to update. The PRD side reads `**Vector**:` lines, and treats a
+vector named in `### 6.2 NFR Exclusions` as an explicit n/a. It has no artifact to read until
+the next PRD is authored; existing PRDs are deliberately not backfilled.
 
 ## Workflow
 
@@ -298,6 +298,9 @@ Unlike an issue body, the artifact is version-controlled — so there is no re-f
 diff is the review. Commit the section with the feature's other spec changes, not on its own.
 
 ## The format
+
+This shows the heading as it reads in an issue (`## Testing`); a FEATURE artifact numbers the
+same section `## 7. Testing`, per the table above.
 
 ```markdown
 ## Testing

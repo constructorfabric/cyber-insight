@@ -7,8 +7,8 @@ These are loaded alongside the generated skills in `{cf-studio-path}/.gen/SKILL.
 
 Insight evaluates quality along five vectors — **Efficiency, Reliability, Performance,
 Security, Versatility** — in that order, which is a priority ranking, not an alphabetical one.
-They are defined in `quality/insight-quality-framework.md` and are the same five the stand
-suites enforce: every api/ui test carries exactly one vector marker, checked at collection.
+They are the same five the stand suites enforce: every api/ui test carries exactly one vector
+marker, declared in `tests/pyproject.toml` and checked at collection.
 
 - **PRD** — every NFR in `## 6. Non-Functional Requirements` carries exactly one vector. The
   vector rides the NFR's own `cpt-{system}-nfr-{slug}` id, which already traces into DESIGN
