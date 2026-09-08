@@ -113,16 +113,40 @@ events AS (
         {{ jira_delta_sides('k.field_kind', 'ci.value_from', 'ci.value_from_string',
                             'ci.value_to', 'ci.value_to_string') }}    AS sides,
         {{ jira_delta_element('ci.value_from', 'ci.value_from_string',
-                              'ci.value_to', 'ci.value_to_string') }}  AS element
+                              'ci.value_to', 'ci.value_to_string') }}  AS element,
+        -- Both sides spelled IDENTICALLY: the item records no change at all.
+        -- Compared as the changelog wrote them, NOT after the kind resolved
+        -- them: `duration` folds zero to the empty state, so a resolved
+        -- comparison also swallows `null -> 0`, which is a real event (work
+        -- logged against an unestimated issue, §3.5) that the journal keeps.
+        COALESCE(ci.value_from, '') = COALESCE(ci.value_to, '')
+            AND COALESCE(ci.value_from_string, '') = COALESCE(ci.value_to_string, '')
+                                                                       AS sides_unchanged
     FROM {{ ref('jira__changelog_items') }} AS ci
     INNER JOIN kinds AS k
         ON k.insight_source_id = ci.insight_source_id
        AND k.field_id = ci.field_id
 ),
 
--- An item with nothing on either side carries no information (§6).
+-- An item with nothing on either side carries no information (§6). Neither does
+-- one whose two sides are spelled identically: Jira writes those as a
+-- by-product of recalculating a field it did not change — a remaining estimate
+-- re-stamped while an issue is closed is the common shape.
+--
+-- Dropping them is not merely tidiness. `initial_state` takes the `before` side
+-- of the EARLIEST event, and items of one entry share (event_at, event_ord), so
+-- a real change paired with a no-op left that choice to the planner: the same
+-- data yielded either value from one run to the next.
+--
+-- Element-wise kinds are exempt, and must be: their sides carry ONE element,
+-- absent on the side it is not on, so a no-op cannot arise — while an item
+-- naming the same element on both sides is the RENAME of that element, whose
+-- whole purpose is to carry the new display.
 live_events AS (
-    SELECT * FROM events WHERE delta_action != 'none'
+    SELECT * FROM events
+    WHERE delta_action != 'none'
+      AND (field_kind IN {{ jira_element_wise_kinds() }}
+           OR NOT sides_unchanged)
 ),
 
 -- ── fields the catalogue does not contain ───────────────────────────────────
