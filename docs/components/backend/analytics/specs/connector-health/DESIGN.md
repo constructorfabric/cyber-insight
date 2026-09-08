@@ -222,12 +222,38 @@ resolve to a single newest sync and whichever ran last stands for the pair, so a
 instance reads as healthy because its sibling succeeded.
 
 Rows recorded before the ledger carried the identity hold it empty. The reconcile sweep fills
-those in from the instance the install actually has, and only where one instance can be shown
-to own them: a connector this install configures exactly once owns every row under its name,
-while a connector configured twice, or no longer configured at all, keeps the empty identity.
-Neither case is guessable after the fact — the connection that separated two instances' jobs
-is not in the rows, and a removed connector's Secret is gone while its history remains — and a
-guess written here would read as a recorded fact ever after.
+them in from evidence, in order of how directly the answer is known:
+
+1. the Secret the install configures now, for a connector it configures exactly once;
+2. the identity the connector's own bronze data was recorded under, read from the relation its
+   descriptor names — which is what outlives the Secret;
+3. the naming this install demonstrably follows (`<connector>-main` under one tenant), and only
+   for a connector that recorded no sync at all, and only while every instance the install can
+   read agrees on it. One counter-example turns this rung off for the whole install.
+
+A removed Secret does not by itself end the question: a departed connector that ever moved a
+row said which instance it was, in that row.
+
+What stays empty is what cannot be shown. A connector configured twice is refused — the
+connection that told its instances apart is not in the rows. And a connector whose
+unidentified rows include a **sync** is never given an inferred identity, however unanimous the
+naming: there the identity decides whose work that sync was, and a wrong answer is
+indistinguishable from a right one ever after. Rung 3 is the only rung that infers rather than
+reads, which is why it reaches nothing but `connector.configured` snapshots — rows about
+membership, with no sync to misattribute. Every connector left unidentified is named in the
+tick's log, once per tick rather than once per connector.
+
+**An instance's existence is established, never inferred, before anything is deleted.** The
+sweep records; the reconcile loop around it removes — a connector with no Secret loses its
+sources, and one instance whose own Secret is gone loses only its own. Both read whose a source
+is from the `sourceDefinitionId` Airbyte created it against, matched to the custom definition
+published under the connector's name. The source's name is a fallback for a definition already
+deleted, and it answers only where exactly one connector could have written it: a source is
+`{connector}-{source_id}-{tenant}` and a source id is arbitrary, so one connector's source can
+spell another connector's name exactly. A definition listing that cannot be read — an error, an
+empty array, no bytes at all — stops the removal rather than falling back to the name, since
+falling back would delete on the weaker evidence precisely when the stronger became
+unavailable.
 
 **Resolution.** The summary takes, per connector instance, the newest `sync.completed` by the
 mover's own last-update stamp for the job; the configured set is the membership of the newest
@@ -328,10 +354,11 @@ the reconcile loop already authenticates to the mover and ticks.
 
 ##### Responsibility scope
 
-Each tick: resolve the configured set, resolve the watermark from the ledger, page the
-mover's job listing forward from it, map each job's connection to a connector, plan one row
-per job the ledger does not already hold with a terminal outcome, plan the configured-set
-snapshot, write the rows, then write the seal.
+Each tick: resolve the configured set, hand any history still holding an empty identity to the
+instance the evidence names, resolve the watermark from the ledger, page the mover's job
+listing forward from it, map each job's connection to a connector, plan one row per job the
+ledger does not already hold with a terminal outcome, plan the configured-set snapshot, write
+the rows, then write the seal.
 
 The planning is a pure function over values — the shell gathers, the planner decides, and the
 planner is what the tests exercise. Its rules are the change's densest logic: which jobs to
@@ -555,6 +582,9 @@ sequenceDiagram
     participant M as Data mover
     participant L as Sync ledger
 
+    R->>L: connectors holding rows with no identity
+    L-->>R: their names, and whether any row is a sync
+    R->>L: give each resolvable one its instance (synchronous mutation)
     R->>L: oldest job still open (floored), or the newest recorded
     L-->>R: watermark (empty ⇒ backfill everything)
     R->>L: jobs already closed at or after the watermark
@@ -652,6 +682,8 @@ customer extracts, which must never carry service rows.
 | `tick_id` | `String` | the sweep tick that wrote the row; what a sealed snapshot is keyed on |
 | `job_id` | `String` | the mover's job identity; empty on rows that are not about a job |
 | `connector` | `LowCardinality(String)` | hyphenated connector name; empty on the seal row |
+| `tenant_id` | `LowCardinality(String)` | the instance's tenant; empty on the seal row, and on history no instance can be shown to own |
+| `source_id` | `LowCardinality(String)` | the instance's own id within that tenant; empty on the same rows |
 | `event` | `LowCardinality(String)` | `sync.completed` \| `connector.configured` \| `sweep.completed` |
 | `status` | `LowCardinality(String)` | on a sync row, the mover's own word or `unknown`; empty elsewhere |
 | `started_at` | `Nullable(DateTime64(3, 'UTC'))` | when the mover says the sync began; NULL for a job it has not started |
@@ -662,6 +694,11 @@ customer extracts, which must never carry service rows.
 `ENGINE = MergeTree`, `PARTITION BY toYYYYMM(ts)`,
 `ORDER BY (event, connector, ts, event_id)`, `TTL toDateTime(ts) + INTERVAL 6 MONTH`.
 
+The identity is deliberately outside the sort key. This is a plain MergeTree, so the key buys
+read locality rather than identity, and `connector` already narrows a per-instance read to the
+handful of rows the aggregate then groups — while rewriting the key on an install that already
+holds months of history would buy that install nothing.
+
 `event` leads the sort key because every read filters on it first and the three row classes
 have nothing to say to each other:
 
@@ -669,8 +706,8 @@ have nothing to say to each other:
 |---|---|
 | the newest sealed tick | `event`, then one row off the top |
 | the gaps between the recent sealed ticks | `event`, then twenty rows off the top |
-| the newest sync per connector | `event`, then aggregated by `connector` |
-| one connector's recent syncs | `event`, `connector` |
+| the newest sync per connector instance | `event`, then aggregated by the whole identity |
+| one connector's recent syncs | `event`, `connector`, and the identity when the caller named one |
 | the configured set of a given tick | `event`; `tick_id` is filtered, not indexed |
 
 Only the last falls back to a filter. Leading with `tick_id` instead would narrow it at the
@@ -684,8 +721,9 @@ ends — plus one per tick for as long as a job stays open. A job that never clo
 therefore accrue a row per tick indefinitely, which is what the sweep's read floor exists to
 bound rather than the table.
 
-Snapshot rows arrive at one per configured connector per tick plus one seal, so at the chart's
-default reconcile cadence of every fifteen minutes that is 96 × (connectors + 1) rows a day,
+Snapshot rows arrive at one per configured connector instance per tick plus one seal, so at
+the chart's default reconcile cadence of every fifteen minutes that is 96 × (instances + 1)
+rows a day,
 against roughly 17,500 ticks inside a six-month retention. The snapshot class dominates and is
 what retention is sized against. If it ever stops being negligible, writing the snapshot only
 when the managed set changes removes the class without changing what any read resolves.
