@@ -88,14 +88,31 @@ Choose the cheapest existing suite capable of falsifying the claim:
 | Identity | `rust-unit` → `identity-e2e` (`tests/datapath/identity`) → `stand-api` |
 | Ingestion | `connector-tests` (`src/ingestion/connectors/*/*/tests`) → `dbt-tests` (`src/ingestion/dbt/tests`) → `metric-spec` |
 | Cross-cutting | `ci-static` (scans and gates in `.github/`) or `manual` |
+| Already in operation | `observed` — read from operational telemetry rather than run |
 
 Verify tools before naming them: inspect the relevant test directory, package
 scripts or CI workflows. `scripts/counts.sh` takes repo-wide denominators
 and reports MOVED rather than a misleading zero when a source has shifted; take a
 count from it rather than quoting one. A browser scenario must need browser-observable
-behaviour. Performance and Efficiency may use `manual` when no suitable load or
-soak lane exists, but must identify the missing procedure and conditions.
-Measure them on the same approved reference fixture at each NFR's own load.
+behaviour.
+
+`observed` covers a claim that operational telemetry already measures on real
+traffic, so no test is run: per-endpoint latency percentiles, request and error
+rates, and per-service reserved-versus-used CPU and memory are all recorded
+continuously. Prefer it to `manual` for Performance and Efficiency — a synthetic
+run at an invented scale is weaker evidence than a percentile from real use, and
+inventing that scale is usually what blocks the scenario.
+
+An `observed` line states the panel or query, the window, and the environment it
+was read from. Without those it is an assertion, not evidence. Two limits are
+part of using it honestly: it is lagging, so it validates after the fact and
+cannot gate a merge; and it describes the environment measured, so a lightly
+loaded stand says little about a production-scale organisation. Where traffic
+from load runs shares the same logs or metric store, say whether it was excluded.
+
+Keep `manual` for a claim that needs a procedure someone performs. If a claim
+needs a lane that does not exist, it is not a scenario yet — record the decision
+in feature context with its owner.
 
 ## 4. Write Testing
 
