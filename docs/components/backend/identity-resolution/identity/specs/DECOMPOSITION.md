@@ -1,10 +1,13 @@
 ---
 status: draft
-version: "1.0"
+version: "1.1"
 date: 2026-09-08
 ---
 
 # Decomposition: Identity Service Quality Adoption
+
+**Revision 1.1:** Trace upstream requirements through the feature to vector tests;
+keep acceptance conditions separate from scenario tracking.
 
 <!-- toc -->
 
@@ -39,7 +42,7 @@ contract disagreements and measurement prerequisites are recorded in the FEATURE
   observations and verified caller context are external prerequisites.
 - **Scope**:
   - Single profile resolution, projection and refusal semantics.
-  - Local and inherited NFR traceability through acceptance criteria and testing.
+  - Local and inherited NFR traceability through feature-owned vector scenarios and test links.
   - Explicit contract, visibility, source-fixture and measurement decisions.
 - **Out of scope**:
   - Batch and roster APIs, corrections, seed/migration lifecycle, roles and login bootstrap.
@@ -50,6 +53,11 @@ contract disagreements and measurement prerequisites are recorded in the FEATURE
   - `cpt-insightspec-fr-identity-profile-ids-list`
   - `cpt-insightspec-fr-identity-profile-org-tree`
   - `cpt-insightspec-fr-identity-profile-validation`
+  - `cpt-insightspec-fr-identity-lookup-hydrate`
+  - `cpt-insightspec-fr-identity-lookup-404`
+  - `cpt-insightspec-fr-identity-lookup-parent`
+  - `cpt-insightspec-fr-identity-lookup-subordinates`
+  - `cpt-insightspec-fr-identity-routing-name-split`
   - [ ] `p1` - `cpt-insightspec-nfr-identity-latency`
   - [ ] `p1` - `cpt-insightspec-nfr-identity-memory`
   - [ ] `p1` - `cpt-insightspec-nfr-identity-logging-pii`
@@ -81,4 +89,4 @@ contract disagreements and measurement prerequisites are recorded in the FEATURE
 Only one feature is registered in this adoption manifest, so there are no
 intra-manifest dependencies. Producer behaviour and domain-wide evidence retain
 their own scope. The feature cannot be accepted until its named review decisions,
-deferred criteria, and measurement prerequisites are resolved.
+deferred scenarios, and measurement prerequisites are resolved.

@@ -1,6 +1,6 @@
 ---
 status: draft
-version: "1.1"
+version: "1.2"
 date: 2026-09-08
 ---
 
@@ -11,6 +11,9 @@ date: 2026-09-08
 > document and the committed `openapi.json` disagree, the contract is right.
 
 # PRD — Identity
+
+**Revision 1.2:** Trace quality verification directly through the owning feature's
+vector tests; Acceptance Criteria retain the canonical kit's checklist form.
 
 **Revision 1.1:** Explicit quality-vector migration of section 6, with a new
 [profile-resolution FEATURE](feature-profile-resolution/FEATURE.md). Existing NFR
@@ -803,7 +806,7 @@ from a different connector or a second instance of an existing connector.
 
 **Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#tenant-data-isolation)
 owns the unchanged zero-leak target. Identity service maintainer and QA own the
-service contribution: FEATURE AC-8 and scenarios 9–10, linked to the shared
+service contribution: the owning profile-resolution FEATURE and scenarios 9–10, linked to the shared
 `tests/stand/api/identity` and `tests/datapath/identity` evidence when implemented
 and run. No passing evidence is attached yet; domain acceptance must also cover
 the upstream mirror/cache/error scope beyond this FEATURE.
@@ -816,7 +819,8 @@ the upstream mirror/cache/error scope beyond this FEATURE.
 
 **Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#alias-lookup-latency)
 owns the unchanged profile-lookup target and load. Identity service maintainer
-and QA own FEATURE AC-13 and scenario 13 as the shared measurement record.
+and QA own scenario 13 in the profile-resolution FEATURE as the shared
+measurement record.
 The fixture and load harness are pending (FEATURE decision D-3); no passing
 evidence exists in this migration. This obligation is additional to the local
 legacy lookup target, not a substitution for it.
