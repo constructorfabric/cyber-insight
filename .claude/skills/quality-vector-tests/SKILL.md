@@ -41,7 +41,8 @@ IDs may remain for compatibility; they are not this skill's traceability key.
 
 Each scenario belongs to the FEATURE identified once by `**Feature**` in Testing.
 Its `**Requirements**` field cites the relevant upstream FR/NFR subset already
-listed in section 1.2. This makes a precise path through the feature without
+listed in section 1.2, and may name a feature-defined id such as a `cpt-*-dod-*`
+where that adds something. This makes a precise path through the feature without
 inserting an AC layer. An applicable NFR needs a scenario or a shared-test link;
 where neither is possible yet, the blocking decision belongs in feature context
 with its owner, not as a placeholder scenario.

@@ -96,10 +96,19 @@ The system **MUST** {do something specific and verifiable}.
 
 ## 6. Non-Functional Requirements
 
-{Briefly explain the module's real quality concerns and business consequences.
-Use the [quality-vector guide](../../guides/quality-vectors.md) to suggest clearer
-expectations through Efficiency, Reliability, Performance, Security and Versatility.
-This is authoring guidance, not a completeness gate or priority ranking.}
+{Open with where this module stands on each quality vector — one line each. Say
+whether the vector is material here and why, in business terms. A vector that does
+not matter says so with its reason: that records a decision, where silence records
+nothing. These lines orient a reader and are not requirements — the requirements
+follow and carry their own tags — and no line here gates anything. The order is a
+display convention, not a ranking. See the
+[quality-vector guide](../../guides/quality-vectors.md).}
+
+- **Efficiency** — {what makes this costly to provide or operate, or why cost is not a concern here}
+- **Reliability** — {what must stay correct, current or recoverable, or why little is at stake}
+- **Performance** — {what must complete within a budget or sustain a rate, or why timing is not a concern}
+- **Security** — {what must be protected and from whom, or why the exposure is limited}
+- **Versatility** — {what breadth must work without bespoke change, or why the surface is fixed}
 
 ### 6.1 NFR Inclusions
 
@@ -133,7 +142,8 @@ available; preserve the upstream target and conditions, and state pending eviden
 
 {Document any project-default NFRs that do NOT apply to this module}
 
-- {Quality vector with no local or inherited obligation, or an excluded default NFR name}: {Reason for non-applicability; inherited or not-yet-measurable requirements are not exclusions}
+- {Quality vector with no local or inherited obligation, or an excluded default NFR name}: {Reason for non-applicability; a requirement that is merely not yet measurable is not an exclusion}
+- {Inherited obligation being excluded — its upstream NFR ID}: {Why it does not apply to this module; departing from an inherited obligation is a decision, so name the ID and the reason rather than dropping it silently}
 
 ## 7. Public Library Interfaces
 
