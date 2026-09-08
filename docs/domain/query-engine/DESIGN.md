@@ -1,5 +1,5 @@
 ---
-version: 2.1
+version: 2.2
 status: proposed
 date: 2026-09-08
 ---
@@ -27,8 +27,8 @@ date: 2026-09-08
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
   - [3.8 Deployment Topology](#38-deployment-topology)
 - [4. Additional context](#4-additional-context)
-  - [Capability semantics](#capability-semantics)
-  - [Saved queries](#saved-queries)
+  - [Capability status and proposed semantics](#capability-status-and-proposed-semantics)
+  - [Saved queries (specified, not implemented)](#saved-queries-specified-not-implemented)
   - [Non-goals](#non-goals)
 - [5. Traceability](#5-traceability)
 
@@ -38,52 +38,57 @@ date: 2026-09-08
 
 ### 1.1 Architectural Vision
 
-One question contract over declared datasets. Each question compiles to one bounded,
-parameterised ClickHouse scan per dataset and answers a typed table. The rules the schema
-does not carry — session tenancy, duplicate-free reads, NULL folding, UTC day boundaries,
-caps — are compiler steps applied to every question and pinned by rendered-SQL tests.
+The engine validates a structured request against a dataset declaration, compiles one
+parameterized ClickHouse query, and returns a typed table. The compiler applies session
+tenancy, dataset read discipline, null-preserving aggregation, UTC boundaries, ordering,
+and row limits. The executor bounds fetched bytes, timeout, and concurrent scans.
 
-Three pure layers around one I/O shell. *Declarations*: what may be asked, validated at
-build time against the warehouse column snapshot. *Validation*: bind a request or refuse it
-with every violation named. *Compilation*: SQL text with engine-owned identifiers, caller
-values bound. The shell runs the statement under a byte ceiling and a concurrency permit and
-assembles the answer. Realises [PRD.md](PRD.md); migration in [MIGRATION.md](MIGRATION.md).
+Validation, compilation, and answer assembly are pure domain operations. The API handles
+authorization and orchestration; infrastructure executes the query. Dataset declarations
+and their snapshot validation belong to the [dataset registry](../datasets/DESIGN.md).
+
+**Implemented**: single-dataset queries, basic and pattern filters, dimension and time
+grouping, conditional count/sum/avg/min/max, ordering, truncation, and administrator access.
+
+**Planned**: constructor UI, advanced query operations, saved queries, and access policies.
+Section 3 defines the supported contract; Section 4 preserves proposed extension semantics.
+See [PRD.md](PRD.md) for requirements and [MIGRATION.md](MIGRATION.md) for migration.
 
 ### 1.2 Architecture Drivers
 
-**ADRs**: none yet; the first is expected with access policies.
+**ADRs**: none. Access-policy design remains open.
 
 #### Functional Drivers
 
 | Requirement | Design Response |
 |-------------|------------------|
 | `cpt-insightspec-qe-fr-ask` | request → plan → compile → one scan; no metric definition in the path |
-| `cpt-insightspec-qe-fr-group` | a labelled dimension answers `<field>_label` beside its value; every stable column declared |
+| `cpt-insightspec-qe-fr-group` | a labelled dimension answers `<field>_label` beside its value; grouping restricted to declared dimensions |
 | `cpt-insightspec-qe-fr-filter` | tagged filter variants; patterns bound as parameters, `match` compiled at validation; operator/target mismatch refused |
-| `cpt-insightspec-qe-fr-fold` | `OrNull` folds; `count` alone reports 0 |
+| `cpt-insightspec-qe-fr-fold` | `OrNull` aggregates; `count` alone reports 0 |
 | `cpt-insightspec-qe-fr-bounds` | window cap; `LIMIT limit + 1` with `flags.truncated`; chunked byte ceiling; semaphore |
-| `cpt-insightspec-qe-fr-refusal` | whole plan checked first; one `Violation {field, reason, detail}` per problem |
-| `cpt-insightspec-qe-fr-boolean` | `any`/`all`/`not` variants → parenthesised predicates |
-| `cpt-insightspec-qe-fr-relative-window` | resolved at plan time; answer reports `resolved_window` |
-| `cpt-insightspec-qe-fr-derived` | `classify` → one `multiIf`; `time_part` → date-part function in the query zone |
-| `cpt-insightspec-qe-fr-richer-folds` | more fold and window variants over the same plan (§4) |
-| `cpt-insightspec-qe-fr-time-intelligence` | zone, week start, fiscal start as compiler inputs to every boundary |
-| `cpt-insightspec-qe-fr-rows` | sibling row-level shape over the same predicates, keyed on `row_identity` |
-| `cpt-insightspec-qe-fr-saved` | stored request re-planned on every read |
-| `cpt-insightspec-qe-fr-cross-dataset` | one scan per dataset aligned on conformed dimensions; lookups joined on a unique key |
-| `cpt-insightspec-qe-fr-funnels` | aggregate families over ClickHouse `windowFunnel`, `retention` |
+| `cpt-insightspec-qe-fr-refusal` | semantic violations collected after dataset resolution; deserialization fails separately |
+| `cpt-insightspec-qe-fr-boolean` | planned: `any`/`all`/`not` variants → parenthesised predicates |
+| `cpt-insightspec-qe-fr-relative-window` | planned: resolved at plan time; answer reports `resolved_window` |
+| `cpt-insightspec-qe-fr-derived` | planned: `classify` → one `multiIf`; `time_part` → date-part function in the query zone |
+| `cpt-insightspec-qe-fr-richer-folds` | planned: advanced aggregates and window operations over the same plan (§4) |
+| `cpt-insightspec-qe-fr-time-intelligence` | planned: zone, week start, fiscal start as compiler inputs to every boundary |
+| `cpt-insightspec-qe-fr-rows` | planned: row-level results keyed on `row_identity`; route remains undecided |
+| `cpt-insightspec-qe-fr-saved` | planned: stored request re-planned on every read |
+| `cpt-insightspec-qe-fr-cross-dataset` | planned: one scan per dataset aligned on conformed dimensions; lookups joined on a unique key |
+| `cpt-insightspec-qe-fr-funnels` | planned: aggregate families over ClickHouse `windowFunnel`, `retention` |
 | `cpt-insightspec-qe-fr-admin-gate` | `require_admin` before every query and discovery handler |
-| `cpt-insightspec-qe-fr-access-policies` | policy predicates bound from the caller context at plan time, before any capability |
+| `cpt-insightspec-qe-fr-access-policies` | planned: policy predicates bound from the caller context at plan time, before any capability |
 
 #### NFR Allocation
 
 | NFR ID | NFR Summary | Allocated To | Design Response | Verification Approach |
 |--------|-------------|--------------|-----------------|----------------------|
-| `cpt-insightspec-qe-nfr-correctness` | correct by construction | compiler | tenancy predicate first; `FINAL` per read discipline; `OrNull` folds; `toDate(x, 'UTC')`; no `=` on nullable keys | rendered-SQL goldens; stand reconciliations |
+| `cpt-insightspec-qe-nfr-correctness` | consistent query semantics | compiler | tenancy predicate first; `FINAL` per read discipline; `OrNull` aggregates; `toDate(x, 'UTC')` | rendered-SQL goldens; stand reconciliations |
 | `cpt-insightspec-qe-nfr-bounded` | bounded cost | validation, executor, handler | 731-day window; 10 000 rows; 16 MiB chunked ceiling; 8-permit semaphore → 429 | unit tests per cap; stand 400/429 cases |
-| `cpt-insightspec-qe-nfr-latency` | interactive latency | gold datasets, compiler | flat pre-joined relations; one scan; partitioned by month, sorted by tenant | stand timing; ClickHouse query log |
+| `cpt-insightspec-qe-nfr-latency` | interactive latency | gold datasets, compiler | flat pre-joined relations; one scan; partitioned by month, sorted by tenant | planned benchmark; reference workload not yet defined |
 | `cpt-insightspec-qe-nfr-contract` | stable contract | contract DTOs | tagged unions with `deny_unknown_fields`; OpenAPI generated from types; CI drift gate | drift check; stand schema generation |
-| `cpt-insightspec-qe-nfr-person-data` | person columns classified | declarations, executor | person columns named in the declaration; no engine store or cache; gate then policies govern reads | declaration tests; no persistence in the engine |
+| `cpt-insightspec-qe-nfr-person-data` | personal-data handling | declarations, executor | admin gate and no result store; classification and policies planned | authorization tests; inspect persistence boundaries |
 
 ### 1.3 Architecture Layers
 
@@ -109,46 +114,46 @@ ingestion (dbt) ─────────────────────�
 
 ### 2.1 Design Principles
 
-#### A contract, not SQL, from callers
+#### Structured query contract
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-principle-contract`
 
-Callers send a small typed document. Only engine-owned identifiers reach SQL text; every
-caller value binds. This is what makes tenancy, read discipline, NULL semantics, caps and
-row policies enforceable without a SQL parser.
+Callers select typed operations over declared fields. SQL identifiers are resolved from the
+plan; caller values are bound as parameters. Requests cannot override tenant scoping or
+read discipline.
 
-#### Declarations are the truth
+#### Declared fields
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-principle-declarations`
 
-What may be asked is declared per dataset and validated against the column snapshot at build
-time. Every stable-valued column is a dimension. A request cannot name what no declaration
-does.
+Requests may reference only fields exposed by the selected dataset. Shipped declarations
+are validated against an embedded column snapshot; this is not a live-schema check.
 
-#### Refuse by name
+#### Structured validation errors
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-principle-refusals`
 
-Check the whole request, then report every violation with field, machine reason and
-admissible set. Server faults (unusable declarations, warehouse errors) are 500s, never
-dressed as request errors.
+After deserialization and dataset resolution, validation collects independent semantic
+violations with field paths, reason codes, and available choices. Malformed requests and
+unknown datasets fail earlier. Unusable declarations and warehouse failures are server errors.
 
-#### Correct by construction
+#### Shared compiler rules
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-principle-correctness`
 
-Rules the schema does not carry live in the compiler, pinned by exact rendered-SQL tests.
+Compiler tests verify tenant predicates, read discipline, aggregate null behavior, and
+time boundaries. Prepared-data deduplication and attribution remain dataset responsibilities.
 
 ### 2.2 Constraints
 
-#### Tenancy binds from the session
+#### Session tenant
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-constraint-tenancy`
 
 First predicate of every scan is the tenant from the security context. No request member
 names a tenant; unknown members are refused.
 
-#### Admin-only until access policies land
+#### Initial administrator restriction
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-constraint-admin-gate`
 
@@ -156,13 +161,23 @@ Datasets carry person columns and declare no access policy yet: `POST /v1/query`
 `GET /v1/datasets` routes refuse non-administrators. The change declaring the first policy
 must specify what replaces the minimum-peer suppression of the metric surfaces.
 
-#### Bounded on every axis
+#### Execution limits
 
 - [ ] `p1` - **ID**: `cpt-insightspec-qe-constraint-bounds`
 
-Window ≤ 731 days inside the `Date` range; rows ≤ 10 000 plus one fetched to flag
-truncation; answer ≤ 16 MiB enforced while receiving; 8 scans in flight per process; filter,
-aggregate, axis, order counts and pattern lengths capped by contract constants.
+| Limit | Value |
+|---|---|
+| Inclusive time window | 731 days, within the supported `Date` range |
+| Result rows | Default 1,000; maximum 10,000; fetch one extra to detect truncation |
+| Fetched response bytes | 16 MiB, checked while receiving chunks |
+| Concurrent scans | Eight per process |
+| Permit acquisition | Two seconds, then a retryable capacity error |
+| Top-level filters / values per membership filter | 32 / 256 |
+| Aggregates / grouping axes / ordering terms | 16 / 4 / 4 |
+| Aggregate-name / pattern length | 64 / 256 characters |
+
+Constants live in `contract/dto.rs`, `api/query.rs`, and `infra/query.rs`. The byte cap applies
+to fetched warehouse data, not the size of the final serialized HTTP response.
 
 #### Gold relations only
 
@@ -177,15 +192,15 @@ bronze, no silver, no query-time joins beyond a future declared lookup, no write
 
 - **Authentication**: gateway and identity establish the session; the engine trusts the
   `SecurityContext` it receives and never authenticates.
-- **Data protection**: TLS and tenant isolation inherited from the platform; person columns
-  classified in declarations; column masking arrives with access policies.
+- **Data protection**: TLS and tenant isolation inherited from the platform; personal-field
+  classification and column masking are planned with access policies.
 - **Threats**: injection via operands — mitigated by binding every caller value; over-broad
   exposure before policies — mitigated by the admin gate; resource exhaustion — mitigated by
   the caps above; malformed regex — compiled at validation.
-- **Audit**: latency and error class recorded per question; who-asked-what audit is open
+- **Audit**: latency and error class recorded per query; caller/query audit remains open
   and tracked under access policies.
-- **Capacity and recovery**: the engine holds no state; capacity is the warehouse's and
-  ingestion's concern; recovery is redeploy.
+- **Capacity and recovery**: no durable query state. In-process concurrency is bounded;
+  warehouse capacity and query shape still affect latency. Recovery follows the service.
 
 ## 3. Technical Architecture
 
@@ -227,13 +242,13 @@ request ─▶ api (gate) ─▶ validation ─▶ compile ─▶ executor ─�
 
 ##### Why this component exists
 
-A request is untrusted until every reference resolves and every rule holds.
+Resolves field references and checks operations before SQL compilation.
 
 ##### Responsibility scope
 
 Bind filters, axes, aggregates, order, window to the declaration; check operand types and
 operator/target pairs; compile `match` patterns; enforce caps; build answer columns (value,
-label, bucket, aggregate) with sources; return a `QueryPlan` or every `Violation`.
+label, bucket, aggregate) with sources; return a `QueryPlan` or collected `Violation` values.
 
 ##### Responsibility boundaries
 
@@ -250,11 +265,11 @@ No SQL, no connection. `PlanError` separates a refused request from unusable dec
 
 ##### Why this component exists
 
-Apply the correctness rules once, to every question.
+Compiles validated plans with consistent query semantics.
 
 ##### Responsibility scope
 
-Render one statement: positional aliases; `FINAL` per read discipline; `OrNull` folds;
+Render one statement: positional aliases; `FINAL` per read discipline; `OrNull` aggregates;
 `toDate(x, 'UTC')`; dimension values via `toString` and the absent sentinel; every caller
 value as `?`; tenancy, window, filters in that order; `GROUP BY` group columns;
 deterministic `ORDER BY`; `LIMIT limit + 1`.
@@ -274,7 +289,7 @@ Never sees a raw request or a connection; no authorization logic.
 
 ##### Why this component exists
 
-One place talks to the warehouse for questions, so every bound is enforced there.
+Centralizes warehouse execution and bounded response collection.
 
 ##### Responsibility scope
 
@@ -297,13 +312,13 @@ Does not interpret the request; a ceiling breach is a typed error the handler ma
 
 ##### Why this component exists
 
-HTTP edge: authorization, extraction, error envelopes.
+Exposes query execution through the analytics API.
 
 ##### Responsibility scope
 
-`POST /v1/query`: admin gate, permit, plan, compile, fetch, assemble; refusals →
-field-violation envelope, byte ceiling → `limit` violation, exhaustion → 429, else 500.
-`GET /v1/datasets`, `GET /v1/datasets/{key}`: admin gate, describe.
+`POST /v1/query`: authorize, plan, compile, acquire a permit, fetch, release the permit,
+and assemble the result. Section 3.3 defines errors. Dataset discovery is owned by the
+datasets API; the query contract supplies its limits metadata.
 
 ##### Responsibility boundaries
 
@@ -315,13 +330,13 @@ No business logic, no SQL.
 - `cpt-insightspec-qe-component-executor` — calls
 - `cpt-insightspec-qe-component-constructor` — serves
 
-#### Constructor page
+#### Constructor page (planned)
 
 - [ ] `p2` - **ID**: `cpt-insightspec-qe-component-constructor`
 
 ##### Why this component exists
 
-Administrators ask questions without writing JSON.
+Provides query composition and result rendering for administrators.
 
 ##### Responsibility scope
 
@@ -331,25 +346,26 @@ beside its input and the truncation flag.
 
 ##### Responsibility boundaries
 
-No metric semantics, no invented labels, no persistence.
+Uses dataset metadata and query errors; owns no metric semantics or persistence.
+Not implemented in this change.
 
 ##### Related components (by ID)
 
 - `cpt-insightspec-qe-component-api` — calls
 
-#### Access policies
+#### Access policies (needs design)
 
 - [ ] `p2` - **ID**: `cpt-insightspec-qe-component-access-policies`
 
 ##### Why this component exists
 
-Row visibility is enforced where rows are planned, from facts identity supplies.
+Extends administrator-only access with dataset, row, and column policies.
 
 ##### Responsibility scope
 
 Per dataset: dataset access (roles or allow list); row policies (dimension bound to a caller
 attribute: visible people, team repositories); column policies (dropped or masked per role).
-Applied at plan time before any capability. *Needs design* (§4).
+Proposed enforcement occurs at plan time. Section 4 records unresolved decisions.
 
 ##### Responsibility boundaries
 
@@ -368,138 +384,66 @@ Never decides who the caller is; refuses when a needed fact is missing.
 - **PRD interface**: `cpt-insightspec-qe-interface-query`
 - **Technology**: REST/OpenAPI, JSON, RFC 9457 problem envelopes
 - **Location**: [openapi.json](../../components/backend/analytics/openapi.json) — the
-  authority for what is accepted today
+  authority for the supported wire schema
 
 **Endpoints Overview**:
 
 | Method | Path | Description | Stability |
 |--------|------|-------------|-----------|
-| `POST` | `/v1/query` | answer one question over a declared dataset | unstable (admin-only) |
+| `POST` | `/v1/query` | Execute a query over one dataset | unstable (admin-only) |
 
 Discovery — `GET /v1/datasets` — belongs to the [dataset registry](../datasets/DESIGN.md);
 the engine contributes only the request bounds each description carries.
 
-The request below is the design target; §4 says which members are shipped. Today's accepted
-members: `dataset`, `filters`, `group_by`, `aggregates` (with `filter`), `time` with
-`field`/`from`/`to`/`grain` (day, week, month), `order`, `limit`. Everything else is refused
-as unknown until its change lands.
+#### Supported request
 
-```jsonc
-POST /v1/query
-{
-  "dataset": "…",                       // or "saved": "<saved-query name>"
+| Member | Contract |
+|---|---|
+| `dataset` | One registered dataset key |
+| `filters` | Optional list, combined with AND |
+| `group_by` | Optional dimension or time axes |
+| `aggregates` | One or more named count, sum, avg, min, or max operations; each may have one filter |
+| `time` | Required inclusive `from` and `to`; optional declared `field` and day/week/month `grain` |
+| `order` | Optional result-column names with ascending or descending direction |
+| `limit` | Optional row limit, subject to declared bounds |
 
-  // Every list below is a discriminated union: the tag (`op`, `axis`, `fn`)
-  // selects the variant, and a variant carries exactly the operands it takes.
-  // An operand belonging to another variant is refused at deserialization, so
-  // no arity or "required together" rule is checked at runtime.
+`op`, `axis`, and `fn` select tagged variants. Unknown members and operands belonging to
+another variant are rejected during deserialization. The OpenAPI document is the complete
+wire schema; semantic validation additionally checks dataset fields, types, and limits.
 
-  "filters": [
-    { "op": "eq",       "field": "…", "value": … },
-    { "op": "in",       "field": "…", "values": [ … ] },
-    { "op": "gt",       "field": "…", "value": … },
-    { "op": "gte",      "field": "…", "value": … },
-    { "op": "lt",       "field": "…", "value": … },
-    { "op": "lte",      "field": "…", "value": … },
-    { "op": "between",  "field": "…", "low": …, "high": … },
-    { "op": "not_null", "field": "…" },
-    { "op": "like",     "field": "…", "value": "%/tests/%", "case_insensitive": false },
-    { "op": "match",    "field": "…", "value": "\\.(test|spec)\\.", "case_insensitive": false },
-    // Boolean groups nest any filter, including other groups. The top-level
-    // list is an implicit `all`.
-    { "op": "any", "filters": [ … ] },
-    { "op": "all", "filters": [ … ] },
-    { "op": "not", "filter": { … } }
-  ],
+#### Supported operations
 
-  "group_by": [
-    { "axis": "dimension", "field": "…" },
-    { "axis": "bin_width", "field": "…", "width": 10 },
-    { "axis": "bin_edges", "field": "…", "edges": [ … ] },
-    { "axis": "bin_count", "field": "…", "count": 20 },
-    { "axis": "time" },                                 // the time bucket as a group axis
-    { "axis": "time_part", "part": "hour|day_of_week|day_of_month|week_of_year|month_of_year|quarter_of_year" },
-    // A derived dimension: the first matching case names the group, `else`
-    // catches the rest. Cases take any filter shape over the named field.
-    { "axis": "classify", "name": "…", "field": "…",
-      "cases": [ { "label": "tests", "filter": { "op": "match", "value": "…" } } ],
-      "else": "other" }
-  ],
+- Filters: `eq`, `in`, `gt`, `gte`, `lt`, `lte`, `between`, `not_null`, `like`, `match`.
+- Dimensions compare as their string result values. Ordered comparisons require measurables;
+  pattern filters require dimensions. Membership lists must be non-empty.
+- `like` uses `%` and `_`; `match` uses unanchored RE2 patterns validated before execution.
+  Both are case-sensitive; a case-insensitive request option is planned.
+- `count` counts rows without a field. Other aggregates require a measurable and preserve null
+  for no observations. Conditional aggregates treat an unknown predicate as a non-match.
+- Time windows use UTC dates and inclusive endpoints. The time field defaults to the dataset
+  default. `time.grain` is required with a time axis and rejected without one. Buckets are
+  day, Monday-start week, or month. No dense fill is implemented.
+- Grouped dimensions with declared labels return a separate `<field>_label` column.
+- Ordering defaults to ascending and includes grouping tie-breakers. Fetching `limit + 1`
+  detects truncation.
 
-  "aggregates": [
-    // Every variant also takes the optional members `filter` (a conditional
-    // fold, one filter variant above), `fill` (zero|null — what an empty
-    // bucket reports on a dense axis) and `per_period` (last|first|min|max —
-    // semi-additive: fold inside each period first).
-    { "fn": "count",          "name": "…" },            // folds rows, reads no column
-    { "fn": "count_distinct", "name": "…", "field": "…", "approx": false },   // approx: HyperLogLog, cheap over wide columns
-    { "fn": "sum",            "name": "…", "field": "…" },
-    { "fn": "avg",            "name": "…", "field": "…" },
-    { "fn": "min",            "name": "…", "field": "…" },
-    { "fn": "max",            "name": "…", "field": "…" },
-    { "fn": "median",         "name": "…", "field": "…" },
-    { "fn": "quantile",       "name": "…", "field": "…", "q": 0.9 },
-    { "fn": "stddev",         "name": "…", "field": "…" }
-  ],
+#### Result and errors
 
-  "expressions": [ { "name": "…", "expr": "a / nullif(b, 0) * 100" } ],   // over aggregate names only
+Results contain `columns`, positional `rows`, and `flags.truncated`. Current column kinds are
+dimension, label, bucket, and aggregate; column types are text, number, and date.
+Cursors, freshness metadata, resolved relative
+windows, expression columns, and window columns are planned extensions.
 
-  "windows": [
-    // `of` is an aggregate or expression name; `over` names the partition
-    // dimensions. Only a moving average carries a frame.
-    { "fn": "running_sum", "name": "…", "of": "…", "over": ["…"] },
-    { "fn": "moving_avg",  "name": "…", "of": "…", "over": ["…"], "frame": 3 },
-    { "fn": "rank",        "name": "…", "of": "…", "over": ["…"] },
-    { "fn": "delta",       "name": "…", "of": "…", "over": ["…"] },
-    { "fn": "pct_change",  "name": "…", "of": "…", "over": ["…"] },
-    { "fn": "share",       "name": "…", "of": "…", "over": ["…"] }   // this row's part of its partition's total, 0..1
-  ],
+| Condition | Response |
+|---|---|
+| Semantic validation failure | 400 with field paths, reason codes, and explanations |
+| Non-administrator | Permission denial |
+| Fetched response exceeds byte cap | 400 with an `OUT_OF_RANGE` violation on `limit` |
+| Permit acquisition times out | 429 with retry metadata |
+| Unusable declarations, fetch failure, or assembly failure | 500 |
 
-  // The filter variants above, over aggregate and expression names.
-  "having": [ { "op": "gt", "target": "…", "value": … } ],
-
-  "time": {
-    "field": "…",                       // defaults to the dataset's declared default
-    // Exactly one of `from`/`to` or `relative`. A relative window resolves
-    // against the request's day in `timezone`, so a saved query stays current.
-    "from": "2026-01-01", "to": "2026-03-31",
-    "relative": { "last": 12, "unit": "day|week|month|quarter|year", "include_current": false },
-    //           or { "period": "this|previous", "unit": "…", "to_date": true }
-    "grain": "day|week|month|quarter|year",
-    "timezone": "Europe/Berlin",        // bucket boundaries in this zone; default UTC
-    "week_start": "monday|sunday",
-    "fiscal_year_start": "04-01",       // month-day; shifts quarter and year buckets and periods
-    "to_date": true,                    // clip every bucket at the equivalent point of the last one
-    "fill": "dense|sparse"              // dense: every bucket in range appears; sparse: only buckets with rows
-  },
-
-  "compare": { "offset": "period|month|quarter|year", "aligned": true },
-
-  "top": { "n": 5, "by": "…", "per": ["…"], "remainder": true },
-
-  "totals": [ [], ["team"] ],           // grouping sets: [] = grand total
-
-  "order": [ { "by": "…", "dir": "asc|desc" } ],
-  "limit": 1000,
-  "cursor": "…"
-}
-```
-
-Answer:
-
-```jsonc
-{
-  "columns": [ { "name": "…", "kind": "dimension|label|bucket|aggregate|expression|window|total_marker", "type": "…" } ],
-  "rows":    [ [ … ], … ],
-  "flags":   {
-    "truncated": true,          // more groups matched than `limit` admits; rows are the first `limit` in order
-    "incomplete_period": true,  // the window's last bucket is not over yet
-    "data_through": "2026-03-30T22:10:00Z",   // the newest event time the scanned relation holds
-    "resolved_window": { "from": "…", "to": "…" }  // what a relative window became, so a chart can label it
-  },
-  "next_cursor": "…"
-}
-```
+Deserialization failures occur before semantic planning and do not use its collected
+violation list. A rejected plan performs no warehouse query.
 
 ### 3.4 Internal Dependencies
 
@@ -510,13 +454,6 @@ Answer:
 | toolkit canonical errors | resource-scoped builders | violation, permission, quota envelopes |
 | toolkit security | `SecurityContext` | the tenant every scan binds |
 
-**Dependency Rules** (per project conventions):
-- No circular dependencies
-- Always use SDK modules for inter-module communication
-- No cross-category sideways deps except through contracts
-- Only integration/adapter modules talk to external systems
-- `SecurityContext` must be propagated across all in-process calls
-
 ### 3.5 External Dependencies
 
 #### ClickHouse
@@ -524,18 +461,11 @@ Answer:
 | Dependency Module | Interface Used | Purpose |
 |-------------------|---------------|---------|
 | executor | HTTP query, positional bindings, `JSONEachRow` | runs the scan |
-| declarations | column snapshot dumped at build time | validates datasets offline |
-
-**Dependency Rules** (per project conventions):
-- No circular dependencies
-- Always use SDK modules for inter-module communication
-- No cross-category sideways deps except through contracts
-- Only integration/adapter modules talk to external systems
-- `SecurityContext` must be propagated across all in-process calls
+| declarations | embedded column snapshot | validates datasets offline |
 
 ### 3.6 Interactions & Sequences
 
-#### Answer a question
+#### Execute a query
 
 **ID**: `cpt-insightspec-qe-seq-answer`
 
@@ -552,14 +482,17 @@ sequenceDiagram
     Validation ->> Declarations: dataset(key)
     Validation -->> API: QueryPlan | violations
     API ->> Compiler: compile(plan, tenant)
-    API ->> Executor: fetch (permit, byte ceiling)
+    API ->> API: Acquire scan permit
+    API ->> Executor: Fetch under byte ceiling
     Executor ->> ClickHouse: statement
     ClickHouse -->> Executor: rows
+    API ->> API: Release scan permit
     API ->> Answer: assemble
     API -->> Constructor: QueryAnswer | problem+json
 ```
 
-**Description**: a refusal returns before any connection is touched.
+**Description**: semantic validation completes before warehouse execution. The permit covers
+fetching and decoding, and is released before answer assembly.
 
 ### 3.7 Database schemas & tables
 
@@ -575,79 +508,65 @@ hook's `dbt run --select tag:gold`.
 
 ## 4. Additional context
 
-### Capability semantics
+### Capability status and proposed semantics
 
-Each capability: request shape, answer shape, null rule, cap, refusal. Refusals are typed
-violations naming the field.
-
-Inventory. *Shipped*: served today. *Specified*: shape settled, awaits its change. *Needs
-design*: sketch; the section says what is open. Nothing leaves this table without a note.
+**Implemented** capabilities are accepted by the current API. **Specified, not implemented**
+capabilities retain their proposed semantics below. **Needs design** identifies unresolved
+architecture. Proposed request members are rejected until implemented.
 
 | Capability | Status |
 |---|---|
-| Filters: `eq`, `in`, comparisons, `between`, `not_null` | shipped |
-| Pattern filters: `like`, `match` | shipped |
-| Boolean filter groups: `any`, `all`, `not` | specified |
-| Case-insensitive patterns | specified |
-| Dimension and time group axes | shipped |
-| Date-part axes | specified |
-| Bins as dimensions | specified |
-| Derived dimensions (`classify`) | specified |
-| `count`, `sum`, `avg`, `min`, `max` with a conditional filter | shipped |
-| `count_distinct` (exact and approximate), `median`, `quantile`, `stddev` | specified |
-| Expressions over aggregate names | specified |
-| Windows: running sum, moving average, rank, delta, percent change | specified |
-| Share of total | specified |
-| `having` | specified |
-| Top groups with remainder | specified |
-| Dense fill | specified |
-| Fixed window, UTC, day/week/month grain | shipped |
-| Relative windows | specified |
-| Timezone, week start, to-date, compare windows | specified |
-| Fiscal calendars | specified |
-| Grouping sets and totals | specified |
-| Semi-additive aggregates | specified |
-| Truncation flag | shipped |
-| Cursors | specified |
+| Filters: `eq`, `in`, comparisons, `between`, `not_null` | implemented |
+| Pattern filters: `like`, `match` | implemented |
+| Boolean filter groups: `any`, `all`, `not` | specified, not implemented |
+| Case-insensitive patterns | specified, not implemented |
+| Dimension and time group axes | implemented |
+| Date-part axes | specified, not implemented |
+| Bins as dimensions | specified, not implemented |
+| Derived dimensions (`classify`) | specified, not implemented |
+| `count`, `sum`, `avg`, `min`, `max` with a conditional filter | implemented |
+| `count_distinct` (exact and approximate), `median`, `quantile`, `stddev` | specified, not implemented |
+| Expressions over aggregate names | specified, not implemented |
+| Windows: running sum, moving average, rank, delta, percent change | specified, not implemented |
+| Share of total | specified, not implemented |
+| `having` | specified, not implemented |
+| Top groups with remainder | specified, not implemented |
+| Dense fill | specified, not implemented |
+| Fixed window, UTC, day/week/month grain | implemented |
+| Relative windows | specified, not implemented |
+| Timezone, week start, to-date, compare windows | specified, not implemented |
+| Fiscal calendars | specified, not implemented |
+| Grouping sets and totals | specified, not implemented |
+| Semi-additive aggregates | specified, not implemented |
+| Truncation flag | implemented |
+| Cursors | specified, not implemented |
 | Rows behind a cell (drilldown shape) | needs design |
 | Multiple datasets in one query over conformed dimensions | needs design |
 | Runtime-defined datasets | [datasets](../datasets/DESIGN.md) |
 | Discovery of what can be asked | [datasets](../datasets/DESIGN.md) |
-| Freshness (`data_through`) | specified |
-| Saved queries | specified |
+| Freshness (`data_through`) | specified, not implemented |
+| Saved queries | specified, not implemented |
 | Access policies: dataset, row, column | needs design |
 | Enrichment lookups (customer-declared dimensions) | needs design |
 | Funnels and retention | needs design |
 
-#### Filters and having
+#### Post-aggregation filters (specified)
 
-Row filters narrow the scan before aggregation; `having` narrows groups after it over
-aggregate and expression names. Unknown field or target → refused with the admissible set.
-Values always bind.
+`having` filters groups by aggregate or expression names after aggregation. Unknown targets
+produce violations listing available names. Operands remain bound parameters.
 
-Arity is enforced by shape: each operator is a variant with exactly its operands, so "two
-values for `eq`" cannot be expressed. Only `in` has a length to check: 1 to the cap.
-
-A dimension compares as the text the answer reports: `eq`, `in`, `not_null`, `like`
-(`%`, `_`), `match` (RE2, unanchored). Patterns bind, are length-capped, and `match` is
-compiled at validation. Ordered tests on a dimension and patterns on a measurable are refused
-naming the operator.
-
-Every stable-valued column is a dimension, `file_path` and `commit_hash` included; caps
-bound a wide group-by like a narrow one.
-
-#### Boolean filter logic
+#### Boolean filter logic (specified)
 
 Top-level `filters` is an implicit `all`. `any`, `all`, `not` are filter variants: nest
 anywhere a filter may appear. Compile to parenthesised predicates, never reordered. Caps:
 total filters and nesting depth. Empty groups refused. `case_insensitive` → `ILIKE` or a
 case-insensitive regex; default case-sensitive.
 
-#### Multiple aggregates and conformed dimensions
+#### Aggregate naming and cross-dataset alignment
 
-`count` folds rows (no field); the others read a measurable. Names are unique, snake_case,
-and also unique against group columns. Several datasets in one request align on shared group
-axes; see *Multiple datasets*. Caps: datasets per query, aggregates per query.
+`count` counts rows without a field; numeric aggregates read a measurable. Names are unique, snake_case,
+and also unique against group columns. Cross-dataset alignment is not implemented; proposed
+behavior and open decisions appear under *Multiple datasets in one query*.
 
 #### Expressions
 
@@ -659,7 +578,9 @@ propagates; division by zero is NULL via `nullif`.
 
 Over the answer's buckets after aggregation, partitioned by named dimensions: running sum,
 moving average with a bounded frame, rank, delta, percent change. Refused over a sparse axis
-unless fill is dense. First bucket's delta is NULL.
+unless fill is dense. The first bucket's delta is null. Proposed variants are `running_sum`,
+`moving_avg`, `rank`, `delta`, and `pct_change`, with `name`, `of`, and partition dimensions
+in `over`. Only `moving_avg` accepts a bounded `frame`.
 
 #### Top groups and the remainder
 
@@ -677,22 +598,26 @@ null) says what an empty bucket reports. Sparse is the default.
 
 Boundaries in the query's timezone with its week start. `to_date` clips every bucket at the
 point the last one reached. `compare.aligned` shifts by whole periods keeping the day count.
-The answer flags an incomplete final bucket.
+`flags.incomplete_period` identifies an incomplete final bucket. Proposed time grains add
+quarter and year; `compare.offset` selects period, month, quarter, or year.
 
 Windows are fixed (`from`/`to`) or relative: last N units (optionally including the current
 one) or a calendar period (`this`/`previous` unit, `to_date`). Resolved at plan time in the
 query zone; the answer reports `resolved_window`. Same span cap. `fiscal_year_start` shifts
-quarter and year buckets and periods; tenant settings supply defaults.
+quarter and year buckets and periods; tenant settings supply defaults. Proposed members
+include `relative.last`, `unit`, `include_current`, or `period` with `to_date`; fixed and
+relative windows are mutually exclusive. The proposed timezone default is UTC.
 
 #### Grouping sets and totals
 
 `totals` lists grouping sets; `[]` is the grand total. Total rows carry a marker column and
-sort after detail rows.
+sort after detail rows, using the proposed `total_marker` column kind.
 
 #### Bins as dimensions
 
 Numeric or temporal field binned by fixed `width`, explicit `edges`, or a `count` of equal
-buckets. A bin is an ordinary group axis. Distributions are one bin axis plus a count.
+buckets, using `bin_width`, `bin_edges`, or `bin_count` axis variants. A bin is a group axis;
+a distribution combines a bin axis with a count.
 
 #### Date parts as axes
 
@@ -710,7 +635,7 @@ length. Same `name` twice is a duplicate.
 
 `count_distinct` over a dimension; exact by default, `approx: true` uses HyperLogLog and the
 column type says so. Empty group → 0. `median`, `quantile`, `stddev` fold measurables and
-report NULL over nothing.
+return null over no observations; `quantile` takes a `q` parameter.
 
 #### Share of total
 
@@ -725,15 +650,16 @@ and headcount shapes.
 #### Cursors over grouped answers
 
 An answer past `limit` returns a keyset cursor over its own order, made total with the group
-columns. Bound to the query fingerprint; a cursor with a different query is refused.
+columns. The request carries `cursor`; the response returns `next_cursor`. Cursors are bound
+to the query fingerprint; reuse with a different query is rejected.
 
-#### Freshness
+#### Freshness (specified)
 
 `flags.data_through`: newest event time the scanned relation holds for the tenant.
 
-#### Access policies
+#### Access policies (needs design)
 
-*Needs design.* Identity supplies the caller context (subject, roles, visible people, team
+**Needs design.** Identity supplies the caller context (subject, roles, visible people, team
 memberships, tenant settings); the engine enforces declared policies at plan time. Three
 kinds: dataset access (roles or allow list); row policy (dimension ← caller attribute, e.g.
 `author_email ← visible_people`, `repository ← team_repositories`), applied to every scan
@@ -744,34 +670,35 @@ until the first policy lands.
 
 #### Enrichment lookups
 
-*Needs design.* Customer relation keyed on a conformed dimension (repository → product,
+**Needs design.** Customer relation keyed on a conformed dimension (repository → product,
 person → cost centre), declared as a lookup, joined at plan time; its columns become
 dimensions on every dataset sharing the key. Non-unique key refused (fan-out); unmatched key
 → absent sentinel. Open: upload/sync path; tenant- vs per-user scope.
 
 #### Funnels and retention
 
-*Needs design.* Aggregate families over datasets declaring an actor key and event time,
+**Needs design.** Aggregate families over datasets declaring an actor key and event time,
 backed by `windowFunnel`, `retention`, `sequenceMatch`. Funnel: ordered step filters plus a
 window → actors reaching each step. Retention: entry filter, return filter, period. Group by
 any dimension. Open: strict vs any-order steps; exposing a step's actor set for drilldown.
 
 #### Rows behind a cell
 
-*Needs design.* Row-level shape over the same dataset, filters and window: declared columns
-instead of groups and folds, `row_identity` as page key, cursors, sort by any reported
+**Needs design.** Row-level shape over the same dataset, filters and window: declared columns
+instead of groups and aggregates, `row_identity` as page key, cursors, sort by any reported
 column. Open: mode of `POST /v1/query` or sibling route (preference: sibling); how a cell's
 group values become filters.
 
 #### Multiple datasets in one query
 
-*Needs design.* Several datasets with conformed dimensions; one scan each, aligned on shared
+**Needs design.** Several datasets with conformed dimensions; one scan each, aligned on shared
 axes. Open: declaring conformance; refusing mismatched grains; making fan-out impossible.
 Row-level joins stay out.
 
-### Saved queries
+### Saved queries (specified, not implemented)
 
-A saved query is a named request with a dataset and a version. Read re-runs validation; a
+A saved query is a named request with a dataset and a version, selected through the proposed
+`saved` request member instead of `dataset`. Read re-runs validation; a
 dataset change that invalidates it is a refusal naming the field, never a reinterpretation.
 On run, a request may *replace* `time`, `order`, `limit`, `cursor`, `top`, `totals`,
 `fill`, `compare`; may *append* `filters` (AND-ed); may not touch `dataset`, `group_by`,
@@ -785,10 +712,12 @@ shipped set of saved queries.
 - OData or GraphQL as the native contract.
 - Chart-type-specific endpoints; a chart the contract cannot feed is a contract gap.
 - Path analysis and sessionization.
-- Joins to relations nobody declared: that is the SQL console, admin-only.
 
 ## 5. Traceability
 
 - **PRD**: [PRD.md](PRD.md)
 - **Migration map**: [MIGRATION.md](MIGRATION.md)
 - **Contract**: [openapi.json](../../components/backend/analytics/openapi.json)
+
+**Revision 2.2**: separated the supported API from proposed extensions, consolidated query
+semantics and limits, and clarified validation, execution, and authorization boundaries.
