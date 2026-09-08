@@ -129,10 +129,20 @@ The system **MUST** {clear description of what to implement}.
 
 ## 7. Testing
 
-{1-3 framing sentences: the feature shape (new capability / port / migration), what leads the risk, and where the checks run. For a port or migration, name the parity bar here.}
-All {N}/{N} acceptance criteria covered: {criterion-id} → 1,4 · {criterion-id} → 2,3 · …
+**Feature**: `cpt-{system}-feature-{slug}`
 
-- [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect, one sentence; the expect half restates the criterion's outcome; a number only where the number is the oracle}.
-- [ ] 2. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect}.
+{Brief scope, primary risk, fixtures and test boundaries. This Testing section is
+an Insight extension; keep Acceptance Criteria above in the canonical kit form.}
 
-**{Vector with nothing to check}** — n/a: {one line saying why}.
+- [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
+  **Requirements**: `cpt-{system}-nfr-{slug}`.
+  **Test**: {exact test link when implemented, otherwise "Not implemented"}.
+- **deferred** 2. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
+  **Requirements**: `cpt-{system}-nfr-{other-slug}`.
+  **Blocked by**: {owner, reason and resolution point}.
+
+**{Vector with no applicable obligation}** — n/a: {reason}.
+
+{Each requirement above is also declared in section 1.2. Implemented tests cite
+the feature ID, FEATURE path and scenario number, and carry the suite's vector
+attribution. Passing evidence separately identifies revision and conditions.}

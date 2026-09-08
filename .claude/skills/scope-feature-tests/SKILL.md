@@ -24,7 +24,7 @@ Agreed requirements determine expected outcomes. Inspecting the implementation a
 reveals boundaries, risks and disagreements that a requirements-only pass can miss. Use those
 findings to propose missing criteria and focus coverage; resolve specification disagreements
 before changing expectations. An unimplemented promise remains a gap until the author changes
-the contract. Follow the grounding contract in `quality-vector-tests` section 2a.
+the contract. Follow the grounding contract in `quality-vector-tests` section 2.
 
 ## Workflow
 
@@ -56,15 +56,14 @@ merge/split), do not scope to a hand-count of items — scope the **machinery an
 hold regardless of the final list (registry-driven harnesses, sum/parity invariants). A scope
 pinned to today's list rots the moment the list changes; one pinned to invariants survives it.
 
-### 1b. Review the acceptance criteria before scoping against them
-Run the AC review the `quality-vector-tests` skill's step 1 owns — the testable / complete /
-real three-count check, the corrected AC-1..N list proposed to the user *before* anything is
-designed against it, deferred ACs kept with an explicit reason and owner. Everything downstream
-(the groups, the gate, the Testing section `quality-vector-tests` writes) maps to the agreed
-set. Two scoping-side caveats on top of that contract: the **real** check usually needs step
-2's grounding to answer — treat the review as provisional until grounding confirms it — and a
-deferred AC can stay in scope as an executable `xfail` gate (see the boundary traps in step 5)
-instead of dropping out.
+### 1b. Resolve the feature's requirement scope
+Use `quality-vector-tests` step 1 to resolve the owning FEATURE and its section
+1.2 FR/NFR references, including inherited obligations. Read Acceptance Criteria
+as completion conditions; keep the kit's checklist form. Test groups attach to
+the feature and its upstream requirements, without an imposed AC numbering or
+coverage map. Record missing requirements and deferred behaviour with owner,
+reason and resolution point. Grounding in step 2 may reveal disagreements;
+resolve them before claiming a test group's coverage.
 
 ### 2. Ground it in the real code and data flow
 This is the core. Investigate this repo — `src/backend`, `src/ingestion` (and its dbt),
@@ -88,7 +87,7 @@ scope from memory or the issue alone. Look at:
   failures that are real become checks. Each one carries the **expected degraded behaviour** as
   its oracle ("the error banner shows", never "doesn't crash") — and if the product defines no
   degraded behaviour, that is a design finding to raise, not a check to invent. This axis earns
-  its place because error-handling paths have no requirement to derive from: AC-driven tests
+  its place because error-handling paths have no requirement to derive from: requirement-driven tests
   structurally miss them. Note the tooling split: *down/slow* need fault injection (kill or pause
   a container, a latency proxy); *wrong/stale data* is a fixture concern, not chaos tooling.
 
@@ -182,10 +181,10 @@ cases — if you're writing "test that email with trailing space unifies," you'v
 
 **Give each group a home: the target component, then the cheapest suite that can falsify it.**
 The suite menu depends on the component the group targets — take it from the per-component
-layer table in `quality-vector-tests` step 4 rather than from memory (the ladders differ by
+layer table in `quality-vector-tests` step 3 rather than from memory (the ladders differ by
 backend function, and auth claims can terminate in `stand-ui`). The tag names the suite the
 tests will land in, which is what makes a coverage gap checkable later. Suite tags and
-criterion ids are exempt from the strip-internal-identifiers rule below — they are the
+feature and requirement ids are exempt from the strip-internal-identifiers rule below — they are the
 tracking scheme itself. Browser journeys pay a
 permanent flake tax: a stand-ui group must say what is user-visible about the claim that a
 cheaper suite cannot observe.
@@ -330,7 +329,7 @@ resolve-only sources, or the key axis of variation>.
 
 ## Plan
 
-**1. <Verb> <the action>** (<suite> · the AC-<n> it proves) — <what to set up → what to assert;
+**1. <Verb> <the action>** (<suite> · owning feature and FR/NFR references) — <what to set up → what to assert;
 matrix only where it adds signal>.
 **2. <Verb> …** — <one line>.
 ... (~5–8 steps; reusable harnesses first, then the gate, then apply per case)
@@ -338,7 +337,7 @@ matrix only where it adds signal>.
 ## Acceptance
 - [ ] <the coverage/differential gate that actually proves it — e.g. per-source coverage measured;
       differential tagged exact/known-diff(direction)/merge, never blanket zero-diff>
-- [ ] every criterion of the reviewed AC set maps to a test group (deferred ones carry a reason
+- [ ] every applicable feature requirement maps to a test group or shared evidence (deferred ones carry a reason
       and an owner)
 - [ ] <invariant / registry-driven / sequenced-UI checks as they apply>
 ```

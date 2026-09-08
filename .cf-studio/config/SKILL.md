@@ -18,14 +18,17 @@ marker, declared in `tests/pyproject.toml` and checked at collection.
   NFR ID), and `**Verification**` (shared evidence and owner). Only genuinely inapplicable
   obligations belong in section 6.2; inheriting a target unchanged is not an exclusion.
 - **FEATURE** — `## 7. Testing` carries one checkbox scenario per line, each with exactly one
-  vector, one suite tag, and the acceptance criterion it covers, written as do → expect.
+  vector and one suite tag, written as do → expect. The owning feature ID is declared once;
+  scenarios cite PRD FR/NFR IDs from the canonical section 1.2 Requirements field and link to
+  exact tests when implemented. Tests cite the feature ID, path and stable scenario number.
+  Keep section 6 Acceptance Criteria in the canonical kit form, without imposed AC IDs or ratios.
   Author it with the `quality-vector-tests` skill in `.claude/skills/`, which owns the format,
   the vector mapping and the suite table. A vector with nothing to check says `n/a` with a
   reason.
 
 For new artifacts and Testing sections added through this workflow, apply the quality-vector
 checks in the PRD and FEATURE checklists after CFS validation. The rollup reports declarations,
-not test results; verify targets, rationale, upstream references, AC coverage and evidence
+not test results; verify targets, rationale, upstream references, feature-to-test links and evidence
 semantically. Existing artifacts are not required to adopt these additions until explicitly
 migrated. Agreed requirements determine scenario expectations; code inspection discovers risks
 and disagreements to resolve in the specification, never silently changes the expected outcome.

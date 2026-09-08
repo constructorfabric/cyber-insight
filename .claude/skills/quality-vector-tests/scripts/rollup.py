@@ -10,8 +10,8 @@ from pathlib import Path
 VECTORS = ("Efficiency", "Reliability", "Performance", "Security", "Versatility")
 NFR_ID = r"cpt-[a-z0-9-]+-nfr-[a-z0-9-]+"
 SCENARIO = re.compile(
-    r"^- (?:\[[ xX]\]|(\*\*deferred\*\*)) \d+\. \*\*.+?\*\* — ([A-Za-z]+) · "
-    r"[a-z][a-z0-9-]* · .+? — .+$"
+    r"^- (?:\[[ xX]\]|(\*\*deferred\*\*)) \d+\. \*\*.+?\*\*(?: \*\(main gate\)\*)? — ([A-Za-z]+) · "
+    r"[a-z][a-z0-9-]*(?: · .+?)? — .+$"
 )
 
 
