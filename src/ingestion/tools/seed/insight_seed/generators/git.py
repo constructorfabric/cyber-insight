@@ -232,6 +232,10 @@ def seed_class_git_file_changes(
         "repo_slug",
         "source_id",
         "tenant_id",
+        # INVARIANT: equals the commits' data_source. Gold attaches a file
+        # change to its commit on (tenant_id, data_source, commit_hash); left
+        # unwritten it defaults to '' and no seeded change reaches any commit.
+        "data_source",
         "file_path",
         "lines_added",
         "lines_removed",
@@ -281,6 +285,7 @@ def seed_class_git_file_changes(
                             REPO_SLUG,
                             SOURCE_ID,
                             tenant_uuid,
+                            "insight_github",
                             path,
                             added,
                             removed,

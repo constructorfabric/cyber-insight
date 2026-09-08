@@ -2365,6 +2365,107 @@
         ],
         "type": "object"
       },
+      "QueryDataset": {
+        "properties": {
+          "dimensions": {
+            "description": "The axes a query may group by, and filter on beside the measurables.",
+            "items": {
+              "$ref": "#/components/schemas/QueryDatasetDimension"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "measurables": {
+            "description": "The columns an aggregate may fold.",
+            "items": {
+              "$ref": "#/components/schemas/QueryDatasetMeasurable"
+            },
+            "type": "array"
+          },
+          "time_fields": {
+            "description": "The columns a query may bound its window by, and bucket on.",
+            "items": {
+              "$ref": "#/components/schemas/QueryDatasetTimeField"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "time_fields",
+          "dimensions",
+          "measurables"
+        ],
+        "type": "object"
+      },
+      "QueryDatasetDimension": {
+        "properties": {
+          "absent_value": {
+            "description": "The value absent rows group under, and a filter matches them by.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "label": {
+            "description": "The answer column carrying this dimension's display label when it is\na group axis; absent when the dataset declares none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
+      "QueryDatasetList": {
+        "properties": {
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/QueryDataset"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "datasets"
+        ],
+        "type": "object"
+      },
+      "QueryDatasetMeasurable": {
+        "properties": {
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
+      "QueryDatasetTimeField": {
+        "properties": {
+          "default": {
+            "description": "The field a query's window binds to when it names none.",
+            "type": "boolean"
+          },
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "default"
+        ],
+        "type": "object"
+      },
       "ReportCell": {
         "oneOf": [
           {
@@ -4641,6 +4742,133 @@
           }
         ],
         "summary": "Recent syncs of one connector, newest first"
+      }
+    },
+    "/v1/datasets": {
+      "get": {
+        "operationId": "analytics_api.datasets.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryDatasetList"
+                }
+              }
+            },
+            "description": "The declared datasets"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List the datasets a query may be built over"
+      }
+    },
+    "/v1/datasets/{key}": {
+      "get": {
+        "operationId": "analytics_api.datasets.get",
+        "parameters": [
+          {
+            "description": "The dataset key, as a query names it",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryDataset"
+                }
+              }
+            },
+            "description": "The declared dataset"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Describe one dataset a query may be built over"
       }
     },
     "/v1/feedback": {

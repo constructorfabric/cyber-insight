@@ -728,6 +728,30 @@ class PutSettingsRequest(BaseModel):
     system_prompt: str
 
 
+class QueryDatasetDimension(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    absent_value: str | None = Field(None, description='The value absent rows group under, and a filter matches them by.')
+    field: str
+    label: str | None = Field(None, description="The answer column carrying this dimension's display label when it is\na group axis; absent when the dataset declares none.")
+
+
+class QueryDatasetMeasurable(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str
+
+
+class QueryDatasetTimeField(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    default: bool = Field(..., description="The field a query's window binds to when it names none.")
+    field: str
+
+
 class ReportCell(RootModel[str | float]):
     root: str | float
 
@@ -1326,6 +1350,23 @@ class MetricSnapshot(BaseModel):
     trend: list[float | None] | None = Field(None, description="The sparkline's readings, oldest first.")
     until: str = Field(..., description='Inclusive end of the window, `YYYY-MM-DD`.')
     value: str = Field(..., description='The formatted value the tile shows.')
+
+
+class QueryDataset(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    dimensions: list[QueryDatasetDimension] = Field(..., description='The axes a query may group by, and filter on beside the measurables.')
+    key: str
+    measurables: list[QueryDatasetMeasurable] = Field(..., description='The columns an aggregate may fold.')
+    time_fields: list[QueryDatasetTimeField] = Field(..., description='The columns a query may bound its window by, and bucket on.')
+
+
+class QueryDatasetList(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    datasets: list[QueryDataset]
 
 
 class ReportExportRequest(BaseModel):

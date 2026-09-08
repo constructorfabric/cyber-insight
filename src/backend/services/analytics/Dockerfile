@@ -26,6 +26,7 @@ COPY libs/insight-log-context/Cargo.toml ./libs/insight-log-context/Cargo.toml
 COPY libs/authenticator-sdk/Cargo.toml ./libs/authenticator-sdk/Cargo.toml
 COPY libs/insight-migration/Cargo.toml ./libs/insight-migration/Cargo.toml
 COPY services/analytics/Cargo.toml ./services/analytics/Cargo.toml
+COPY services/analytics/build.rs ./services/analytics/build.rs
 COPY services/authenticator/Cargo.toml ./services/authenticator/Cargo.toml
 # identity-resolution is a workspace member; cargo must load its manifest to
 # resolve the workspace even though this image never builds or ships it.
@@ -35,6 +36,12 @@ COPY services/previews/Cargo.toml ./services/previews/Cargo.toml
 # routegen is a workspace member (build-time CLI); cargo must load its manifest
 # to resolve the workspace even though this image never builds it.
 COPY tools/routegen/Cargo.toml ./tools/routegen/Cargo.toml
+
+# The datasets folder lives outside this build context: it arrives as a named
+# additional context so the analytics build script can embed every shipped
+# dataset declaration.
+COPY --from=datasets . /datasets
+ENV DATASETS_DIR=/datasets
 
 RUN mkdir -p libs/insight-clickhouse/src && echo "" > libs/insight-clickhouse/src/lib.rs && \
     mkdir -p libs/insight-http-metrics/src && echo "" > libs/insight-http-metrics/src/lib.rs && \

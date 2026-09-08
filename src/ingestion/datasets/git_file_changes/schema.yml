@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: git_file_changes
+    description: >
+      Authored file changes: one row per path and normalized (lower-cased)
+      change type a commit touched, deduplicated by change content so a
+      cherry-pick or a squashed branch counts once. Two content identities under
+      one such key fold into one row carrying the sum of their lines. A projection of the shared file-change stage, so
+      the changes attach to the same surviving commits the metric evidence
+      counts. Commit context (branch_scope, repository, person, time) is
+      inherited from the commit, never recomputed.
+    columns:
+      - name: tenant_id
+        description: "Owning tenant"
+        tests:
+          - not_null
+      - name: source_id
+        description: "Connector instance the surviving commit was collected from"
+      - name: project_key
+        description: "Project of the surviving commit, as the source names it"
+      - name: repo_slug
+        description: "Repository of the surviving commit, as the source names it"
+      - name: commit_hash
+        description: "Commit the change belongs to"
+        tests:
+          - not_null
+      - name: file_path
+        description: "Path of the changed file within the repository"
+        tests:
+          - not_null
+      - name: author_email
+        description: "Lowercased source-native author email; the entity a query resolves"
+        tests:
+          - not_null
+      - name: author_name
+        description: "Display name the source recorded for the author; the label of author_email"
+      - name: authored_at
+        description: "When the change's commit was authored; the dataset's event time"
+      - name: authored_date
+        description: "Authored day, the partition key"
+      - name: category
+        description: "What kind of file changed: code | test | config | docs | vendored | other"
+      - name: file_extension
+        description: "Lowercased file extension, or __unknown__"
+      - name: change_type
+        description: "Lowercased change kind (added, modified, renamed, deleted), or __unknown__"
+      - name: branch_scope
+        description: "Inherited from the commit: default | non_default"
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['default', 'non_default']
+      - name: category_label
+        description: "Display label of category"
+      - name: file_extension_label
+        description: "Display label of file_extension"
+      - name: change_type_label
+        description: "Display label of change_type"
+      - name: repository
+        description: "Repository key the commit belongs to; inherited from the commit"
+      - name: project
+        description: "Project key the commit belongs to; inherited from the commit"
+      - name: source
+        description: "Git source (github, gitlab, bitbucket_cloud); inherited from the commit"
+      - name: branch_scope_label
+        description: "Display label of branch_scope"
+      - name: repository_label
+        description: "Display label of repository"
+      - name: project_label
+        description: "Display label of project"
+      - name: source_label
+        description: "Display label of source"
+      - name: lines_added
+        description: "Lines this change added"
+      - name: lines_removed
+        description: "Lines this change removed"

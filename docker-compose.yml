@@ -204,6 +204,8 @@ services:
     build:
       context: src/backend
       dockerfile: services/analytics/Dockerfile
+      additional_contexts:
+        datasets: src/ingestion/datasets
     depends_on:
       mariadb: {condition: service_healthy, required: false}
     environment:
@@ -231,6 +233,8 @@ services:
     build:
       context: src/backend
       dockerfile: services/analytics/Dockerfile
+      additional_contexts:
+        datasets: src/ingestion/datasets
     depends_on:
       # required: false → compose skips this dependency when the local
       # profile isn't active (external MariaDB / ClickHouse modes).
