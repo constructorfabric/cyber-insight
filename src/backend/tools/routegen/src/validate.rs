@@ -78,9 +78,12 @@ pub fn validate(config: &RouteConfig) -> Result<(), ValidationErrors> {
             Authentication::Session if !p.starts_with("/api/") => errors.push(format!(
                 "session-authenticated route prefix '{p}' must start with '/api/'"
             )),
-            Authentication::Bearer if p != "/mcp" => errors.push(format!(
-                "bearer-authenticated route prefix '{p}' must be exactly '/mcp'"
-            )),
+            Authentication::Bearer if !crate::schema::MCP_PREFIXES.contains(&p) => {
+                errors.push(format!(
+                    "bearer-authenticated route prefix '{p}' must be one of {}",
+                    crate::schema::MCP_PREFIXES.join(", ")
+                ));
+            }
             Authentication::InstanceToken if !p.starts_with("/api/") => errors.push(format!(
                 "instance-token route prefix '{p}' must start with '/api/'"
             )),
