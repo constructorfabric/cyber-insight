@@ -34,6 +34,7 @@ runs AS (
         branch,
         started_at,
         duration_s,
+        data_source,
         toDate(started_at) AS metric_date,
         -- Whether the run's head commit was ever collected by the commits
         -- stream. PR runs build synthetic merge refs and fork commits the
@@ -68,11 +69,14 @@ run_rows AS (
         started_at,
         duration_s,
         commit_known,
+        replaceOne(data_source, 'insight_', '') AS source_value,
+        {{ git_source_label('source_value') }} AS source_label,
         -- Labels are what surfaces display; the results builder substitutes
         -- a literal "Unknown" for a NULL label, so every dimension carries one.
         CAST(
             [
                 tuple('repository', repo_full_name, toNullable(repo_full_name)),
+                tuple('source', source_value, source_label),
                 tuple('pipeline', pipeline_key, toNullable(pipeline_name)),
                 tuple('trigger', trigger_category, toNullable(trigger_category)),
                 tuple('outcome', outcome, toNullable(outcome)),
@@ -117,9 +121,12 @@ deployment_rows AS (
             d.is_transient = 1, 'preview',
             'static'
         ) AS env_kind,
+        replaceOne(d.data_source, 'insight_', '') AS source_value,
+        {{ git_source_label('source_value') }} AS source_label,
         CAST(
             [
                 tuple('repository', d.repo_full_name, toNullable(d.repo_full_name)),
+                tuple('source', source_value, source_label),
                 tuple('environment', d.environment, toNullable(d.environment)),
                 tuple('outcome', if(coalesce(o.state, '') = '', 'pending', o.state), toNullable(if(coalesce(o.state, '') = '', 'pending', o.state))),
                 tuple(
@@ -138,7 +145,8 @@ deployment_rows AS (
             environment,
             is_production,
             is_transient,
-            created_at
+            created_at,
+            data_source
         FROM {{ ref('class_git_deployments') }} FINAL
         WHERE created_at IS NOT NULL
     ) AS d
@@ -170,6 +178,7 @@ SELECT
     CAST(NULL AS Nullable(String)) AS subject_key,
     run_dimensions AS dimensions,
     map(
+        'source_id', coalesce(toString(source_id), ''),
         'repository', repo_full_name,
         'pipeline', pipeline_key,
         'branch', branch,
@@ -217,6 +226,7 @@ SELECT
     CAST(NULL AS Nullable(String)) AS subject_key,
     deployment_dimensions AS dimensions,
     map(
+        'source_id', coalesce(toString(source_id), ''),
         'repository', repo_full_name,
         'environment', environment,
         'outcome', outcome,
