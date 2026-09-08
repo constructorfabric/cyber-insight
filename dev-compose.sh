@@ -1609,8 +1609,10 @@ for dbt-built gold data rather than for containers to report healthy.
                              the front-built nginx. Backend stays pinned.
           --build            Both.
           --skip-build       With --build-backend: mount binaries already in
-                             deploy/compose/build/ instead of compiling. The
-                             caller owns their freshness.
+                             deploy/compose/build/ instead of compiling, over
+                             runtime images taken from the chart pins (the
+                             gateway image still builds from this tree). The
+                             caller owns the binaries' freshness.
 
           `up` refuses to pin a tree that differs from origin/main and names
           the flag to pass — but only when origin/main is in the checkout. A
@@ -1709,6 +1711,29 @@ test_stand_pull_backends() {
       echo "       --build to build from source deliberately." >&2
       return 1; }
     update_env_var "$TEST_STAND_ENV_FILE" "$var" "$image"
+  done
+}
+
+# With --skip-build the caller supplies the binaries, and compose must not
+# bake the dev images just to produce a compiled-in binary the bind-mount
+# shadows. Tag the chart-pinned images under the compose default names so
+# `up` finds them and skips the build. The gateway stays out: routegen bakes
+# routes.yaml into nginx.conf at image-build time, so a routing change is
+# only exercised by an image built from this tree.
+test_stand_prime_dev_images() {
+  local entry var chart name image local_tag
+  for entry in "${TEST_STAND_PINNED_BACKENDS[@]}"; do
+    IFS='|' read -r var chart name <<<"$entry"
+    [[ "$name" == "gateway" ]] && continue
+    local_tag="insight-${name}:dev"
+    docker image inspect "$local_tag" >/dev/null 2>&1 && continue
+    image="$(test_stand_pinned_image "$chart" "$name")" || return 1
+    echo "    ${local_tag} <- ${image} (runtime layers only; the binary is bind-mounted)"
+    with_retries docker pull --quiet "$image" >/dev/null || {
+      echo "ERROR: cannot pull $image to stand in for $local_tag under --skip-build." >&2
+      return 1
+    }
+    docker tag "$image" "$local_tag"
   done
 }
 
@@ -2157,6 +2182,9 @@ cmd_test_stand() {
       # the env file.
       case "$backend_mode" in
         source)
+          if [[ "$skip_build" == "true" ]]; then
+            test_stand_prime_dev_images || return 1
+          fi
           echo "=== the backend is compiled from this tree, not pulled ==="
           ;;
         prebuilt)
@@ -2226,7 +2254,12 @@ cmd_test_stand() {
 
       test_stand_prepare_env "$mbuild_frontend" || return 1
       case "$mbackend_mode" in
-        source)   echo "=== the backend is compiled from this tree, not pulled ===" ;;
+        source)
+          if [[ "$mskip_build" == "true" ]]; then
+            test_stand_prime_dev_images || return 1
+          fi
+          echo "=== the backend is compiled from this tree, not pulled ==="
+          ;;
         prebuilt) test_stand_use_prebuilt_backends || return 1 ;;
         pinned)   test_stand_backend_matches_charts || return 1
                   test_stand_pull_backends || return 1 ;;
