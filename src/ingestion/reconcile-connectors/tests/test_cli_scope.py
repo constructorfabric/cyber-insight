@@ -45,6 +45,23 @@ class TestTheScopeFlags:
         assert result.returncode == 64
         assert "--source-id requires --connector" in result.stderr
 
+    def test_a_source_id_with_no_value_is_a_usage_error(self) -> None:
+        """A flag whose value is missing is a usage error like any other, and
+        answers with usage and 64. Read through a `${2:?}` expansion instead, it
+        would end the shell where it stands: no usage, and an exit code this CLI
+        does not use for a bad invocation."""
+        result = run("reconcile", "--connector", "claude-team", "--source-id")
+
+        assert result.returncode == 64, result.stderr
+        assert "--source-id requires ID" in result.stderr
+        assert "Usage:" in result.stderr
+
+    def test_a_connector_with_no_value_is_a_usage_error(self) -> None:
+        result = run("reconcile", "--connector")
+
+        assert result.returncode == 64, result.stderr
+        assert "--connector requires NAME" in result.stderr
+
     def test_help_answers_without_reaching_the_mover(self) -> None:
         result = run("--help")
 

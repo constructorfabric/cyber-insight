@@ -6,7 +6,7 @@ CLI:
 
 Stdin:  the `sources/list` payload.
 Stdout: TSV `airbyte_source_id<TAB>connector<TAB>instance` per source to remove.
-Exit:   0 always; 2 on bad arg count; 1 on a payload that is not JSON.
+Exit:   0 always; 2 on bad arg count; 1 on a payload that is not a source listing.
 
 This is the sibling case of the cascade: a connector configured twice loses one
 Secret, so one instance must go while the other keeps running. The cascade
@@ -27,10 +27,10 @@ Three refusals, each of them load-bearing:
   sources and delete every one of them.
 """
 
-import json
 import sys
 from pathlib import Path
-from typing import Any
+
+from airbyte_sources import decode, owner_of
 
 PLAN_SOURCE_ID = 8
 PLAN_SECRET_NAME = 9
@@ -53,12 +53,6 @@ def _planned(plan_path: str) -> tuple[dict[str, set[str]], set[str]]:
     return instances, known
 
 
-def owner_of(source_name: str, connectors: set[str]) -> str | None:
-    """Longest planned connector whose name plus a separator starts the source."""
-    candidates = [c for c in connectors if source_name.startswith(f"{c}-")]
-    return max(candidates, key=len) if candidates else None
-
-
 def instance_of(source_name: str, connector: str, tenant: str) -> str:
     head, tail = f"{connector}-", f"-{tenant}"
     if not source_name.startswith(head) or not source_name.endswith(tail):
@@ -74,10 +68,8 @@ def main() -> int:
     only = sys.argv[3] if len(sys.argv) == 4 else ""
 
     instances, _known = _planned(plan_path)
-    try:
-        sources: list[dict[str, Any]] = json.load(sys.stdin)
-    except json.JSONDecodeError as exc:
-        sys.stderr.write(f"find_removed_instances: bad JSON on stdin: {exc}\n")
+    sources = decode(sys.stdin, "find_removed_instances")
+    if sources is None:
         return 1
 
     # Only connectors the plan still configures: a connector with no instance
@@ -87,14 +79,13 @@ def main() -> int:
         configured &= {only}
 
     for source in sources:
-        name = source.get("name", "") or ""
-        connector = owner_of(name, configured)
+        connector = owner_of(source.name, configured)
         if connector is None:
             continue
-        instance = instance_of(name, connector, tenant)
+        instance = instance_of(source.name, connector, tenant)
         if not instance or instance in instances[connector]:
             continue
-        print("\t".join([source.get("sourceId", "") or "", connector, instance]))
+        print("\t".join([source.source_id, connector, instance]))
     return 0
 
 

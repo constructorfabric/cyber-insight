@@ -49,6 +49,10 @@ _RECONCILE_NOOP=0
 _RECONCILE_FAILED=0
 _RECONCILE_SKIPPED=0
 
+# Connectors this tick refuses to touch, as `|name|` entries. Set by
+# _reconcile_mark_colliding_connectors before the plan is walked.
+_RECONCILE_REFUSED=""
+
 # ---------------------------------------------------------------------------
 # reconcile__log <level> <connector> <message>
 # Single-line structured log to stderr (level is INFO|WARN|ERROR|CHANGE).
@@ -178,6 +182,14 @@ reconcile_cascade_delete() {
   local connections_json
   connections_json="$(ab_list_connections "${workspace_id}")"
 
+  # Which connector a source belongs to is decided against every connector this
+  # build ships, not against this one's name alone: connector slugs prefix one
+  # another, and a source of `claude-team-invoices` starts with `claude-team-`.
+  local known_file
+  known_file="$(mktemp -t insight-connectors.XXXXXX)" || return 1
+  disc_load_descriptors 2>/dev/null \
+    | python3 "${_RECONCILE_PY_DIR}/extract_descriptor_names.py" > "${known_file}"
+
   # Delete every source this connector owns, and with each one the schedule of
   # the instance it belongs to. The instance's own id is read back out of the
   # source's name rather than from a Secret: there is no Secret — that is why
@@ -185,16 +197,28 @@ reconcile_cascade_delete() {
   # RECONCILE_DRY_RUN guard at top of reconcile_cascade_delete short-circuits.
   local removed_sources=0 cron_out=""
   local airbyte_source_id instance
-  while IFS=$'\t' read -r airbyte_source_id instance; do
+  # Re-delimited on US: TAB is IFS-whitespace, so a row whose instance column is
+  # empty would be read as one field and a row whose source id is would shift
+  # the instance into it — deleting an id that is really an instance label.
+  while IFS=$'\037' read -r airbyte_source_id instance; do
     [[ -n "${airbyte_source_id}" ]] || continue
     ab_delete_source "${airbyte_source_id}" >/dev/null 2>&1 || true
     removed_sources=$((removed_sources + 1))
+    # A source whose name carries no instance names no instance schedule
+    # either. The shapes that name none are cleared below; picking one here
+    # would be guessing, and the guess would delete a sibling's.
+    if [[ -z "${instance}" ]]; then
+      log_line WARN "${connector}: source ${airbyte_source_id} names no instance — removed the source, left every instance CronWorkflow alone"
+      continue
+    fi
     # kubectl --ignore-not-found prints "… deleted" only when the object
     # existed, so non-empty output = a CronWorkflow was actually removed.
     cron_out+="$(argo_delete_cronworkflow "${connector}" "${tenant}" "${instance}" 2>/dev/null || true)"
   done < <(printf '%s' "${sources_json}" \
-    | python3 "${_RECONCILE_PY_DIR}/select_connector_sources.py" "${connector}" "${tenant}" \
-      2>/dev/null || true)
+    | python3 "${_RECONCILE_PY_DIR}/select_connector_sources.py" \
+        "${connector}" "${tenant}" "${known_file}" \
+      2>/dev/null | tr '\t' '\037' || true)
+  rm -f "${known_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
 
   # A connector with no source left to read an instance out of still has the
   # schedule shapes that name no instance, from a release before one did.
@@ -1496,8 +1520,10 @@ reconcile_prune_removed_instances() {
   printf '%s\n' "${plan_tsv}" > "${plan_file}"
 
   local airbyte_source_id connector instance
-  while IFS=$'\t' read -r airbyte_source_id connector instance; do
-    [[ -n "${airbyte_source_id}" ]] || continue
+  # Re-delimited on US for the same reason the cascade does it: an empty column
+  # read under TAB coalesces, and the columns after it shift into its place.
+  while IFS=$'\037' read -r airbyte_source_id connector instance; do
+    [[ -n "${airbyte_source_id}" && -n "${instance}" ]] || continue
     if [[ "${RECONCILE_DRY_RUN:-0}" -eq 1 ]]; then  # RULE-DEFAULTS-OK: feature flag — OFF when caller doesn't opt in
       reconcile__log CHANGE "${connector}" \
         "would remove instance ${instance}: no Secret names it and its siblings are still configured"
@@ -1510,9 +1536,53 @@ reconcile_prune_removed_instances() {
     _RECONCILE_CHANGED=$((_RECONCILE_CHANGED + 1))
   done < <(printf '%s' "${sources_json}" \
     | python3 "${_RECONCILE_PY_DIR}/find_removed_instances.py" \
-        "${plan_file}" "${tenant}" "${opt_connector}" 2>/dev/null || true)
+        "${plan_file}" "${tenant}" "${opt_connector}" 2>/dev/null | tr '\t' '\037' || true)
 
   rm -f "${plan_file}"   # explicit cleanup; sourced libs MUST NOT install RETURN traps
+}
+
+# ---------------------------------------------------------------------------
+# _reconcile_mark_colliding_connectors <plan_tsv>
+# Connectors whose instances do not render distinct CronWorkflow names, refused
+# before any of them is applied.
+#
+# INVARIANT: checked across a connector's whole instance set, and independently
+# of any narrowing. A row cannot see its siblings, so per-row applies would each
+# succeed and the later one would replace the earlier one's schedule under the
+# same object — the connector reading as scheduled while one instance silently
+# stopped syncing.
+#
+# Membership is carried as `|name|` in a string rather than an array so the read
+# loop below stays free of one more thing to keep in step.
+# ---------------------------------------------------------------------------
+_reconcile_mark_colliding_connectors() {
+  local plan_tsv="$1"
+  _RECONCILE_REFUSED=""
+  local -A ids_of=()
+  local name source_id tenant
+  # awk splits on TAB without coalescing, which `read` cannot: the plan carries
+  # empty columns by design and every later one would shift.
+  while IFS=$'\t' read -r name source_id; do
+    [[ -n "${name}" && -n "${source_id}" ]] || continue
+    ids_of["${name}"]+="${source_id}"$'\n'
+  done < <(printf '%s\n' "${plan_tsv}" | awk -F'\t' '$10 != "" { print $1 "\t" $9 }')
+
+  local -a ids
+  local why
+  for name in "${!ids_of[@]}"; do
+    mapfile -t ids <<<"${ids_of[${name}]%$'\n'}"
+    # One instance cannot collide with itself, and an unusable name on its own
+    # is reported by the apply that tries it rather than twice.
+    (( ${#ids[@]} > 1 )) || continue
+    tenant="$(reconcile_compute_tenant "${name}")"
+    # The guard's own words: it refuses a collapsed pair and an over-cap name
+    # for different reasons, and naming one of them here would mislabel the
+    # other.
+    why="$(argo_assert_distinct_cron_names "${name}" "${tenant}" "${ids[@]}" 2>&1)" && continue
+    _RECONCILE_REFUSED+="|${name}|"
+    log_line ERROR "${name}: refusing to apply any of its instances — ${why//$'\n'/ }"
+    _RECONCILE_FAILED=$((_RECONCILE_FAILED + 1))
+  done
 }
 
 reconcile_run() {
@@ -1545,6 +1615,8 @@ reconcile_run() {
     return 2
   fi
 
+  _reconcile_mark_colliding_connectors "${plan_tsv}"
+
   # NOTE: `IFS=$'\t' read` is WRONG for this TSV. TAB is IFS-whitespace, so bash
   # COALESCES runs of tabs into a single delimiter and trims leading/trailing ones
   # — i.e. empty fields silently disappear and every later column shifts left.
@@ -1562,6 +1634,10 @@ reconcile_run() {
   while IFS=$'\037' read -r name connector_dir version type cdk_image enrich_image dbt_select \
         ns_format source_id secret_name cfg_hash; do
     [[ -n "${name}" ]] || continue
+    if [[ "${_RECONCILE_REFUSED}" == *"|${name}|"* ]]; then
+      _RECONCILE_SKIPPED=$((_RECONCILE_SKIPPED + 1))
+      continue
+    fi
     if ! _reconcile_one_connector "${name}" "${connector_dir}" "${version}" "${type}" "${cdk_image}" "${enrich_image}" "${dbt_select}" \
          "${ns_format}" "${source_id}" "${secret_name}" "${cfg_hash}" \
          "${opt_dry_run}" "${opt_no_sync_trigger}" "${opt_connector}" "${opt_source_id}"; then

@@ -193,6 +193,38 @@ describe("the pane prints what it was served", () => {
     ).toBeInTheDocument();
   });
 
+  it("points two rows at two disclosures when an identity carries a separator", () => {
+    // The panel id is the row's identity with the separator swapped for one an
+    // id may carry. Values the ledger recorded are not parsed on the way in, so
+    // two identities can differ only in where that separator falls — and both
+    // rows would then name one panel through `aria-controls`.
+    mocks.summary.data = summary({
+      connectors: [
+        {
+          connector: "alpha",
+          tenant_id: "acme_one",
+          source_id: "main",
+          configured: true,
+          last_sync: null,
+        },
+        {
+          connector: "alpha",
+          tenant_id: "acme",
+          source_id: "one_main",
+          configured: true,
+          last_sync: null,
+        },
+      ],
+    });
+    render(<ConnectorHealthPane />);
+
+    const controls = screen
+      .getAllByRole("row", { expanded: false })
+      .map((row) => row.getAttribute("aria-controls"));
+
+    expect(controls[0]).not.toBe(controls[1]);
+  });
+
   it("prints an unmeasured number as absence, not as a zero", () => {
     mocks.summary.data = summary({
       connectors: [

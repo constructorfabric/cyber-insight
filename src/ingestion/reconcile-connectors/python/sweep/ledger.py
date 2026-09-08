@@ -28,6 +28,13 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 _TIMEOUT_SECS = 30
 
+#: What a synchronous mutation is allowed to take. It waits for the whole
+#: rewrite, and the install that runs it is the one upgrading with months of
+#: history behind it — not a request-shaped wait. Past the deadline the mutation
+#: is still running server-side, so the tick that gave up would report a failure
+#: and the next one would issue the same statement again.
+_MUTATION_TIMEOUT_SECS = 300
+
 #: How far behind the newest recorded job the watermark may be dragged by a job
 #: that never closes. Long enough that no real sync is missed by it; short
 #: enough that a stuck job costs one bounded re-read per tick rather than the
@@ -90,7 +97,9 @@ class Ledger:
             source["RECONCILE_DEST_CLICKHOUSE_PASSWORD"],
         )
 
-    def _post(self, body: bytes, query: str | None = None) -> str:
+    def _post(
+        self, body: bytes, query: str | None = None, timeout: int = _TIMEOUT_SECS
+    ) -> str:
         url = self._url + "/"
         if query is not None:
             url += "?query=" + urllib.parse.quote(query)
@@ -99,7 +108,7 @@ class Ledger:
         request.add_header("X-ClickHouse-Key", self._password)
         try:
             # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECS) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read().decode()
         except urllib.error.HTTPError as error:
             detail = error.read().decode(errors="replace").strip()
@@ -269,7 +278,8 @@ class Ledger:
                 f"WHERE connector = {_quote(instance.connector)} "
                 "AND (tenant_id = '' OR source_id = '') "
                 "SETTINGS mutations_sync = 1"
-            ).encode()
+            ).encode(),
+            timeout=_MUTATION_TIMEOUT_SECS,
         )
 
     def insert(self, rows: Iterable[dict[str, Any]]) -> int:

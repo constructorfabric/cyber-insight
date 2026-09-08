@@ -3,13 +3,14 @@
 # Sourceable; NO top-level CLI.
 #
 # Public surface:
-#   argo_cron_workflow_name              CONNECTOR TENANT
+#   argo_cron_workflow_name              CONNECTOR TENANT SOURCE_ID
+#   argo_assert_distinct_cron_names      CONNECTOR TENANT SOURCE_ID...
 #   argo_cron_workflow_name_full_tenant  CONNECTOR TENANT
 #   argo_render_cronworkflow CONNECTOR CONNECTION_NAME SCHEDULE TENANT \
 #                            INSIGHT_SOURCE_ID DBT_SELECT ENRICH_IMAGE
 #   argo_apply_cronworkflow  CONNECTOR CONNECTION_NAME SCHEDULE TENANT \
 #                            INSIGHT_SOURCE_ID DBT_SELECT ENRICH_IMAGE
-#   argo_delete_cronworkflow CONNECTOR TENANT
+#   argo_delete_cronworkflow CONNECTOR TENANT SOURCE_ID
 #   argo_submit_sync_trigger CONNECTOR CONNECTION_NAME TENANT \
 #                            INSIGHT_SOURCE_ID DBT_SELECT ENRICH_IMAGE [BUMP_KIND]
 #   argo_resolve_connection_id_by_name CONNECTION_NAME

@@ -334,7 +334,13 @@ adopt_run() {
   # @cpt-end:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-list-actual
 
   # @cpt-begin:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-loop
-  while IFS=$'\t' read -r name connector_dir version type cdk_image enrich_image dbt_select; do
+  # Re-delimited on US, and every column read into its own variable. TAB is
+  # IFS-whitespace, so a run of them coalesces and an empty column shifts every
+  # later one left; and a reader short of the descriptor's columns absorbs the
+  # remainder — namespace included — into the last variable it has, which here
+  # is the dbt selector the CronWorkflow is rendered with.
+  while IFS=$'\037' read -r name connector_dir version type cdk_image enrich_image \
+        dbt_select ns_format; do
     [[ -n "${name}" ]] || continue
     if ! _adopt_one_connector "${name}" "${connector_dir}" "${version}" "${type}" "${cdk_image}" \
          "${enrich_image}" "${dbt_select}" \
@@ -343,13 +349,13 @@ adopt_run() {
       log_line ERROR "${name}: adopt failed (continuing with next)"
       _ADOPT_FAILED=$((_ADOPT_FAILED + 1))
     fi
-  done <<<"${descriptors_tsv}"
+  done < <(printf '%s\n' "${descriptors_tsv}" | tr '\t' '\037')
   # @cpt-end:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-loop
 
   # @cpt-begin:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-return
   printf 'adopt finished: %d adopted, %d skipped, %d warning(s), %d failed\n' \
     "${_ADOPT_ADOPTED}" "${_ADOPT_SKIPPED}" "${_ADOPT_WARNINGS}" "${_ADOPT_FAILED}"
   : "${dry_run}"
-  : "${connector_dir:=}"  # silence unused-warning when no descriptors found
+  : "${connector_dir:=}" "${ns_format:=}"  # silence unused-warning when no descriptors found
   # @cpt-end:cpt-insightspec-flow-reconcile-run-adopt-v2:p1:inst-ad-return
 }

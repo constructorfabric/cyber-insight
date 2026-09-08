@@ -23,14 +23,21 @@ const SWEEP_COMPLETED: &str = "sweep.completed";
 /// Rows in a connector's expandable history. A window, not the retention.
 pub(crate) const HISTORY_WINDOW: u32 = 50;
 
-/// Connectors the summary will serve.
+/// Connector instances the summary will serve.
 ///
-/// The set is bounded by the build's descriptor list in practice, so this is a
-/// backstop rather than a page: an install cannot reach it by configuring more
-/// connectors, only by accumulating names in the ledger that no build has. It
-/// exists because an unbounded response is a bug however unlikely the input —
-/// and because reaching it should be visible rather than silent, the read logs
-/// when it truncates.
+/// The set is bounded by the build's descriptor list times the Secrets naming
+/// each, so this is a backstop rather than a page: an install cannot reach it by
+/// configuring more connectors, only by accumulating identities in the ledger
+/// that no build has. It exists because an unbounded response is a bug however
+/// unlikely the input — and because reaching it should be visible rather than
+/// silent, the read logs when it truncates.
+///
+/// INVARIANT: applied to the merged response, not only to the statement that
+/// carries it into SQL. The summary is the union of two relations, and the
+/// configured half is deliberately unbounded in SQL — it is one tick's
+/// snapshot, and dropping members of it there would report a live instance as
+/// no longer configured. Dropping them from the tail of the sorted response
+/// instead leaves what is shown truthful.
 const CONNECTOR_LIMIT: u32 = 500;
 
 /// Sealed ticks sampled for the median gap between reads. Enough to survive one
@@ -314,14 +321,6 @@ pub(crate) async fn read_health(
     // mover was read, and the page must say when rather than claim nothing has
     // been read. Deriving this from the rows alone would make a sealed empty
     // install indistinguishable from one that has never recorded anything.
-    if syncs.len() >= CONNECTOR_LIMIT as usize {
-        tracing::warn!(
-            limit = CONNECTOR_LIMIT,
-            "connector health truncated the summary; the ledger holds at least \
-             as many connector names as the response can carry"
-        );
-    }
-
     let has_history = sealed.is_some() || !syncs.is_empty();
     let summaries = merge(syncs, &configured);
     Ok(LedgerFacts {
@@ -390,11 +389,15 @@ impl HistoryRow {
     }
 }
 
-/// The union of what synced and what is configured.
+/// The union of what synced and what is configured, bounded.
 ///
 /// A connector that was never configured and never synced appears in neither,
 /// so it cannot be listed — the reader may read this one relation and nothing
 /// else, and no record of such a connector exists in it.
+///
+/// Two bounded relations union to twice the bound, so the cap is applied once
+/// more here — after the ordering, so what a truncated response keeps is what
+/// needs attention rather than an arbitrary half.
 fn merge(syncs: Vec<SyncRow>, configured: &HashSet<InstanceKey>) -> Vec<ConnectorSummary> {
     let mut by_instance: HashMap<InstanceKey, Option<LastSync>> = configured
         .iter()
@@ -427,6 +430,15 @@ fn merge(syncs: Vec<SyncRow>, configured: &HashSet<InstanceKey>) -> Vec<Connecto
         })
         .collect();
     super::model::by_attention(&mut summaries);
+    if summaries.len() > CONNECTOR_LIMIT as usize {
+        tracing::warn!(
+            limit = CONNECTOR_LIMIT,
+            held = summaries.len(),
+            "connector health truncated the summary; the ledger holds more \
+             connector instances than the response can carry"
+        );
+        summaries.truncate(CONNECTOR_LIMIT as usize);
+    }
     summaries
 }
 
@@ -591,6 +603,25 @@ mod guards {
                 .any(|c| innocent.contains(&format!(" as {c}"))),
             "the guard must not fire on an alias that is not a column name"
         );
+    }
+
+    /// The response is what two relations add up to. The bounded one bounds
+    /// only itself, and the configured half is deliberately unbounded in SQL —
+    /// so without a cap on the union an install can be served every identity
+    /// its ledger holds.
+    #[test]
+    fn the_summary_cannot_answer_with_more_instances_than_the_cap() {
+        let configured: HashSet<InstanceKey> = (0..CONNECTOR_LIMIT + 10)
+            .map(|n| InstanceKey {
+                connector: format!("connector-{n}"),
+                tenant_id: "example-tenant".to_owned(),
+                source_id: "main".to_owned(),
+            })
+            .collect();
+
+        let summaries = merge(Vec::new(), &configured);
+
+        assert_eq!(summaries.len(), CONNECTOR_LIMIT as usize);
     }
 
     #[test]

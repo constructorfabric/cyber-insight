@@ -110,8 +110,15 @@ main() {
     case "$1" in
       adopt|reconcile)   subcmd="$1"; shift ;;
       --dry-run)         dry_run=1; shift ;;
-      --connector)       connector="${2:?--connector requires NAME}"; shift 2 ;;
-      --source-id)       source_id="${2:?--source-id requires ID}"; shift 2 ;;
+      # Checked rather than `${2:?}`: that expansion ends the shell where it
+      # stands, so the caller is told nothing about usage and the exit code is
+      # not the one this CLI answers a bad invocation with.
+      --connector)
+        [[ $# -ge 2 && -n "$2" ]] || { printf -- '--connector requires NAME\n' >&2; usage >&2; return 64; }
+        connector="$2"; shift 2 ;;
+      --source-id)
+        [[ $# -ge 2 && -n "$2" ]] || { printf -- '--source-id requires ID\n' >&2; usage >&2; return 64; }
+        source_id="$2"; shift 2 ;;
       --no-gc)           no_gc=1; shift ;;
       --no-sync-trigger) no_sync_trigger=1; shift ;;
       -h|--help)         usage; return 0 ;;

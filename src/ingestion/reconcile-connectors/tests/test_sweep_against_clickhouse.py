@@ -765,32 +765,41 @@ class TestSweptRowsLandAndResolve:
         the only place the path an install with months of history actually takes
         is run at all.
         """
-        _query(f"DROP TABLE {TABLE}")
-        _query(PRE_CHANGE_DDL)
-        _query(
-            f"INSERT INTO {TABLE} (ts, tick_id, job_id, connector, event, status, "
-            "started_at, job_updated_at, duration_ms, records_reported) VALUES "
-            f"(now64(3), 'old', 'kept', '{CONNECTOR}', 'sync.completed', 'succeeded', "
-            f"NULL, toDateTime64('{_ch_stamp(_stamp(-2))}', 3, 'UTC'), 91000, 42)"
-        )
+        # The relation this case rebuilds is the one every later case reads, and
+        # `_empty_ledger` only truncates it. Taken before the drop and put back
+        # whatever happens, so a failure between the two leaves the next case a
+        # canonical table rather than this one's pre-change shape.
+        canonical = _query(f"SHOW CREATE TABLE {TABLE} FORMAT TabSeparatedRaw")
+        try:
+            _query(f"DROP TABLE {TABLE}")
+            _query(PRE_CHANGE_DDL)
+            _query(
+                f"INSERT INTO {TABLE} (ts, tick_id, job_id, connector, event, status, "
+                "started_at, job_updated_at, duration_ms, records_reported) VALUES "
+                f"(now64(3), 'old', 'kept', '{CONNECTOR}', 'sync.completed', 'succeeded', "
+                f"NULL, toDateTime64('{_ch_stamp(_stamp(-2))}', 3, 'UTC'), 91000, 42)"
+            )
 
-        for migration in sorted(MIGRATIONS.glob("*connector-sync-history*.sql")):
-            _apply_migration(migration)
+            for migration in sorted(MIGRATIONS.glob("*connector-sync-history*.sql")):
+                _apply_migration(migration)
 
-        migrated = self._legacy_columns("kept")
-        assert len(migrated) == 1, "the row survives the migration"
-        assert self._identity("kept") == {"tenant_id": "", "source_id": ""}, (
-            "the migration adds the columns; only the reconcile tick can know "
-            "which instance this install actually has"
-        )
+            migrated = self._legacy_columns("kept")
+            assert len(migrated) == 1, "the row survives the migration"
+            assert self._identity("kept") == {"tenant_id": "", "source_id": ""}, (
+                "the migration adds the columns; only the reconcile tick can know "
+                "which instance this install actually has"
+            )
 
-        with _StubMover():
-            assert self._tick("tick-u") == 0
+            with _StubMover():
+                assert self._tick("tick-u") == 0
 
-        assert self._legacy_columns("kept") == migrated, (
-            "the same row, not a replacement — nothing but the identity may change"
-        )
-        assert self._identity("kept") == {"tenant_id": TENANT, "source_id": SOURCE}
+            assert self._legacy_columns("kept") == migrated, (
+                "the same row, not a replacement — nothing but the identity may change"
+            )
+            assert self._identity("kept") == {"tenant_id": TENANT, "source_id": SOURCE}
+        finally:
+            _query(f"DROP TABLE IF EXISTS {TABLE}")
+            _query(canonical)
 
     def test_the_seal_keeps_the_empty_identity_it_is_meant_to_have(self) -> None:
         """It is about the tick, not about anything that synced."""

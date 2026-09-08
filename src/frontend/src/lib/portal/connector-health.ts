@@ -279,12 +279,17 @@ export function describeInstance(row: ConnectorInstance): string {
  *
  * The name alone is not one. Two installations of a connector share it, so a
  * key built from it collides: React reuses one row's node for the other, and
- * opening one row opens the other's history. The separator is safe because
- * neither half can contain it — the service refuses anything outside lowercase
- * letters, digits and hyphens.
+ * opening one row opens the other's history. Each part is percent-encoded
+ * before the separator joins them, so the separator cannot occur inside one and
+ * the mapping stays one identity to one key. Encoded rather than assumed safe:
+ * the endpoint that takes an identity as a query parameter parses it, but
+ * nothing constrains what the ledger recorded, and these values are read back
+ * from the ledger.
  */
 export function instanceKey(row: ConnectorInstanceRef): string {
-  return [row.connector, row.tenant_id ?? "", row.source_id ?? ""].join("/");
+  return [row.connector, row.tenant_id ?? "", row.source_id ?? ""]
+    .map(encodeURIComponent)
+    .join("/");
 }
 
 /**

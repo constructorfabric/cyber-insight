@@ -48,12 +48,13 @@ const COLUMNS = 6;
  * A DOM id for one row's disclosure panel.
  *
  * The identity's own separator is not one an id may carry through a CSS
- * selector, and neither half can contain an underscore — the service refuses
- * anything outside lowercase letters, digits and hyphens — so the swap stays
- * one identity to one id.
+ * selector, so it is swapped for an underscore — and any underscore already in
+ * the key is escaped first, or `a_b/c` and `a/b_c` would name one panel and
+ * `aria-controls` would point two rows at the same disclosure.
  */
 function panelIdFor(row: ConnectorHealth): string {
-  return `connector-syncs-${instanceKey(row).replaceAll("/", "_")}`;
+  const id = instanceKey(row).replaceAll("_", "%5F").replaceAll("/", "_");
+  return `connector-syncs-${id}`;
 }
 
 export function ConnectorHealthPane() {

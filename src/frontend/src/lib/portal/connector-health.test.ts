@@ -90,6 +90,18 @@ describe("which installation of a connector a row is", () => {
       instanceKey({ connector: "alpha", tenant_id: "acme", source_id: "main" }),
     );
   });
+
+  it("keys two identities apart when one carries the separator", () => {
+    // Nothing constrains what the ledger recorded: the tenant comes from a
+    // chart value and the source id from an annotation, and neither is parsed
+    // on the way in. Joined raw, these two are one key — the rows would share a
+    // React node, a cache entry and a disclosure.
+    expect(
+      instanceKey({ connector: "alpha", tenant_id: "acme/main", source_id: "" }),
+    ).not.toBe(
+      instanceKey({ connector: "alpha", tenant_id: "acme", source_id: "main" }),
+    );
+  });
 });
 
 describe("what a row says", () => {
