@@ -2,6 +2,7 @@ mod api;
 mod catalog;
 mod chat;
 mod config;
+mod custom;
 mod definitions;
 mod gear;
 mod identity;

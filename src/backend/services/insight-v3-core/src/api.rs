@@ -131,6 +131,10 @@ impl AppState {
     pub(crate) fn chat(&self) -> &ChatClient {
         &self.chat
     }
+
+    pub(crate) fn surfaces(&self) -> crate::custom::Surfaces<'_> {
+        crate::custom::Surfaces::new(self.definitions.as_ref(), &self.metrics)
+    }
 }
 
 pub(crate) fn register_routes(

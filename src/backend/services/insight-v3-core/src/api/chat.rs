@@ -357,7 +357,11 @@ async fn check_widget_in_batch(
                 .check_against(&metric)
                 .map_err(|error| crate::api::definitions::widget_error(&error))
         }
-        None => crate::api::definitions::check_widget(state, body).await,
+        None => state
+            .surfaces()
+            .check_widget(body)
+            .await
+            .map_err(crate::api::definitions::custom_error),
     }
 }
 
