@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import jsonschema
 import pytest
+from airbyte_cdk.sources.declarative.concurrency_level import ConcurrencyLevel
 from config import GitlabConfigBuilder
 from connector_tests.source import load_manifest
 
@@ -141,3 +142,19 @@ def test_instance_wide_mode_is_refused_on_gitlab_com(
     )
     errors = list(jsonschema.Draft7Validator(_spec_schema()).iter_errors(config))
     assert (not errors) == accepted, f"should {'accept' if accepted else 'reject'}: {config}"
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, 8), ("1", 1), ("16", 16), ("64", 32)])
+def test_the_operator_sets_the_worker_count_within_a_capped_range(configured: str | None, expected: int) -> None:
+    """A Secret's values arrive as strings, so the level parses one; an absent
+    value falls back to the default rather than to zero, and a value above the
+    cap is clamped instead of spawning more workers than the pod can hold."""
+    level = load_manifest(_CONNECTOR)["concurrency_level"]
+    config = {} if configured is None else {"gitlab_concurrency": configured}
+    resolved = ConcurrencyLevel(
+        default_concurrency=level["default_concurrency"],
+        max_concurrency=level["max_concurrency"],
+        config=config,
+        parameters={},
+    ).get_concurrency_level()
+    assert resolved == expected, f"should resolve to {expected}: {configured!r}"

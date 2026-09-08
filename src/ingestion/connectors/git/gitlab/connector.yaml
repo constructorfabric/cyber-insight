@@ -2556,9 +2556,16 @@ streams:
 
 concurrency_level:
   type: ConcurrencyLevel
-  # Never 1: the concurrent CDK self-deadlocks at a single worker once a sync
-  # generates ~10k partitions.
-  default_concurrency: 4
+  # `| int` because a Secret's values arrive as strings and the CDK rejects a
+  # concurrency that does not evaluate to an integer; the filter's fallback
+  # covers an absent value, which must never resolve to 0 or 1 — the
+  # concurrent CDK self-deadlocks at a single worker once a sync generates
+  # ~10k partitions. `config.get` because the interpolation is strict about a
+  # missing key.
+  default_concurrency: "{{ config.get('gitlab_concurrency') | int(8) }}"
+  # Required by the CDK whenever the level comes from config, as a safeguard
+  # against a value that would spawn more workers than the pod can hold.
+  max_concurrency: 32
 
 spec:
   type: Spec
@@ -2683,6 +2690,18 @@ spec:
         title: Start Date
         format: date
         order: 11
+      gitlab_concurrency:
+        type: string
+        pattern: "^[1-9][0-9]*$"
+        default: "8"
+        description: >-
+          Worker threads the sync may use against the GitLab API. Self-hosted
+          instances without a request limit can raise it; the ceiling is 32.
+          The clone-backed streams are additionally paced by the
+          git-cli-proxy's own clone and page-serve caps, so raising this alone
+          does not speed them up.
+        title: Concurrency
+        order: 12
     # The instance-wide listing on gitlab.com is every public project on the
     # platform; the spec refuses that configuration outright.
     allOf:

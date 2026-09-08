@@ -56,6 +56,7 @@ project nobody has touched since it is never cloned.
 | `gitlab_include_forks` | No | `"true"` to sync forked projects. Off by default: a fork's history is its upstream's, and counting it doubles the upstream's commits |
 | `gitlab_exclude_projects` | No | JSON array of regular expressions matched (`search`) against `path_with_namespace`; a match is never listed, cloned or walked. Archived projects are always skipped |
 | `gitlab_instance_users` | No | `"true"` to also sync the instance user directory (`/users`). Needs a personal token; `email` is returned only to an administrator. Leave off on gitlab.com and shared instances |
+| `gitlab_concurrency` | No | Worker threads against the GitLab API, default `"8"`, capped at 32. A self-hosted instance without a request limit can take more; the clone-backed streams stay paced by the proxy's own clone and page-serve caps |
 | `gitlab_start_date` | Yes | Earliest date fetched, by every stream (YYYY-MM-DD); bounds the first-sync cost |
 
 Leaving both `gitlab_groups` and `gitlab_projects` empty syncs every project
