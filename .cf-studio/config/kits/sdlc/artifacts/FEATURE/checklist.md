@@ -741,8 +741,8 @@ Before evaluating each checklist item, the expert MUST:
 Not a checklist item: it carries no ID, no severity and no verdict.
 
 **Authoring aid:** Use the [quality-vector guide](../../guides/quality-vectors.md)
-and `quality-vector-tests` to suggest clearer requirement mappings, contribution
-boundaries and evidence links. This extension adds no semantic gate or mandatory
+to suggest clearer requirement mappings, contribution boundaries and evidence
+links. This extension adds no semantic gate or mandatory
 rollup. Canonical criteria above and agreed requirements retain their meaning.
 
 ---

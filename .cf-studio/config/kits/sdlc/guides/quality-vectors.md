@@ -93,7 +93,5 @@ fixtures, conditions, command and result.
 ## Use the examples
 
 The registered kit examples demonstrate canonical artifact structure and CDSL.
-The [worked quality trace](../../../../../.claude/skills/quality-vector-tests/references/example-feature.md)
-adds a synthetic PRD obligation, DESIGN allocation, FEATURE scenario and a
-standalone executable test with a backlink. Use it alongside those examples
-when adding the Insight extension; it does not establish product test coverage.
+Use them when adding quality expectations to an artifact; they do not establish
+product test coverage.

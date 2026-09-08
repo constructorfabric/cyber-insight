@@ -18,7 +18,7 @@ DO:
   - LOAD {cf-studio-path}/config/artifacts.toml to resolve FEATURE path (artifacts_dir default `architecture`, subdir `features/`)
   - LOAD {feature_template} for structure
   - RUN author content: actor flows (complete user journeys), algorithms (processing logic), state machines (entity lifecycle), DoD/acceptance criteria, test scenarios
-  - RUN author `## 7. Testing` with the `quality-vector-tests` skill (`.claude/skills/quality-vector-tests`): one checkbox scenario per line, each carrying exactly one quality vector (Efficiency, Reliability, Performance, Security, Versatility), one suite tag, and a do → expect pass criterion; declare the owning feature ID once and link each scenario to the relevant PRD FR/NFR subset from section 1.2 and to its test when implemented
+  - RUN author `## 7. Testing`: one checkbox scenario per line, each carrying exactly one quality vector (Efficiency, Reliability, Performance, Security, Versatility), one suite tag, and a do → expect pass criterion; declare the owning feature ID once and link each scenario to the relevant PRD FR/NFR subset from section 1.2 and to its test when implemented
   - RUN define featstatus ID under H1 (before `## Feature Context`): `cpt-{system}-featstatus-{feature-slug}` (status rollup, not to_code)
   - RUN assign IDs: flow `cpt-{system}-flow-{feature-slug}-{slug}`, algo `cpt-{system}-algo-{feature-slug}-{slug}`, state `cpt-{system}-state-{feature-slug}-{slug}`, dod `cpt-{system}-dod-{feature-slug}-{slug}`
   - RUN assign priority markers `p1`-`p9` per feature priority
