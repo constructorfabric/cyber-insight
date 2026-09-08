@@ -131,9 +131,12 @@ collapses to current state and a head move is a tracked-column change.
   consumed via `RequestPath`.
 - **`fields=`** trims the response to the used properties; the full repository
   object is large and most of it is unused here.
-- **No server-side "updated after" filter** exists on `/repositories`, so the
-  cursor filters client-side. The listing is requested `sort=updated_on`
-  (ascending) so the cursor still advances monotonically across pages.
+- **The "updated after" bound is server-side**, expressed as
+  `q=updated_on >= start_date` (the `repos_since_start` anchor). It has to be:
+  a cursor's `start_datetime` filters no records unless the stream also sets
+  `is_client_side_incremental`, and none of these do. The listing is requested
+  `sort=updated_on` (ascending) so the cursor still advances monotonically
+  across pages.
 
 ### Cold repositories
 
