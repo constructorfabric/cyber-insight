@@ -224,3 +224,46 @@ def test_every_requester_declares_an_error_handler() -> None:
         if "error_handler" not in requester
     ]
     assert not bare, f"requesters relying on the CDK default error handler: {bare}"
+
+
+_PROXY_RESET_ACTIONS = {
+    "/v1/commits": "SPLIT_USING_CURSOR",
+    "/v1/file-changes": "SPLIT_USING_CURSOR",
+    "/v1/branches": "RESET",
+    "/v1/authors": "RESET",
+}
+
+
+def _proxy_retrievers(node, out=None):
+    """Every SimpleRetriever whose requester targets the git proxy."""
+    if out is None:
+        out = []
+    if isinstance(node, dict):
+        requester = node.get("requester", {})
+        if node.get("type") == "SimpleRetriever" and "git_proxy_url" in str(requester.get("url_base", "")):
+            out.append(node)
+        for value in node.values():
+            _proxy_retrievers(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _proxy_retrievers(item, out)
+    return out
+
+
+def test_a_superseded_proxy_snapshot_restarts_the_walk_instead_of_failing_it() -> None:
+    """A 409 means the page token points into a snapshot the proxy no longer
+    holds. Failing the partition freezes its cursor until the next run; a
+    pagination reset restarts the walk, and a walk the proxy orders by the
+    cursor restarts from the last value already seen. Commits and file
+    changes come out ordered by committed_date; branches and authors carry
+    no such order, so their restart is from the first page."""
+    manifest = yaml.safe_load((connector_dir(_CONNECTOR) / "connector.yaml").read_text())
+    retrievers = _proxy_retrievers(manifest["streams"])
+    assert {r["requester"]["path"] for r in retrievers} == set(_PROXY_RESET_ACTIONS)
+    for retriever in retrievers:
+        path = retriever["requester"]["path"]
+        filters = retriever["requester"]["error_handler"]["response_filters"]
+        on_409 = [f["action"] for f in filters if 409 in f.get("http_codes", [])]
+        assert on_409 == ["RESET_PAGINATION"], f"{path}: a 409 must reset pagination, got {on_409}"
+        reset = retriever.get("pagination_reset")
+        assert reset == {"type": "PaginationReset", "action": _PROXY_RESET_ACTIONS[path]}, f"{path}: {reset}"
