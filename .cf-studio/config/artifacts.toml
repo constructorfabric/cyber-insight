@@ -107,6 +107,18 @@ path = "docs/components/backend/analytics/specs/connector-health/DESIGN.md"
 name = "Connector Health Design"
 traceability = "DOCS-ONLY"
 
+[[systems.artifacts]]
+kind = "PRD"
+path = "docs/domain/query-engine/PRD.md"
+name = "Query Engine PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "DESIGN"
+path = "docs/domain/query-engine/DESIGN.md"
+name = "Query Engine Design"
+traceability = "DOCS-ONLY"
+
 [[systems]]
 name = "Identity Service"
 slug = "identity-svc"
