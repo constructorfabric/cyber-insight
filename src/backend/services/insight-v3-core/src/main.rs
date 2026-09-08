@@ -1,4 +1,5 @@
 mod api;
+mod catalog;
 mod chat;
 mod config;
 mod definitions;
