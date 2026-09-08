@@ -40,12 +40,13 @@ ee8d1fe3c4f9e4e5  Gitlab             src/ingestion/connectors/git/gitlab/dbt/git
 30b51188bf3e2a87  Gitlab             src/ingestion/connectors/git/gitlab/dbt/gitlab__unowned_commit_emails.sql  # code identifier / constant name
 136fc1e55088a7de  Gitlab             src/ingestion/connectors/git/gitlab/tests/test_gitlab_proxy_streams.py  # code identifier / constant name
 7a55702f5399e506  Gitlab             src/ingestion/scripts/connectors-ddl/gitlab.sql  # a bronze relation name in the DDL snapshot, not a token
-24adf9f9c51d34de  Gitlab             src/ingestion/tests/e2e/identity/test_gitlab_account_binding.py  # code identifier / constant name
-2b998af6aa12a827  Gitlab             src/ingestion/tests/e2e/metrics/git_pr_gitlab_account_attribution.test.yaml  # code identifier / constant name
-9e1bf9e4933b0be4  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_gitlab.pull_request_commits.yaml  # code identifier / constant name
 db81f4ceb1b447a8  Gitlab             .github/trufflehog-allowlist.txt  # this file's own entries name the identifier, not a token
 001ef6ca495466c2  Gitlab             .github/trufflehog-allowlist.txt  # this file's own entries name the identifier, not a token
 93b61de828413759  Gitlab             .github/trufflehog-allowlist.txt  # this file's own entries name the identifier, not a token
+7da47d076b96c55f  Gitlab             tests/datapath/identity/test_gitlab_account_claims.py  # code identifier / constant name
+c08db45fbe30f429  Gitlab             tests/datapath/metrics/git/git_pr_gitlab_account_attribution.test.yaml  # code identifier / constant name
+5681cee5332b9215  Gitlab             tests/datapath/metrics/schemas/bronze_gitlab.merge_request_commits.yaml  # code identifier / constant name
+4a7db28a0f948daf  Gitlab             tests/datapath/metrics/schemas/bronze_gitlab.pull_request_commits.yaml  # code identifier / constant name
 5976017fb71ea0e2  HubSpotApiKey      docs/architecture/CONNECTOR_AUTOMATION.md  # synthetic UUID fixture
 10c14a66053d0859  SQLServer          src/backend/services/identity/.env.local.example  # placeholder in an example env file / unit test
 a41e6a136aac6865  SQLServer          src/backend/services/identity/tests/Insight.Identity.Tests.Unit/MariaDbConnectionFactoryTests.cs  # placeholder in an example env file / unit test
@@ -88,7 +89,6 @@ a1bf6f0828538dc7  JiraToken          tests/datapath/metrics/templates/jira_task.
 
 # Retired paths. The nightly sweep reads every ref, so a value stays reachable
 # while the commit that carried it does — the path leaving HEAD retires nothing.
-65b16a9d3ed875d7  Gitlab             src/ingestion/tests/e2e/metrics/schemas/bronze_github.commits.yaml  # bronze column name is_in_default_branch, not a token
 fdd801f84b096f9b  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
 93192185cb9d3fc6  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
 175ae9997104cde3  HubSpotApiKey      src/ingestion/tests/e2e/lib/metric_coverage.py  # synthetic UUID fixture
