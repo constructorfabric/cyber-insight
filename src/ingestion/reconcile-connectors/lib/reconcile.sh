@@ -151,6 +151,36 @@ print(json.dumps({
 }
 
 # ---------------------------------------------------------------------------
+# _reconcile_definitions_file <workspace_id>
+# The definition listing on disk — the authority both removal paths read
+# ownership from. Echoes the path; non-zero when it could not be established,
+# leaving no file behind.
+#
+# INVARIANT: a listing that could not be read is NOT an empty listing. Empty
+# demotes every source to `owner_of`'s name fallback, which is the weaker
+# evidence these paths exist not to delete on — so both refusals below are
+# refusals to delete anything at all this tick.
+#
+# An empty answer is one of them, whether it arrives as `[]` or as no bytes at
+# all: Airbyte reports its bundled definitions on every healthy call, and an
+# error body that happens to be valid JSON without a `sourceDefinitions` key
+# renders as `[]` and exits 0. Nothing else tells that apart from a real answer.
+# ---------------------------------------------------------------------------
+_reconcile_definitions_file() {
+  local workspace_id="$1" path listed
+  path="$(mktemp -t insight-definitions.XXXXXX)" || return 1
+  if ab_list_definitions "${workspace_id}" > "${path}" 2>/dev/null; then
+    listed="$(tr -d '[:space:]' < "${path}")"
+    if [[ -n "${listed}" && "${listed}" != "[]" ]]; then
+      printf '%s' "${path}"
+      return 0
+    fi
+  fi
+  rm -f "${path}"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # reconcile_cascade_delete <connector_name>
 # Deletes all Airbyte connections + sources + definition (if orphaned) and
 # the per-connector Argo CronWorkflow. Called when the Secret is missing.
@@ -187,10 +217,13 @@ reconcile_cascade_delete() {
   # python/airbyte_sources.py.
   local known_file definitions_file
   known_file="$(mktemp -t insight-connectors.XXXXXX)" || return 1
-  definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${known_file}"; return 1; }
+  if ! definitions_file="$(_reconcile_definitions_file "${workspace_id}")"; then
+    rm -f "${known_file}"
+    log_line ERROR "${connector}: cannot read the Airbyte definition listing — removed nothing, because which sources are this connector's cannot be established"
+    return 1
+  fi
   disc_load_descriptors 2>/dev/null \
     | python3 "${_RECONCILE_PY_DIR}/extract_descriptor_names.py" > "${known_file}"
-  ab_list_definitions "${workspace_id}" > "${definitions_file}" 2>/dev/null || printf '[]' > "${definitions_file}"
 
   # Delete every source this connector owns, and with each one the schedule of
   # the instance it belongs to. The instance's own id is read back out of the
@@ -1520,9 +1553,13 @@ reconcile_prune_removed_instances() {
   sources_json="$(ab_list_sources "${workspace_id}")" || return 0
   plan_file="$(mktemp -t insight-plan.XXXXXX)" || return 0
   printf '%s\n' "${plan_tsv}" > "${plan_file}"
-  # Whose a source is — same rule as the cascade's.
-  definitions_file="$(mktemp -t insight-definitions.XXXXXX)" || { rm -f "${plan_file}"; return 0; }
-  ab_list_definitions "${workspace_id}" > "${definitions_file}" 2>/dev/null || printf '[]' > "${definitions_file}"
+  # Whose a source is — same rule, and the same refusal, as the cascade's.
+  if ! definitions_file="$(_reconcile_definitions_file "${workspace_id}")"; then
+    rm -f "${plan_file}"
+    reconcile__log WARN "prune" \
+      "skipped: cannot read the Airbyte definition listing, so which instance a source belongs to cannot be established"
+    return 0
+  fi
 
   local airbyte_source_id connector instance
   # Re-delimited on US for the same reason the cascade does it: an empty column

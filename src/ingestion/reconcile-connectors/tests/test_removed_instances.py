@@ -172,19 +172,21 @@ class TestANameTwoConnectorsCanSpell:
 
         assert removed == [("src-ambiguous", "claude-team", "invoices-main")]
 
-    def test_without_a_definition_the_name_alone_decides_nothing(
+    def test_a_source_outside_the_listing_is_claimed_by_nobody(
         self, tmp_path: Path
     ) -> None:
-        """Fail closed. With no definition to ask, two connectors can spell this
-        name and neither may claim it — inaction is the only answer that cannot
-        delete the wrong connector's data."""
+        """Fail closed per source: the listing reads but does not carry this
+        source's definition, so the name is all there is — and two connectors
+        can spell it. Inaction is the only answer that cannot delete the wrong
+        connector's data."""
         removed = find(
             tmp_path,
             [
                 plan_row("claude-team", "claude-team-main", "secret-a"),
                 plan_row("claude-team-invoices", "claude-team-invoices-main", "secret-b"),
             ],
-            [AMBIGUOUS._replace(definition_id="")],
+            [AMBIGUOUS],
+            definitions=[Definition("gitlab", "def-gitlab")],
         )
 
         assert removed == []

@@ -44,11 +44,18 @@ argo_delete_superseded_cronworkflows() {
 """
 
 
+#: A listing that reads and carries nothing of this connector's — the state
+#: every legacy-shaped case below is about, where the source has no definition
+#: to look up and ownership falls to its name. A listing that does not read at
+#: all stops the pass outright; that is `test_ownership_unreadable.py`.
+NOTHING_OF_OURS = [Definition("gitlab", "def-gitlab")]
+
+
 def cascade(
     sources: list[Source],
     tmp_path: Path,
     connector: str = CONNECTOR,
-    definitions: list[Definition] | None = None,
+    definitions: list[Definition] = NOTHING_OF_OURS,
 ) -> tuple[int, list[str], str]:
     calls = tmp_path / "calls"
     script = f"""
@@ -58,7 +65,7 @@ def cascade(
     export AIRBYTE_URL=http://127.0.0.1:1
     export INSIGHT_TENANT_ID={TENANT}
     export CALLS="{calls}"
-    export DEFINITIONS={json.dumps(listing(definitions or []))}
+    export DEFINITIONS={json.dumps(listing(definitions))}
     source "{ROOT}/lib/reconcile.sh"
     {STUBS}
     ab_list_sources() {{ printf '%s' {json.dumps(listing(sources))}; }}
@@ -177,15 +184,15 @@ class TestANameTwoConnectorsCanSpell:
         assert "DELETE-SOURCE src-invoices-owned" not in calls
         assert f"DELETE-CRONWORKFLOW {CONNECTOR} invoices-main" in calls
 
-    def test_without_a_definition_neither_connector_claims_it(
+    def test_a_source_outside_the_listing_is_claimed_by_neither(
         self, tmp_path: Path
     ) -> None:
-        """Fail closed. With no definition to ask, the name is all there is and
-        two connectors can spell it — so neither may delete it, and it waits for
-        an operator rather than for whichever cascade runs first."""
-        code, calls, stderr = cascade(
-            [BOTH_LIVE[0]._replace(definition_id="")], tmp_path, definitions=[]
-        )
+        """Fail closed per source: the listing reads, but this source's
+        definition is not in it — deleted, or never published as ours. The name
+        is then all there is, two connectors can spell it, and so neither may
+        delete it. (A listing that does not read at all stops the whole pass;
+        that is `test_ownership_unreadable.py`.)"""
+        code, calls, stderr = cascade(BOTH_LIVE, tmp_path, definitions=NOTHING_OF_OURS)
 
         assert code == 0, stderr
         assert "DELETE-SOURCE src-team-owned" not in calls
