@@ -118,7 +118,7 @@ display convention, not a ranking. See the
 
 - [ ] `p1` - **ID**: `cpt-{system}-nfr-{slug}`
 
-**Vector**: {Primary quality vector for this obligation}
+**Vector** (optional): {the vector intrinsic to this obligation, where one is; omit it when scenarios verify it under different vectors}
 
 The system **MUST** {agreed observable quality expectation}.
 
@@ -131,7 +131,7 @@ identify open decisions and their owner without inventing a value}
 
 #### Inherited {NFR Name}
 
-**Vector**: {Upstream obligation's quality vector}
+**Vector** (optional): {the upstream obligation's vector, where it carries one}
 
 **Inherits**: `cpt-{system}-nfr-{upstream-slug}`
 
