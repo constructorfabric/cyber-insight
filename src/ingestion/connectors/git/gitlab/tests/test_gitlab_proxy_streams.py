@@ -14,8 +14,6 @@ import json
 from typing import Any
 
 import freezegun
-import pytest
-from airbyte_cdk import __version__ as _cdk_version
 from config import API_URL, GITLAB_URL, PROXY_URL, GitlabConfigBuilder
 from connector_tests import ANY_QUERY_PARAMS, HttpMocker, HttpRequest, HttpResponse, assert_records_conform, read_stream
 
@@ -23,7 +21,6 @@ _CONNECTOR = "git/gitlab"
 _PROJECTS_URL = f"{API_URL}/groups/acme/projects"
 _CLONE_URL = f"{GITLAB_URL}/acme/app.git"
 _FROZEN = "2026-07-01T00:00:00Z"
-_CDK_MAJOR = int(_cdk_version.split(".")[0])
 
 
 def _project(**overrides: Any) -> dict[str, Any]:
@@ -97,11 +94,6 @@ def test_commits_paginate_and_key_on_the_project_id(http_mocker: HttpMocker) -> 
     assert_records_conform(output.records, _CONNECTOR, "commits", strict=True)
 
 
-@pytest.mark.xfail(
-    _CDK_MAJOR < 7,
-    reason="airbyte-cdk 6.x persists the roster cursor with the child but does not apply it when the roster is re-read as a partition parent; 7.x does",
-    strict=True,
-)
 @freezegun.freeze_time(_FROZEN)
 def test_a_resumed_commits_sync_clones_no_project_idle_since_the_stored_cursor(http_mocker: HttpMocker) -> None:
     """The roster's last_activity_at cursor is persisted with the child
