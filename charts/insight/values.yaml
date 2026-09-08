@@ -99,6 +99,11 @@ global:
     enabled: false
     # Public origin of this Insight instance, for example https://insight.example.com.
     publicUrl: ""
+  # Global (not `previews.deploy`) so one knob controls both the previews
+  # subchart and the gateway's /api/previews route: a route left pointing at a
+  # Service the release does not create keeps nginx from loading its config.
+  previews:
+    enabled: true
   security:
     # bitnami charts check that the image belongs to their "secure images"
     # list. We use bitnamilegacy (see mariadb.image / redis.image) so we
@@ -767,8 +772,9 @@ identityResolution:
 # Structurally inert until the stand sets `experiments.routeHost` (creates
 # fail closed without it) and the shared Gateway's `allowedRoutes` admits the
 # experiments namespace (bootstrap/<env>/gateway.yaml in gitops).
+# Toggled by `global.previews.enabled` (see the global block), which also
+# removes the gateway's /api/previews route in the same render.
 previews:
-  deploy: true
   replicaCount: 1 # the subchart refuses more: the TTL sweep has no leader election
   image:
     repository: ghcr.io/constructorfabric/insight-previews
