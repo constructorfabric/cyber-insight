@@ -67,7 +67,6 @@
   - [TEST-FDESIGN-001: Testability](#test-fdesign-001-testability)
   - [TEST-FDESIGN-002: Test Coverage Guidance](#test-fdesign-002-test-coverage-guidance)
   - [TEST-FDESIGN-003: Acceptance Criteria](#test-fdesign-003-acceptance-criteria)
-  - [QV-FDESIGN-001: Quality Vector Scenarios](#qv-fdesign-001-quality-vector-scenarios)
 - [📜 COMPLIANCE Expertise (COMPL)](#compliance-expertise-compl)
   - [COMPL-FDESIGN-001: Regulatory Compliance](#compl-fdesign-001-regulatory-compliance)
   - [COMPL-FDESIGN-002: Privacy Compliance](#compl-fdesign-002-privacy-compliance)
@@ -737,15 +736,14 @@ Before evaluating each checklist item, the expert MUST:
 
 ---
 
-### QV-FDESIGN-001: Quality Vector Scenarios
-**Severity**: HIGH (new FEATURE artifacts and explicitly added or migrated Testing sections)
+## Authoring aid — quality vectors
 
-- [ ] Section 6 retains the canonical Acceptance Criteria checklist; section 7 names the owning feature ID and every scenario has exactly one vector, one existing suite tag and an observable do → expect outcome
-- [ ] PRD FR/NFR IDs resolve through FEATURE section 1.2 to scenario requirement references; every applicable local or inherited NFR has scenarios, shared test evidence or an explicit deferral with owner and reason
-- [ ] Each vector has scenarios or an explicit reason for non-applicability; missing test infrastructure is recorded as a gap
-- [ ] Expectations follow agreed requirements; implementation disagreements remain findings until the specification decision is resolved
-- [ ] Checked scenarios link to exact tests; tests reference the feature path, feature ID and scenario number with matching vector attribution; passing evidence identifies revision and conditions separately from implementation status
-- [ ] The rollup was inspected for missing vectors; examples and tag counts do not establish coverage or successful execution
+Not a checklist item: it carries no ID, no severity and no verdict.
+
+**Authoring aid:** Use the [quality-vector guide](../../guides/quality-vectors.md)
+and `quality-vector-tests` to suggest clearer requirement mappings, contribution
+boundaries and evidence links. This extension adds no semantic gate or mandatory
+rollup. Canonical criteria above and agreed requirements retain their meaning.
 
 ---
 

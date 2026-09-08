@@ -70,7 +70,6 @@
 - [🧪 TESTING Expertise (TEST)](#testing-expertise-test)
   - [TEST-PRD-001: Acceptance Criteria](#test-prd-001-acceptance-criteria)
   - [TEST-PRD-002: Testability](#test-prd-002-testability)
-  - [QV-PRD-001: Quality Vector Decisions](#qv-prd-001-quality-vector-decisions)
 - [DOC (DOC)](#doc-doc)
   - [DOC-PRD-001: Explicit Non-Applicability](#doc-prd-001-explicit-non-applicability)
   - [ARCH-PRD-NO-001: No Technical Implementation Details](#arch-prd-no-001-no-technical-implementation-details)
@@ -753,15 +752,14 @@ Mark review as "PARTIAL" if not all domains completed.
 
 ---
 
-### QV-PRD-001: Quality Vector Decisions
-**Severity**: HIGH (new PRDs and explicit quality-vector migrations)
+## Authoring aid — quality vectors
 
-- [ ] All five vectors are accounted for by local NFRs, inherited obligations, or justified exclusions
-- [ ] Each local NFR has exactly one vector, a measurable target with conditions, and a business consequence in its rationale
-- [ ] Inherited entries cite a resolvable upstream NFR ID, preserve its target, and name shared verification evidence and its owner
-- [ ] An unknown target is an open decision with an owner and resolution point, not an exclusion or evidence that the requirement is satisfied
-- [ ] Applicable show-stoppers each need to pass; vector counts and display order do not override them
-- [ ] The rollup was inspected for missing vectors; its counts are declarations, not passing-test evidence
+Not a checklist item: it carries no ID, no severity and no verdict.
+
+**Authoring aid:** Use the [quality-vector guide](../../guides/quality-vectors.md)
+to suggest clearer expectations, scope, conditions or measurements. Report these
+as improvement opportunities, without a severity, pass/fail verdict or mandatory
+rollup. Canonical criteria above and agreed requirements retain their meaning.
 
 ---
 

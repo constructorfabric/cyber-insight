@@ -132,7 +132,9 @@ The system **MUST** {clear description of what to implement}.
 **Feature**: `cpt-{system}-feature-{slug}`
 
 {Brief scope, primary risk, fixtures and test boundaries. This Testing section is
-an Insight extension; keep Acceptance Criteria above in the canonical kit form.}
+an Insight extension; keep Acceptance Criteria above in the canonical kit form.
+Use the [quality-vector guide](../../guides/quality-vectors.md) for shared
+obligations, test attribution and scenario changes.}
 
 - [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} — {do → expect}.
   **Requirements**: `cpt-{system}-nfr-{slug}`.
@@ -141,7 +143,8 @@ an Insight extension; keep Acceptance Criteria above in the canonical kit form.}
   **Requirements**: `cpt-{system}-nfr-{other-slug}`.
   **Blocked by**: {owner, reason and resolution point}.
 
-**{Vector with no applicable obligation}** — n/a: {reason}.
+{When useful, explain a considered vector with no applicable obligation as
+`**{Vector}** — n/a: {reason}.` Categories do not impose new requirements.}
 
 {Each requirement above is also declared in section 1.2. Implemented tests cite
 the feature ID, FEATURE path and scenario number, and carry the suite's vector

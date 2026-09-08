@@ -19,15 +19,15 @@ DO:
   - RUN author each required section guided by template prompts (Vision, Actors, Capabilities/FRs, Use Cases, NFRs + Exclusions, Non-Goals, Assumptions, Risks)
   - SET actor IDs = cpt-{hierarchy-prefix}-actor-{slug}; capability/FR IDs = cpt-{hierarchy-prefix}-fr-{slug}; assign priorities p1-p9 by business impact
   - RUN cfs list-ids to verify ID uniqueness
+  - RUN use `../../guides/quality-vectors.md` (relative to this file) for advisory quality-vector suggestions: clarify relevant expectations, preserve agreed targets, and identify open decisions; do not create a new readiness gate for vector formatting or completeness
+  - RUN distinguish individually excluded default NFRs from wholly inapplicable vectors in section 6.2; an inherited obligation remains applicable unless explicitly excluded with a reason
 
 RULES:
   - ALWAYS follow {prd_template} structure; all required sections present and non-empty
   - ALWAYS use ID convention cpt-{hierarchy-prefix}-{kind}-{slug} and priority markers p1-p9 on capabilities/FRs
   - ALWAYS version on change: increment frontmatter version when editing; when changing a capability definition add -v{N} suffix (e.g. cpt-{hierarchy-prefix}-cap-{slug}-v2) or increment existing version; keep a changelog of significant changes
-  - ALWAYS keep the PRD requirements-only (WHAT not HOW); express every NFR as a business-level quality requirement (user/business outcome, SLA, measurable target) attributed to exactly one quality vector (Efficiency, Reliability, Performance, Security, Versatility), not a technical implementation spec
-  - ALWAYS account for all five quality vectors: section 6.1 holds local NFRs and inherited obligations; inherited entries carry `**Vector**`, `**Inherits**` with the upstream NFR ID, and `**Verification**` naming the shared evidence and its owner; only a vector with no applicable local or inherited obligation belongs in `### 6.2 NFR Exclusions`, with its reason
-  - ALWAYS give every locally defined NFR a `**Threshold**` line carrying a number, a bound or an absolute with its units; an unknown target names its owner and resolution point there; inherited entries retain the upstream target by reference
-  - ALWAYS open section 6 with a short paragraph naming which vectors carry this module's real risk and why — orientation for a reader, never a second list of requirements and never a five-row table; the vector tags on the NFRs below are the machine-readable truth
+  - ALWAYS keep the PRD requirements-only (WHAT not HOW); express NFRs as business-level quality requirements (user/business outcome, SLA, observable target), not technical implementation specs
+  - ALWAYS give every local NFR a `**Vector**` line naming its one primary quality vector, and every inherited entry the upstream obligation's vector; WHICH vectors a module needs is advisory, but the tag itself is the input the five-vector view is grouped from, so an untagged NFR is invisible to it
   - ALWAYS state authorization as exact per-actor/operation permissions (which actor may perform which action on which resource); NEVER restate the generic "every API/endpoint requires authentication/authorization", which is assumed
   - ALWAYS treat {prd_checklist} as the single source of semantic quality criteria
   - NEVER duplicate semantic criteria here; NEVER leave placeholders (TODO, TBD, FIXME); NEVER create duplicate IDs within the document
