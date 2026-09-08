@@ -76,24 +76,3 @@ FEATURE section 1.2 references applicable FR/NFR IDs. Flows, algorithms and DoDs
 describe its contribution. Preserve canonical section 6 Acceptance Criteria as
 the feature's readable completion checklist. Insight's section 7 Testing maps
 the feature's claims to vector-attributed scenarios and exact executable tests.
-
-One requirement can have several scenarios; one scenario can reference several
-requirements. Its vector names the claim being verified. Supporting assertions
-can address another requirement without proving that requirement in full. Keep
-the suite's one-primary-vector convention. For independent claims in different
-vectors, use assertion-focused tests that share setup rather than adding several
-native vector markers to one test. Reuse a test across features only when its
-assertions establish each linked scenario's claim and scope.
-
-Scenario numbers are stable local anchors. Editorial edits retain their number.
-When the target, scope or expected behavior changes, reassess linked tests and
-clear the implementation checkbox until the complete revised claim is mapped.
-Splits and merges retain the old number's disposition and point to successors.
-Evidence identifies the revision containing both specification and tests, plus
-fixtures, conditions, command and result.
-
-## Use the examples
-
-The registered kit examples demonstrate canonical artifact structure and CDSL.
-Use them when adding quality expectations to an artifact; they do not establish
-product test coverage.
