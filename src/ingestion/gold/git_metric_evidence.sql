@@ -1,16 +1,4 @@
-{# 3 GiB, and spill thresholds to match: this build outgrew the shared 2 GiB
-   ceiling and failed the post-upgrade migration hook with MEMORY_LIMIT_EXCEEDED,
-   taking the whole deploy down with it. Same pairing the other heavy gold
-   models carry (task_issue_state, task_status_spans, account_attribute_values).
-   Raising the ceiling buys headroom, not a cure — the inputs keep growing. #}
-{{ metric_evidence_table(
-    join_use_nulls=1,
-    query_settings_overrides={
-        'max_memory_usage': 3221225472,
-        'max_bytes_before_external_group_by': 805306368,
-        'max_bytes_before_external_sort': 805306368
-    }
-) }}
+{{ metric_evidence_table(join_use_nulls=1) }}
 
 -- Resolution happens at READ time, and account-first: a row naming its author's
 -- account (pull requests) resolves through that binding, everything else
@@ -57,63 +45,6 @@ repository_default_branches AS (
     WHERE is_default = 1
     GROUP BY tenant_id, source_id, project_key, repo_slug
 ),
--- One row per change CONTENT, not per commit that carries it. The same content
--- entering a repository on two lines of history — a branch whose copy of a
--- tree also landed on the default branch, a cherry-pick, a squash that
--- re-applies its branch's whole span, a reverted-then-restored file — is one
--- authored change, and summing every carrier's diff would count those lines
--- more than once. `git_file_content_identity` is what "same content" means.
---
--- Earliest commit wins, so the value lands in the period the content was first
--- authored and does not move when a later commit repeats it.
---
--- The commit_hash tie-breaker keeps rows whose identity is UNKNOWN (a source
--- that reports no oid, or a row collected before the proxy did) distinct per
--- commit: without it every such row for one path would collapse into one,
--- because LIMIT 1 BY reads their NULL keys as equal.
---
--- The superseded set is the case content identity alone cannot reach: a squash
--- whose branch was only PARTLY collected carries the collected commits' work
--- under a span no single commit made, so nothing folds it. See
--- git_superseded_file_changes.
-deduplicated_file_changes AS (
-    SELECT
-        tenant_id,
-        source_id,
-        project_key,
-        repo_slug,
-        commit_hash,
-        data_source,
-        file_path,
-        file_extension,
-        change_type,
-        lines_added,
-        lines_removed
-    FROM {{ ref('git_commit_file_changes') }}
-    WHERE (tenant_id, data_source, commit_hash, file_path) NOT IN (
-        SELECT tenant_id, data_source, commit_hash, file_path
-        FROM {{ ref('git_superseded_file_changes') }}
-    )
-    -- INVARIANT: committer_date breaks the tie, and must stay ahead of the
-    -- hash. observed_at is the AUTHOR date, which a rebase preserves — so the
-    -- copy and its original tie there, and without this the survivor (and with
-    -- it the repository and branch scope the lines are filed under) would be
-    -- decided by comparing hashes. #3153
-    ORDER BY observed_at, committer_date, commit_hash
-    LIMIT 1 BY
-        tenant_id,
-        data_source,
-        project_key,
-        repo_slug,
-        file_path,
-        {{ git_file_content_identity('post_image_oid', 'pre_image_oid') }},
-        if(
-            coalesce(pre_image_oid, '') = ''
-                AND coalesce(post_image_oid, '') = '',
-            commit_hash,
-            ''
-        )
-),
 -- A commit's own line stats, less the lines of the file changes that lost the
 -- content dedup. The stats stay the base — a source can report a commit's
 -- totals without reporting its file changes at all — and only what the dedup
@@ -128,7 +59,7 @@ authored_commit_file_lines AS (
         commit_hash,
         sum(lines_added) AS lines_added,
         sum(lines_removed) AS lines_removed
-    FROM deduplicated_file_changes
+    FROM {{ ref('git_deduplicated_file_changes') }}
     GROUP BY tenant_id, data_source, commit_hash
 ),
 authored_commits AS (
@@ -262,7 +193,7 @@ file_changes_source AS (
             ) AS change_type_label,
             sum(lines_added) AS lines_added,
             sum(lines_removed) AS lines_removed
-        FROM deduplicated_file_changes AS raw_file_change
+        FROM {{ ref('git_deduplicated_file_changes') }} AS raw_file_change
         GROUP BY tenant_id, source_id, project_key, repo_slug, commit_hash, category, file_extension_value, file_extension_label, change_type_value, change_type_label
     ) AS file_changes
     INNER JOIN {{ ref('git_authored_commits') }} AS commits
