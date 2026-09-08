@@ -19,12 +19,16 @@ DO:
   - RUN author each required section guided by template prompts (Vision, Actors, Capabilities/FRs, Use Cases, NFRs + Exclusions, Non-Goals, Assumptions, Risks)
   - SET actor IDs = cpt-{hierarchy-prefix}-actor-{slug}; capability/FR IDs = cpt-{hierarchy-prefix}-fr-{slug}; assign priorities p1-p9 by business impact
   - RUN cfs list-ids to verify ID uniqueness
+  - RUN use `../../guides/quality-vectors.md` (relative to this file) for advisory quality-vector suggestions: clarify relevant expectations, preserve agreed targets, and identify open decisions; do not create a new readiness gate for vector formatting or completeness
+  - RUN distinguish individually excluded default NFRs from wholly inapplicable vectors in section 6.2; an inherited obligation remains applicable unless explicitly excluded with a reason
 
 RULES:
   - ALWAYS follow {prd_template} structure; all required sections present and non-empty
   - ALWAYS use ID convention cpt-{hierarchy-prefix}-{kind}-{slug} and priority markers p1-p9 on capabilities/FRs
   - ALWAYS version on change: increment frontmatter version when editing; when changing a capability definition add -v{N} suffix (e.g. cpt-{hierarchy-prefix}-cap-{slug}-v2) or increment existing version; keep a changelog of significant changes
-  - ALWAYS keep the PRD requirements-only (WHAT not HOW); express every NFR as a business-level quality requirement (user/business outcome, SLA, measurable target), not a technical implementation spec
+  - ALWAYS keep the PRD requirements-only (WHAT not HOW); express NFRs as business-level quality requirements (user/business outcome, SLA, observable target), not technical implementation specs
+  - ALWAYS open section 6 with one line per quality vector saying whether it is material to this module and why; those lines orient a reader and are never requirements, and calling a vector immaterial records a decision that silence does not
+  - MAY give a requirement a `**Vector**` line where one vector is intrinsic to it — a latency budget is Performance, a tenant-isolation property is Security — on an FR as readily as an NFR; OMIT it where scenarios verify the requirement under different vectors, because the vector belongs to the claim a scenario makes, not to the requirement, and picking one would be wrong for the others
   - ALWAYS state authorization as exact per-actor/operation permissions (which actor may perform which action on which resource); NEVER restate the generic "every API/endpoint requires authentication/authorization", which is assumed
   - ALWAYS treat {prd_checklist} as the single source of semantic quality criteria
   - NEVER duplicate semantic criteria here; NEVER leave placeholders (TODO, TBD, FIXME); NEVER create duplicate IDs within the document

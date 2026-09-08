@@ -468,8 +468,8 @@ regeneration. To seed a connector whose bronze tables aren't in the snapshot yet
 
 ## Feature-scenario traceability
 
-When a spec implements a scenario tracked in a feature issue's Testing section,
-cite it inside the spec's `description` (`… — #2163 scenario 1`); the full
-traceability contract (id-not-prose, box-checking after merge) is the
-`quality-vector-tests` skill's tracking section. The scenario's vector has no
-marker mechanism in this suite; it lives issue-side only.
+When a spec implements a scenario from a feature's Testing section, cite it
+inside the spec's `description`: the FEATURE path, its `cpt-…-feature-…` ID and
+the stable scenario number. The full traceability contract is section 5 of the
+`quality-vector-tests` skill. This suite has no vector marker mechanism, so the
+scenario's vector lives in the FEATURE only.

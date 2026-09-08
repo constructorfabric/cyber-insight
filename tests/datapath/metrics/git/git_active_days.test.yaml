@@ -46,8 +46,8 @@ description: >
   on is a property of the stand — while the fact that they land on the SAME
   date holds under every timezone.
 
-  The rig resolves `view: breakdown` and `view: timeseries` to exactly one
-  view per metric, so each split and each bucket needs its own case.
+  The API rejects a metric that requests the same view twice, so each split
+  and each bucket needs its own case.
 
 bronze:
   bronze_bamboohr.employees:

@@ -23,8 +23,8 @@ description: >
   merged request reports; the repository split that separates them; and an
   empty window.
 
-  The rig resolves `view: breakdown` to exactly one view per metric, so the
-  split needs its own case.
+  The API rejects a metric that requests the same view twice, so the split
+  needs its own case.
 
   Fixture — erin only. Every branch commit's flag says it did not land, every
   squash's flag says it did, and every request merged into `main`.

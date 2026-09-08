@@ -406,7 +406,7 @@ Then open `https://<HOST>` — the host from Step 1 — and confirm the login re
 
 ### Where the logs go
 
-On a default install no log collector is configured (`global.observability.otlp.endpoint` is empty), and the umbrella never installs one. Every pod then writes its log lines to its own standard output/error and nowhere else; read them with `kubectl -n insight logs deploy/<service>`. The five gears services emit JSON (one object per line), governed by two install-wide knobs: `global.observability.logs.level` (`info` by default) and `global.observability.logs.format` (`json` by default; set `text` for human-readable lines, at the cost of any collector's level parsing). The gateway, frontend and ingestion workflow pods keep formats of their own for now (constructorfabric/insight#2488 tracks converging them).
+On a default install no log collector is configured (`global.observability.otlp.endpoint` is empty), and the umbrella never installs one. Every pod then writes its log lines to its own standard output/error and nowhere else; read them with `kubectl -n insight logs deploy/<service>` (ingestion workflow pods are not Deployments — read those with `kubectl -n insight logs <workflow-pod>` while the pod is retained). The five gears services emit JSON (one object per line), governed by two install-wide knobs: `global.observability.logs.level` (`info` by default) and `global.observability.logs.format` (`json` by default; set `text` for human-readable lines, at the cost of any collector's level parsing). The ingestion workflow pods' Python steps emit the same JSON shape, governed by the same `global.observability.logs.level` knob (handed to them as the platform ConfigMap's `INSIGHT_LOG_LEVEL`); only the gateway and frontend keep formats of their own for now (constructorfabric/insight#2488 tracks converging them).
 
 A line a gears service writes while handling a request carries, in its `spans` chain under the `log_ctx` entry:
 
@@ -415,6 +415,8 @@ A line a gears service writes while handling a request carries, in its `spans` c
 - `service` and `version` — from the service's `opentelemetry.resource` config (`service_name` and the `service.version` attribute, which the chart sets to the image tag) — the same identity traces carry.
 
 Startup and background lines carry none of these yet — that requires a gears toolkit change, tracked in constructorfabric/insight#2488.
+
+No token, session credential or personal data is reachable from a log line: values a service must hold but never say (session credentials, IdP tokens, client secrets, store passwords, addresses) render as a `<redacted>` marker, and each service's own test suite carries seeded-leak tests that fail where a leaking line is written. One check, `scripts/ci/logging_bar.py`, reports every service against this bar (shape, level, fields, leaks) on each pipeline run.
 
 ## Step 6 — Configure connectors (optional)
 

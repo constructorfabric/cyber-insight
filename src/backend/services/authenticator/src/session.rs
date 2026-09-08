@@ -16,8 +16,10 @@ use anyhow::Context as _;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 
+const REDACTED: &str = "<redacted>";
+
 /// Transient per-login state, keyed by the OIDC `state` value (5 min TTL).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LoginState {
     pub pkce_verifier: String,
     pub nonce: String,
@@ -30,6 +32,21 @@ pub struct LoginState {
     /// View-as target from `__override=<email>` (#1941). Stored only when
     /// `override_enabled`; empty on normal logins.
     pub override_email: String,
+}
+
+// SAFETY: `pkce_verifier`/`nonce` are one-shot login credentials and
+// `override_email` is a person's address — a `?state` in any log line must
+// render markers, never the values (insight#2488 AC-4).
+impl std::fmt::Debug for LoginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginState")
+            .field("pkce_verifier", &REDACTED)
+            .field("nonce", &REDACTED)
+            .field("return_to", &self.return_to)
+            .field("issuer", &self.issuer)
+            .field("override_email", &REDACTED)
+            .finish()
+    }
 }
 
 impl LoginState {
@@ -58,7 +75,7 @@ impl LoginState {
 }
 
 /// A session record — the `{asm}:session:{session_id}` HASH (DESIGN §3.7).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionRecord {
     pub person_id: String,
     /// The person's email (from the id_token at login) — surfaced to the SPA
@@ -85,6 +102,38 @@ pub struct SessionRecord {
     /// logins; `person_id`/`email` above are then the override target's.
     pub impersonator_person_id: String,
     pub impersonator_email: String,
+}
+
+// SAFETY: the record holds the live cookie credential (`current_token`), the
+// IdP tokens, the CSRF secret and the person's addresses — a `?record` in any
+// log line must render markers, never the values (insight#2488 AC-4).
+impl std::fmt::Debug for SessionRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRecord")
+            .field("person_id", &self.person_id)
+            .field("email", &REDACTED)
+            .field("tenant_id", &self.tenant_id)
+            .field("roles", &self.roles)
+            .field("idp_iss", &self.idp_iss)
+            .field("idp_sub", &self.idp_sub)
+            .field("idp_sid", &self.idp_sid)
+            .field("id_token", &REDACTED)
+            .field(
+                "idp_refresh_token",
+                &self.idp_refresh_token.as_ref().map(|_| REDACTED),
+            )
+            .field("idp_access_expires_at", &self.idp_access_expires_at)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("absolute_expires_at", &self.absolute_expires_at)
+            .field("user_agent", &REDACTED)
+            .field("ip", &REDACTED)
+            .field("csrf_token", &REDACTED)
+            .field("current_token", &REDACTED)
+            .field("impersonator_person_id", &self.impersonator_person_id)
+            .field("impersonator_email", &REDACTED)
+            .finish()
+    }
 }
 
 impl SessionRecord {

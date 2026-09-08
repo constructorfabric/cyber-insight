@@ -12,6 +12,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+const REDACTED_SECRET: &str = "<redacted>";
+
 /// Policy for IdPs that issue no refresh token (some withhold `offline_access`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +54,7 @@ pub enum ResolveBy {
 
 /// One host-keyed issuer entry: the issuer and its client registration —
 /// the only per-realm settings; everything else in [`IdpConfig`] is global.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct HostIdpConfig {
     /// OIDC issuer URL of this host's realm (discovery root; byte-exact match
@@ -70,8 +72,22 @@ pub struct HostIdpConfig {
     pub default_tenant_id: String,
 }
 
+// SAFETY: `client_secret` is the confidential-client credential — a `?config`
+// in any log line must render a marker, never the value (insight#2488 AC-4).
+impl std::fmt::Debug for HostIdpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostIdpConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &REDACTED_SECRET)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("default_tenant_id", &self.default_tenant_id)
+            .finish()
+    }
+}
+
 /// OIDC provider settings and the background-refresh knobs (§4.1 `idp.*`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IdpConfig {
     /// OIDC issuer URL — discovery root (`{issuer}/.well-known/openid-configuration`).
@@ -139,6 +155,38 @@ pub struct IdpConfig {
     /// Jitter (± this window) applied to due-times when WRITTEN to the
     /// schedule, so sessions do not herd after a deploy or Redis restore (G5).
     pub refresh_due_jitter_seconds: u64,
+}
+
+// SAFETY: `client_secret` is the confidential-client credential — a `?config`
+// in any log line must render a marker, never the value (insight#2488 AC-4).
+impl std::fmt::Debug for IdpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdpConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &REDACTED_SECRET)
+            .field("tenant_claim", &self.tenant_claim)
+            .field("source_type", &self.source_type)
+            .field("external_id_claim", &self.external_id_claim)
+            .field("resolve_by", &self.resolve_by)
+            .field("provision_on_login", &self.provision_on_login)
+            .field("default_tenant_id", &self.default_tenant_id)
+            .field("extra_ca_cert_path", &self.extra_ca_cert_path)
+            .field("hosts", &self.hosts)
+            .field("refresh_enabled", &self.refresh_enabled)
+            .field(
+                "refresh_safety_margin_seconds",
+                &self.refresh_safety_margin_seconds,
+            )
+            .field("refresh_concurrency", &self.refresh_concurrency)
+            .field("no_refresh_token_policy", &self.no_refresh_token_policy)
+            .field("refresher_tick_seconds", &self.refresher_tick_seconds)
+            .field(
+                "refresh_due_jitter_seconds",
+                &self.refresh_due_jitter_seconds,
+            )
+            .finish()
+    }
 }
 
 impl Default for IdpConfig {

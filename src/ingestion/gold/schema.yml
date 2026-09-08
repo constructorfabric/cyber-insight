@@ -113,6 +113,47 @@ models:
         tests:
           - not_null
 
+  - name: git_deduplicated_file_changes
+    description: >
+      The collected file changes reduced to one row per change CONTENT within a
+      repository and path, with the earliest carrying commit kept, and the
+      superseded merge-result paths removed. This is the set every git size
+      measure sums: a cherry-pick, a squash and a rebase copy all describe one
+      authored change, and counting each carrier would report those lines more
+      than once. Materialized so the collapse runs once per build in its own
+      query budget rather than once per reference inside the evidence build.
+    columns:
+      - name: tenant_id
+        description: >
+          Tenant isolation field. Nullable on the git class relations and
+          preserved as such here, so no not_null test.
+      - name: source_id
+        description: "Connector instance of the surviving carrier"
+      - name: project_key
+        description: "Project the repository belongs to"
+      - name: repo_slug
+        description: "Repository the content entered"
+      - name: commit_hash
+        description: "Earliest commit that carries the content"
+        tests:
+          - not_null
+      - name: data_source
+        description: "Git source discriminator (insight_github, insight_gitlab, ...)"
+        tests:
+          - not_null
+      - name: file_path
+        description: "Path the content was written to"
+        tests:
+          - not_null
+      - name: file_extension
+        description: "Extension of file_path, lowercased, empty when it has none"
+      - name: change_type
+        description: "Vendor change type as reported (added, modified, renamed, ...)"
+      - name: lines_added
+        description: "Added lines of the surviving carrier's diff for the path"
+      - name: lines_removed
+        description: "Removed lines of the surviving carrier's diff for the path"
+
   - name: git_default_branch_commits
     description: >
       Commits that reached a repository's default branch, either through a

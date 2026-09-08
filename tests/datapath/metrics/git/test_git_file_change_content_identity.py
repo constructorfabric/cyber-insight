@@ -65,7 +65,10 @@ def test_a_change_counts_once_per_content_however_many_commits_carry_it(spec: Sp
 
 def test_the_repeat_of_an_earlier_content_reports_no_lines_of_its_own(spec: SpecRun) -> None:
     """November holds one commit whose only file change repeats content October already
-    counted: the commit counts, the repository gets no lines row, and the commit's size is 0."""
+    counted: the commit counts, the repository gets no lines row, and the commit's size is 0.
+
+    The size is asserted without a repository dimension, so the window is what isolates it:
+    November holds exactly this fixture's one commit."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
