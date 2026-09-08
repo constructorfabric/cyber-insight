@@ -79,40 +79,6 @@ cp src/ingestion/secrets/connectors/gitlab.yaml.example src/ingestion/secrets/co
 kubectl apply -f src/ingestion/secrets/connectors/gitlab.yaml
 ```
 
-## Upgrading from 3.x
-
-The 3.x connector was a Python CDK source. 4.0 keeps three of its stream names
-(`commits`, `branches`, `users`) and the key format, under different columns,
-so a 3.x row would sit beside a 4.0 row under the same key with every new
-column NULL. Drop the connector's bronze tables before the first 4.0 sync:
-
-```sql
-DROP DATABASE bronze_gitlab SYNC;
-```
-
-Reconcile does not replace a CDK definition with a declarative one on its
-own: it finds the existing definition with no builder project behind it,
-logs it as an orphan and leaves it syncing. Run the state-preserving helper
-once, then let the next reconcile publish 4.0:
-
-```bash
-bash src/ingestion/reconcile-connectors/tools/migrate-orphan-definition.sh gitlab
-```
-
-Before that reconcile, update the Secret:
-
-- `gitlab_start_date` is now required; the Secret validation fails without it.
-- Archived projects, forks (unless `gitlab_include_forks: "true"`) and
-  projects shared into the group are no longer synced; their history is gone
-  after the `DROP`.
-
-The next deploy recreates the placeholder and the first sync fills it from
-`gitlab_start_date`. The descriptor major bump dispatches a one-shot
-`dbt --full-refresh` over `tag:gitlab+`, so the staging models and every
-silver class they feed are rebuilt from the new bronze; 3.x rows under the
-old keys (`pull_requests_comments`, `pull_requests_reviewers`) do not
-survive it. Gold needs nothing.
-
 ## Streams
 
 | Stream | Upstream | Sync Mode | Cursor |
