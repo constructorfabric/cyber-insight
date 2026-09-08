@@ -40,7 +40,7 @@ function WidgetRow({ name }: { name: string }) {
   const { data, isPending, isError, error } = useQuery(widgetQuery(name));
 
   return (
-    <DefinitionCard name={name}>
+    <DefinitionCard name={name} kind="widgets">
       {isPending ? (
         <CenteredSpinner className="min-h-24" />
       ) : isError ? (

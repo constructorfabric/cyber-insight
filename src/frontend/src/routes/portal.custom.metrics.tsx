@@ -43,7 +43,7 @@ function MetricRow({ name }: { name: string }) {
   const { data, isPending, isError, error } = useQuery(metricQuery(name));
 
   return (
-    <DefinitionCard name={name}>
+    <DefinitionCard name={name} kind="metrics">
       {isPending ? (
         <CenteredSpinner className="min-h-24" />
       ) : isError ? (

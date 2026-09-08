@@ -63,6 +63,8 @@ fn register_kind(
         array: false,
     };
 
+    let delete_param = name_param.clone();
+
     let put = OperationBuilder::put(format!("/v1/{segment}/{{name}}"))
         .operation_id(format!("insight_v3_core.{segment}.put"))
         .summary("Create or replace a definition")
@@ -105,10 +107,117 @@ fn register_kind(
         .error_504(openapi)
         .handler(list_definitions)
         .register(Router::new(), openapi)
+        .layer(Extension(state.clone()))
+        .layer(Extension(kind));
+
+    let remove = OperationBuilder::delete(format!("/v1/{segment}/{{name}}"))
+        .operation_id(format!("insight_v3_core.{segment}.delete"))
+        .summary("Remove a definition")
+        .anonymous()
+        .exposed()
+        .param(delete_param)
+        .no_content_response(StatusCode::NO_CONTENT, "Definition removed")
+        .error_400(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_504(openapi)
+        .handler(delete_definition)
+        .register(Router::new(), openapi)
         .layer(Extension(state))
         .layer(Extension(kind));
 
-    host_router.merge(put).merge(get).merge(list)
+    host_router.merge(put).merge(get).merge(list).merge(remove)
+}
+
+/// What still draws the definition the caller is removing.
+///
+/// A widget whose metric is gone renders an error where a chart should be, and
+/// a dashboard holding a widget that is gone renders a gap. Both were the
+/// failure the reader could not diagnose, so a definition in use is kept and
+/// the dependents named.
+async fn dependents_of(
+    state: &AppState,
+    kind: DefinitionKind,
+    name: &DefinitionName,
+) -> Result<Vec<String>, CanonicalError> {
+    let (holder, needle) = match kind {
+        // A widget names its metric; a dashboard names its widgets.
+        DefinitionKind::Metric => (DefinitionKind::Widget, "metric"),
+        DefinitionKind::Widget => (DefinitionKind::Dashboard, "widgets"),
+        DefinitionKind::Dashboard => return Ok(Vec::new()),
+    };
+
+    let mut used_by = Vec::new();
+    for holder_name in state
+        .definitions()
+        .list(holder)
+        .await
+        .map_err(definition_store_error)?
+    {
+        let Ok(parsed) = DefinitionName::parse(&holder_name) else {
+            continue;
+        };
+        let Some(body) = state
+            .definitions()
+            .get(holder, &parsed)
+            .await
+            .map_err(definition_store_error)?
+        else {
+            continue;
+        };
+
+        let names = match body.get(needle) {
+            Some(serde_json::Value::String(one)) => vec![one.as_str()],
+            Some(serde_json::Value::Array(many)) => {
+                many.iter().filter_map(serde_json::Value::as_str).collect()
+            }
+            _ => Vec::new(),
+        };
+        if names.contains(&name.as_str()) {
+            used_by.push(holder_name);
+        }
+    }
+
+    Ok(used_by)
+}
+
+async fn delete_definition(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(kind): Extension<DefinitionKind>,
+    Path(name): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, CanonicalError> {
+    crate::api::require_admin(&state, &headers, || {
+        DefinitionApiError::permission_denied()
+            .with_reason(crate::api::ADMIN_ONLY)
+            .create()
+    })
+    .await?;
+
+    let name = DefinitionName::parse(&name).map_err(definition_error)?;
+
+    let used_by = dependents_of(&state, kind, &name).await?;
+    if !used_by.is_empty() {
+        return Err(DefinitionApiError::failed_precondition()
+            .with_precondition_violation(
+                "name",
+                format!("still in use by {}", used_by.join(", ")),
+                "in_use",
+            )
+            .create());
+    }
+
+    let removed = state
+        .definitions()
+        .delete(kind, &name)
+        .await
+        .map_err(definition_store_error)?;
+
+    Ok(if removed {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    })
 }
 
 async fn put_definition(

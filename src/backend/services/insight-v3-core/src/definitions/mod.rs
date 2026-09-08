@@ -83,6 +83,13 @@ pub(crate) trait Definitions: Send + Sync + fmt::Debug {
 
     async fn list(&self, kind: DefinitionKind) -> Result<Vec<String>, DefinitionStoreError>;
 
+    /// Removes the definition, reporting whether there was one.
+    async fn delete(
+        &self,
+        kind: DefinitionKind,
+        name: &DefinitionName,
+    ) -> Result<bool, DefinitionStoreError>;
+
     /// Stores every definition or none of them.
     ///
     /// A chat request builds a metric, its widgets and the dashboard that
@@ -100,6 +107,7 @@ const UPSERT: &str = "INSERT INTO {table} (name, body, updated_at)
 VALUES (?, ?, UTC_TIMESTAMP(6))
 ON DUPLICATE KEY UPDATE body = VALUES(body), updated_at = VALUES(updated_at)";
 
+const DELETE_ONE: &str = "DELETE FROM {table} WHERE name = ?";
 const SELECT_BODY: &str = "SELECT body FROM {table} WHERE name = ?";
 const SELECT_NAMES: &str = "SELECT name FROM {table} ORDER BY name";
 
@@ -183,6 +191,23 @@ impl Definitions for MariaDefinitions {
         Ok(rows.into_iter().map(|row| row.name).collect())
     }
 
+    async fn delete(
+        &self,
+        kind: DefinitionKind,
+        name: &DefinitionName,
+    ) -> Result<bool, DefinitionStoreError> {
+        let result = self
+            .db
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::MySql,
+                sql(DELETE_ONE, kind),
+                [name.as_str().into()],
+            ))
+            .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn put_all(
         &self,
         writes: &[(DefinitionKind, DefinitionName, serde_json::Value)],
@@ -254,6 +279,14 @@ mod tests {
         assert!(
             statement.contains("ON DUPLICATE KEY UPDATE body = VALUES(body)"),
             "{statement}"
+        );
+    }
+
+    #[test]
+    fn a_delete_is_by_name_in_the_kind_table() {
+        assert_eq!(
+            sql(DELETE_ONE, DefinitionKind::Dashboard),
+            "DELETE FROM dashboards WHERE name = ?"
         );
     }
 

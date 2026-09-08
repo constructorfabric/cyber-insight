@@ -79,6 +79,14 @@ impl Definitions for MemoryDefinitions {
             .collect())
     }
 
+    async fn delete(
+        &self,
+        kind: DefinitionKind,
+        name: &DefinitionName,
+    ) -> Result<bool, DefinitionStoreError> {
+        Ok(self.lock().remove(&Self::key(kind, name)).is_some())
+    }
+
     async fn put_all(
         &self,
         writes: &[(DefinitionKind, DefinitionName, serde_json::Value)],

@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, LayoutDashboard } from "lucide-react";
 
+import { RemoveDefinition } from "@/components/custom/remove-definition";
 import { Card, CardContent } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
@@ -44,33 +45,37 @@ function DashboardCard({ name }: { name: string }) {
   const { data } = useQuery(dashboardQuery(name));
 
   return (
-    <Card
-      size="sm"
-      render={
+    <Card size="sm">
+      <CardContent className="flex items-center gap-3">
+        {/* The link covers the name, not the whole card, so the remove
+            button beside it stays clickable. */}
         <Link
           to="/portal/custom/$name"
           params={{ name }}
-          className="block transition-colors hover:bg-accent/50"
-        />
-      }
-    >
-      <CardContent className="flex items-center gap-3">
-        <LayoutDashboard
-          className="size-4 shrink-0 text-muted-foreground"
-          aria-hidden
-        />
-        <span className="flex min-w-0 flex-col">
-          <span className={cn(TEXT_NAME, "truncate")}>
-            {data?.title ?? name}
+          className="flex min-w-0 flex-1 items-center gap-3 transition-opacity hover:opacity-80"
+        >
+          <LayoutDashboard
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
+          <span className="flex min-w-0 flex-col">
+            <span className={cn(TEXT_NAME, "truncate")}>
+              {data?.title ?? name}
+            </span>
+            {data?.title ? (
+              <span className={cn(TEXT_LABEL, "truncate font-mono")}>
+                {name}
+              </span>
+            ) : null}
           </span>
-          {data?.title ? (
-            <span className={cn(TEXT_LABEL, "truncate font-mono")}>{name}</span>
-          ) : null}
+          <ChevronRight
+            className="ms-auto size-4 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
+        </Link>
+        <span className="shrink-0">
+          <RemoveDefinition kind="dashboards" name={name} />
         </span>
-        <ChevronRight
-          className="ms-auto size-4 shrink-0 text-muted-foreground"
-          aria-hidden
-        />
       </CardContent>
     </Card>
   );

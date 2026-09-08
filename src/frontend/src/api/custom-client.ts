@@ -89,6 +89,27 @@ async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** What a definition is, in the API's path segments. */
+export type DefinitionKind = "metrics" | "widgets" | "dashboards";
+
+/**
+ * Removes a definition.
+ *
+ * Refused while something still draws it — a widget's metric, a dashboard's
+ * widget — and the reply names what does, which is what the caller is shown.
+ */
+export async function deleteDefinition(
+  kind: DefinitionKind,
+  name: string
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE}/${kind}/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new CustomApiError(res.status, await res.json().catch(() => null));
+  }
+}
+
 export async function fetchDashboardNames(): Promise<string[]> {
   const res = await fetchWithAuth(`${BASE}/dashboards`);
   const body = await readJson<{ names: string[] }>(res);

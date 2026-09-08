@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 
+import type { DefinitionKind } from "@/api/custom-client";
+import { RemoveDefinition } from "@/components/custom/remove-definition";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
@@ -62,15 +65,22 @@ export function DefinitionList({
 /** One definition's card, with its name as the identifier it is. */
 export function DefinitionCard({
   name,
+  kind,
   children,
 }: {
   name: string;
+  kind: DefinitionKind;
   children: ReactNode;
 }) {
   return (
     <Card className="h-full">
-      <CardHeader>
-        <CardTitle className={cn(TEXT_HEADING, "font-mono")}>{name}</CardTitle>
+      <CardHeader className="flex flex-row items-center gap-2">
+        <CardTitle className={cn(TEXT_HEADING, "min-w-0 truncate font-mono")}>
+          {name}
+        </CardTitle>
+        <span className="ms-auto shrink-0">
+          <RemoveDefinition kind={kind} name={name} />
+        </span>
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>

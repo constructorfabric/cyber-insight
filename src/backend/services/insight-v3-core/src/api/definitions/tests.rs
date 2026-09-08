@@ -96,6 +96,23 @@ impl TestHarness {
         TestResponse::from_response(response).await
     }
 
+    async fn delete_json(&self, path: &str) -> TestResponse {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(path)
+            .body(Body::empty())
+            .unwrap_or_else(|error| panic!("test request must be valid: {error}"));
+
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|error| panic!("router must respond: {error}"));
+
+        TestResponse::from_response(response).await
+    }
+
     async fn list_json(&self, path: &str) -> TestResponse {
         let request = Request::builder()
             .method("GET")
@@ -250,4 +267,127 @@ async fn a_caller_without_the_admin_role_reaches_nothing() {
             "{method} {path} must refuse a caller without the role"
         );
     }
+}
+
+#[tokio::test]
+async fn a_definition_nothing_uses_is_removed() {
+    let harness = TestHarness::new().await;
+    harness
+        .put_json(
+            "/v1/metrics/spare",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+
+    let removed = harness.delete_json("/v1/metrics/spare").await;
+    assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+
+    let listed = harness.list_json("/v1/metrics").await;
+    assert_eq!(listed.json().await, json!({ "names": [] }));
+}
+
+#[tokio::test]
+async fn removing_what_is_not_there_says_so() {
+    let harness = TestHarness::new().await;
+
+    let removed = harness.delete_json("/v1/dashboards/never_existed").await;
+
+    assert_eq!(removed.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_metric_a_widget_draws_is_kept_and_the_widget_named() {
+    let harness = TestHarness::new().await;
+    harness
+        .put_json(
+            "/v1/metrics/lines_per_day",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+    harness
+        .put_json(
+            "/v1/widgets/lines_table",
+            json!({ "type": "table", "metric": "lines_per_day", "columns": ["day"] }),
+        )
+        .await;
+
+    let refused = harness.delete_json("/v1/metrics/lines_per_day").await;
+
+    // A widget whose metric is gone renders an error where a chart should be.
+    // A definition in use is a failed precondition, which this error family
+    // answers as 400 - what matters is that the reply names the widget.
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = refused.json().await;
+    assert!(
+        body.to_string().contains("lines_table"),
+        "the refusal must name what still uses it: {body}"
+    );
+    // And it really is still there.
+    assert_eq!(
+        harness.get_json("/v1/metrics/lines_per_day").await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_widget_a_dashboard_holds_is_kept_and_the_dashboard_named() {
+    let harness = TestHarness::new().await;
+    harness
+        .put_json(
+            "/v1/metrics/m",
+            json!({
+                "table": "events",
+                "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+            }),
+        )
+        .await;
+    harness
+        .put_json(
+            "/v1/widgets/held",
+            json!({ "type": "table", "metric": "m", "columns": ["day"] }),
+        )
+        .await;
+    harness
+        .put_json(
+            "/v1/dashboards/holder",
+            json!({ "title": "Holder", "widgets": ["held"] }),
+        )
+        .await;
+
+    let refused = harness.delete_json("/v1/widgets/held").await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert!(refused.json().await.to_string().contains("holder"));
+}
+
+#[tokio::test]
+async fn a_dashboard_is_removed_even_though_widgets_point_into_it() {
+    // Nothing holds a dashboard, so it is always free to remove - and its
+    // widgets and metrics stay for the next one.
+    let harness = TestHarness::new().await;
+    harness
+        .put_json(
+            "/v1/dashboards/spare",
+            json!({ "title": "Spare", "widgets": [] }),
+        )
+        .await;
+
+    let removed = harness.delete_json("/v1/dashboards/spare").await;
+
+    assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_caller_without_the_admin_role_cannot_remove_anything() {
+    let harness = TestHarness::with_caller(false).await;
+
+    let refused = harness.delete_json("/v1/metrics/anything").await;
+
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 }

@@ -1,11 +1,13 @@
 import {
   queryOptions,
   useMutation,
+  useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
 
-import type { ChatTurn } from "@/api/custom-client";
+import type { ChatTurn, DefinitionKind } from "@/api/custom-client";
 import {
+  deleteDefinition,
   fetchDashboard,
   fetchDashboardNames,
   fetchMetric,
@@ -64,6 +66,17 @@ export function metricResultQuery(name: string) {
   return queryOptions({
     queryKey: ["custom", "metric-result", name],
     queryFn: () => runMetric(name),
+  });
+}
+
+export function useRemoveDefinition() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ kind, name }: { kind: DefinitionKind; name: string }) =>
+      deleteDefinition(kind, name),
+    // Every catalogue and the pane read these lists.
+    onSuccess: () => invalidateDashboardList(queryClient),
   });
 }
 
