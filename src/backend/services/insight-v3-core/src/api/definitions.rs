@@ -156,6 +156,10 @@ pub(crate) fn custom_error(error: CustomError) -> CanonicalError {
             tracing::error!(error = ?source, "metric query execution failed");
             CanonicalError::internal("metric query execution failed").create()
         }
+        CustomError::Catalog(source) => {
+            tracing::error!(error = ?source, "table catalogue read failed");
+            CanonicalError::internal("table catalogue read failed").create()
+        }
     }
 }
 

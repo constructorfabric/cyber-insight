@@ -3,6 +3,7 @@ use std::error::Error;
 use serde_json::json;
 
 use super::*;
+use crate::catalog::Catalog;
 use crate::definitions::memory::MemoryDefinitions;
 use crate::metric_query::MetricRunner;
 
@@ -11,23 +12,27 @@ type R = Result<(), Box<dyn Error>>;
 struct Fixture {
     definitions: MemoryDefinitions,
     metrics: MetricRunner,
+    catalog: Catalog,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let client = insight_clickhouse::Client::new(insight_clickhouse::Config::new(
-            "http://clickhouse.invalid",
-            "insight",
-        ));
+        let client = || {
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                "http://clickhouse.invalid",
+                "insight",
+            ))
+        };
 
         Self {
             definitions: MemoryDefinitions::new(),
-            metrics: MetricRunner::new(client),
+            metrics: MetricRunner::new(client()),
+            catalog: Catalog::new(client(), "insight".to_owned()),
         }
     }
 
     fn surfaces(&self) -> Surfaces<'_> {
-        Surfaces::new(&self.definitions, &self.metrics)
+        Surfaces::new(&self.definitions, &self.metrics, &self.catalog)
     }
 }
 

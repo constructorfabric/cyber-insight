@@ -3,6 +3,7 @@
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::catalog::{Catalog, CatalogError, TableSchema};
 use crate::definitions::{DefinitionKind, DefinitionName, DefinitionStoreError, Definitions};
 use crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError, MetricRunner, RunResult};
 use crate::widget::{Widget, WidgetError};
@@ -26,19 +27,42 @@ pub(crate) enum CustomError {
     Run(MetricRunError),
     #[error(transparent)]
     Store(DefinitionStoreError),
+    #[error(transparent)]
+    Catalog(CatalogError),
+}
+
+impl CustomError {
+    /// Whether the caller can act on this, which decides whether it is worth
+    /// logging: a refusal the caller caused is answered, not recorded.
+    pub(crate) fn is_about_the_caller(&self) -> bool {
+        match self {
+            Self::NotFound { .. }
+            | Self::InUse { .. }
+            | Self::Widget(_)
+            | Self::Body(_)
+            | Self::Compile(_) => true,
+            Self::Run(_) | Self::Store(_) | Self::Catalog(_) => false,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct Surfaces<'a> {
     definitions: &'a dyn Definitions,
     metrics: &'a MetricRunner,
+    catalog: &'a Catalog,
 }
 
 impl<'a> Surfaces<'a> {
-    pub(crate) fn new(definitions: &'a dyn Definitions, metrics: &'a MetricRunner) -> Self {
+    pub(crate) fn new(
+        definitions: &'a dyn Definitions,
+        metrics: &'a MetricRunner,
+        catalog: &'a Catalog,
+    ) -> Self {
         Self {
             definitions,
             metrics,
+            catalog,
         }
     }
 
@@ -113,6 +137,10 @@ impl<'a> Surfaces<'a> {
         let compiled = metric.compile().map_err(CustomError::Compile)?;
 
         self.metrics.run(&compiled).await.map_err(CustomError::Run)
+    }
+
+    pub(crate) async fn tables(&self) -> Result<Vec<TableSchema>, CustomError> {
+        self.catalog.tables().await.map_err(CustomError::Catalog)
     }
 
     pub(crate) async fn check_widget(&self, body: &Value) -> Result<(), CustomError> {

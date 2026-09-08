@@ -133,7 +133,7 @@ impl AppState {
     }
 
     pub(crate) fn surfaces(&self) -> crate::custom::Surfaces<'_> {
-        crate::custom::Surfaces::new(self.definitions.as_ref(), &self.metrics)
+        crate::custom::Surfaces::new(self.definitions.as_ref(), &self.metrics, &self.catalog)
     }
 }
 

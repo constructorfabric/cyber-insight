@@ -89,3 +89,4 @@ gears:
         enabled: false
         bind_addr: "0.0.0.0:8087"
         public_url: ""
+        allow_insecure_private_network: false

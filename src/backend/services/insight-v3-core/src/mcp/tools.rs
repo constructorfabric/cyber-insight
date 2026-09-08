@@ -1,0 +1,301 @@
+use std::sync::Arc;
+
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::{ServerHandler, tool, tool_handler, tool_router};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::api::AppState;
+use crate::catalog::{Layer, TableSchema};
+use crate::custom::{CustomError, Surfaces};
+use crate::definitions::{DefinitionKind, DefinitionName};
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ToolKind {
+    Metric,
+    Widget,
+    Dashboard,
+}
+
+impl ToolKind {
+    fn kind(self) -> DefinitionKind {
+        match self {
+            Self::Metric => DefinitionKind::Metric,
+            Self::Widget => DefinitionKind::Widget,
+            Self::Dashboard => DefinitionKind::Dashboard,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct KindRequest {
+    /// Which kind of definition to list.
+    pub(crate) kind: ToolKind,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct NamedRequest {
+    /// Which kind of definition the name belongs to.
+    pub(crate) kind: ToolKind,
+    /// Letters, digits, underscore and dash, up to 128 characters.
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct NameRequest {
+    /// The stored metric's name.
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct PutRequest {
+    /// The name to store under. An existing definition of the same kind and
+    /// name is replaced.
+    pub(crate) name: String,
+    /// The definition body.
+    pub(crate) body: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct TableEntry {
+    database: String,
+    table: String,
+    layer: &'static str,
+    columns: Vec<ColumnEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct ColumnEntry {
+    name: String,
+    r#type: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct CustomSurfaces {
+    state: Arc<AppState>,
+    tool_router: ToolRouter<Self>,
+}
+
+impl std::fmt::Debug for CustomSurfaces {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("CustomSurfaces").finish()
+    }
+}
+
+impl CustomSurfaces {
+    pub(crate) fn new(state: Arc<AppState>) -> Self {
+        Self {
+            state,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    fn surfaces(&self) -> Surfaces<'_> {
+        self.state.surfaces()
+    }
+
+    async fn write(&self, kind: ToolKind, request: PutRequest) -> CallToolResult {
+        let name = match parse_name(&request.name) {
+            Ok(name) => name,
+            Err(refusal) => return refusal,
+        };
+
+        match self.surfaces().put(kind.kind(), &name, &request.body).await {
+            Ok(()) => CallToolResult::structured(json!({"stored": request.name})),
+            Err(error) => tool_error(&error),
+        }
+    }
+}
+
+#[tool_router]
+impl CustomSurfaces {
+    #[tool(
+        name = "list_definitions",
+        description = "Names every stored metric, widget or dashboard. Start here before writing one, so an existing definition is replaced deliberately rather than by accident."
+    )]
+    async fn list_definitions(
+        &self,
+        Parameters(KindRequest { kind }): Parameters<KindRequest>,
+    ) -> CallToolResult {
+        match self.surfaces().list(kind.kind()).await {
+            Ok(names) => CallToolResult::structured(json!({"names": names})),
+            Err(error) => tool_error(&error),
+        }
+    }
+
+    #[tool(
+        name = "get_definition",
+        description = "Reads one definition's stored body, so it can be inspected or amended rather than rewritten from scratch."
+    )]
+    async fn get_definition(
+        &self,
+        Parameters(NamedRequest { kind, name }): Parameters<NamedRequest>,
+    ) -> CallToolResult {
+        let parsed = match parse_name(&name) {
+            Ok(parsed) => parsed,
+            Err(refusal) => return refusal,
+        };
+
+        match self.surfaces().get(kind.kind(), &parsed).await {
+            Ok(body) => CallToolResult::structured(body),
+            Err(error) => tool_error(&error),
+        }
+    }
+
+    #[tool(
+        name = "put_metric",
+        description = "Creates or replaces a metric: a declarative query over an ingested table. The body names the table and the fields to read, for example {\"table\": \"events\", \"fields\": [{\"json\": \"actor\", \"type\": \"string\", \"as_name\": \"actor\"}, {\"json\": \"actor\", \"type\": \"string\", \"agg\": \"count\", \"as_name\": \"total\"}], \"group_by\": [\"actor\"]}. A field reads either a key inside the row's JSON payload (`json`) or a typed column of the table (`column`); `type` is string, int or float; `agg` is count, sum, avg, min or max. Optional `database`, `filters`, `order_by` and `limit`. Call list_tables first so the table and columns exist."
+    )]
+    async fn put_metric(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
+        self.write(ToolKind::Metric, request).await
+    }
+
+    #[tool(
+        name = "put_widget",
+        description = "Creates or replaces a widget, which draws one metric's columns by the `as_name` that metric gives them: {\"type\": \"table\", \"metric\": \"per-actor\", \"columns\": [\"actor\", \"total\"]} or {\"type\": \"line\", \"metric\": \"per-actor\", \"x\": \"actor\", \"y\": \"total\"}. A widget naming a column its metric does not produce is refused, so run_metric first if unsure what it yields."
+    )]
+    async fn put_widget(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
+        self.write(ToolKind::Widget, request).await
+    }
+
+    #[tool(
+        name = "put_dashboard",
+        description = "Creates or replaces a dashboard, which has a title and names the widgets it holds: {\"title\": \"Example board\", \"widgets\": [\"chart\"]}."
+    )]
+    async fn put_dashboard(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
+        self.write(ToolKind::Dashboard, request).await
+    }
+
+    #[tool(
+        name = "delete_definition",
+        description = "Removes one definition. A metric a widget still draws, or a widget a dashboard still holds, is kept and its dependents named — remove those first."
+    )]
+    async fn delete_definition(
+        &self,
+        Parameters(NamedRequest { kind, name }): Parameters<NamedRequest>,
+    ) -> CallToolResult {
+        let parsed = match parse_name(&name) {
+            Ok(parsed) => parsed,
+            Err(refusal) => return refusal,
+        };
+
+        match self.surfaces().delete(kind.kind(), &parsed).await {
+            Ok(()) => CallToolResult::structured(json!({"deleted": name})),
+            Err(error) => tool_error(&error),
+        }
+    }
+
+    #[tool(
+        name = "run_metric",
+        description = "Compiles a stored metric and runs it, returning its rows. Use it to answer a question from the data, and to confirm a metric produces the columns a widget will draw."
+    )]
+    async fn run_metric(
+        &self,
+        Parameters(NameRequest { name }): Parameters<NameRequest>,
+    ) -> CallToolResult {
+        let parsed = match parse_name(&name) {
+            Ok(parsed) => parsed,
+            Err(refusal) => return refusal,
+        };
+
+        match self.surfaces().run_metric(&parsed).await {
+            Ok(result) => match serde_json::to_value(&result) {
+                Ok(value) => CallToolResult::structured(value),
+                Err(error) => {
+                    tracing::error!(%error, "a metric result could not be encoded");
+                    refuse("the metric ran but its result could not be encoded")
+                }
+            },
+            Err(error) => tool_error(&error),
+        }
+    }
+
+    #[tool(
+        name = "list_tables",
+        description = "Every database and table this server can see, each with its columns and the layer it belongs to. Call this before writing a metric, so the metric names a table and columns that exist."
+    )]
+    async fn list_tables(&self) -> CallToolResult {
+        let tables = match self.surfaces().tables().await {
+            Ok(tables) => tables,
+            Err(error) => return tool_error(&error),
+        };
+
+        let entries: Vec<TableEntry> = tables.iter().map(table_entry).collect();
+
+        match serde_json::to_value(&entries) {
+            Ok(value) => CallToolResult::structured(json!({"tables": value})),
+            Err(error) => {
+                tracing::error!(%error, "the table catalogue could not be encoded");
+                refuse("the catalogue was read but could not be encoded")
+            }
+        }
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for CustomSurfaces {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new("insight-custom-surfaces", env!("CARGO_PKG_VERSION"))
+                    .with_title("Insight custom surfaces"),
+            )
+            .with_instructions(
+                "Author the metrics, widgets and dashboards the portal reads. Call list_tables \
+                 to learn what data exists, put_metric to define a query over it, run_metric to \
+                 see the rows it yields, then put_widget to draw those rows and put_dashboard to \
+                 hold the widgets. A widget names its metric's columns by their as_name, and a \
+                 definition still in use cannot be deleted until its dependents are.",
+            )
+    }
+}
+
+fn table_entry(schema: &TableSchema) -> TableEntry {
+    TableEntry {
+        database: schema.database.clone(),
+        table: schema.table.clone(),
+        layer: layer_name(schema.layer),
+        columns: schema
+            .columns
+            .iter()
+            .map(|(name, kind)| ColumnEntry {
+                name: name.clone(),
+                r#type: kind.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn layer_name(layer: Layer) -> &'static str {
+    match layer {
+        Layer::Bronze => "bronze",
+        Layer::Silver => "silver",
+        Layer::Gold => "gold",
+        Layer::Identity => "identity",
+        Layer::Ingest => "ingest",
+        Layer::Other => "other",
+    }
+}
+
+fn parse_name(raw: &str) -> Result<DefinitionName, CallToolResult> {
+    DefinitionName::parse(raw).map_err(|error| refuse(&error.to_string()))
+}
+
+fn tool_error(error: &CustomError) -> CallToolResult {
+    if !error.is_about_the_caller() {
+        tracing::error!(%error, "an MCP tool call failed");
+    }
+
+    refuse(&error.to_string())
+}
+
+fn refuse(message: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(message.to_owned())])
+}

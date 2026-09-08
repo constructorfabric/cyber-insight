@@ -6,6 +6,7 @@ mod custom;
 mod definitions;
 mod gear;
 mod identity;
+mod mcp;
 mod metric_query;
 mod migration;
 mod raw_data;

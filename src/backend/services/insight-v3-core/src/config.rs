@@ -29,6 +29,8 @@ pub(crate) struct McpConfig {
     pub(crate) enabled: bool,
     pub(crate) bind_addr: String,
     pub(crate) public_url: String,
+    /// Permits an `http` origin on a private network, for a stand without TLS.
+    pub(crate) allow_insecure_private_network: bool,
 }
 
 impl Default for McpConfig {
@@ -37,6 +39,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_addr: DEFAULT_MCP_BIND_ADDR.to_owned(),
             public_url: String::new(),
+            allow_insecure_private_network: false,
         }
     }
 }
@@ -95,6 +98,7 @@ pub(crate) struct ValidatedConfig {
     chat_model: String,
     database_url: String,
     identity_url: String,
+    mcp: McpConfig,
 }
 
 impl ValidatedConfig {
@@ -162,6 +166,10 @@ impl ValidatedConfig {
         &self.database_url
     }
 
+    pub(crate) fn mcp(&self) -> &McpConfig {
+        &self.mcp
+    }
+
     pub(crate) fn identity_url(&self) -> &str {
         &self.identity_url
     }
@@ -212,6 +220,7 @@ impl GearConfig {
             chat_model: self.chat_model,
             database_url: self.database_url,
             identity_url: self.identity_url,
+            mcp: self.mcp,
         })
     }
 }
@@ -500,6 +509,7 @@ mod tests {
             enabled,
             bind_addr: bind_addr.to_owned(),
             public_url: public_url.to_owned(),
+            allow_insecure_private_network: false,
         }
     }
 
