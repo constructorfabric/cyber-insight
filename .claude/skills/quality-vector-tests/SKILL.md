@@ -151,10 +151,6 @@ another requirement namespace.
 - Group by risk; keep prose understandable without reading implementation code.
   Keep feature and requirement IDs because they are the traceability links.
 
-See [example-feature.md](references/example-feature.md) for a worked synthetic
-PRD → DESIGN → FEATURE → executable test example. The older port, migration and lean examples are
-historical scope studies, not the current output contract.
-
 ## 5. Link executable tests back to the feature
 
 When implementing or mapping a scenario:
