@@ -10,6 +10,29 @@
 
 **Spec:** [docs/superpowers/specs/2026-09-08-insight-v3-core-mcp-design.md](../specs/2026-09-08-insight-v3-core-mcp-design.md)
 
+## Amendments
+
+Corrections made against the tree this plan runs on. The first draft was written
+against a working copy that carried another session's unlanded changes; these are
+the differences, and they override every task below wherever they disagree.
+
+- **There is no `People` type, and `MetricQuery::compile` takes no argument.**
+  `Surfaces` holds three dependencies, not four, and `run_metric` calls
+  `metric.compile()`. Wherever a task's code or test fixture below names
+  `People`, drop it. When the identity-join work lands, `compile` gains a
+  `&People` and `Surfaces::run_metric` is the one place that must pass it.
+- **`Catalog` holds a `RwLock`, so neither it nor `MetricRunner` is `Clone`.**
+  `CustomSurfaces` therefore holds the `Arc<AppState>` the gear already builds
+  and calls `AppState::surfaces()` per tool call, instead of owning copies of the
+  stores. This also guarantees the REST router and the MCP server share one
+  definitions store. Task 4's and Task 5's test fixtures build an `AppState` the
+  way `src/api/definitions/tests.rs` already does.
+- **The work lands on `feat/insight-v3-core-mcp`**, branched from
+  `feat/insight-v3-core-raw-data`, because that branch is checked out in another
+  worktree. It merges back as one branch rather than commit-by-commit.
+- **Baseline on this branch before any change: 139 passed, 0 failed**
+  (`cargo test -p insight-v3-core`).
+
 ## Global Constraints
 
 - Everything lands on `feat/insight-v3-core-raw-data`, one commit per task, conventional-commit subjects. No new branch, no new PR, never `git commit --amend`.
@@ -39,15 +62,14 @@ The REST handlers hold the domain sequences inline, mixed with `CanonicalError` 
 - Modify: `src/backend/services/insight-v3-core/src/main.rs` (add `mod custom;`)
 
 **Interfaces:**
-- Consumes: `crate::definitions::{Definitions, DefinitionKind, DefinitionName, DefinitionStoreError}`, `crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError, MetricRunner, People, RunResult}`, `crate::catalog::{Catalog, CatalogError, TableSchema}`, `crate::widget::{Widget, WidgetError}`.
+- Consumes: `crate::definitions::{Definitions, DefinitionKind, DefinitionName, DefinitionStoreError}`, `crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError, MetricRunner, RunResult}`, `crate::catalog::{Catalog, CatalogError, TableSchema}`, `crate::widget::{Widget, WidgetError}`.
 - Produces:
   ```rust
-  pub(crate) struct Surfaces<'a> { /* definitions, metrics, people, catalog */ }
+  pub(crate) struct Surfaces<'a> { /* definitions, metrics, catalog */ }
   impl<'a> Surfaces<'a> {
       pub(crate) fn new(
           definitions: &'a dyn Definitions,
           metrics: &'a MetricRunner,
-          people: &'a People,
           catalog: &'a Catalog,
       ) -> Self;
       pub(crate) async fn list(&self, kind: DefinitionKind) -> Result<Vec<String>, CustomError>;
@@ -87,14 +109,13 @@ use serde_json::json;
 use super::*;
 use crate::catalog::Catalog;
 use crate::definitions::memory::MemoryDefinitions;
-use crate::metric_query::{MetricRunner, People};
+use crate::metric_query::MetricRunner;
 
 type R = Result<(), Box<dyn Error>>;
 
 struct Fixture {
     definitions: MemoryDefinitions,
     metrics: MetricRunner,
-    people: People,
     catalog: Catalog,
 }
 
@@ -110,13 +131,12 @@ impl Fixture {
         Self {
             definitions: MemoryDefinitions::new(),
             metrics: MetricRunner::new(client()),
-            people: People::new("identity"),
             catalog: Catalog::new(client(), "insight".to_owned()),
         }
     }
 
     fn surfaces(&self) -> Surfaces<'_> {
-        Surfaces::new(&self.definitions, &self.metrics, &self.people, &self.catalog)
+        Surfaces::new(&self.definitions, &self.metrics, &self.catalog)
     }
 }
 
@@ -295,7 +315,7 @@ use crate::definitions::{
     DefinitionKind, DefinitionName, DefinitionStoreError, Definitions,
 };
 use crate::metric_query::{
-    MetricQuery, MetricQueryError, MetricRunError, MetricRunner, People, RunResult,
+    MetricQuery, MetricQueryError, MetricRunError, MetricRunner, RunResult,
 };
 use crate::widget::{Widget, WidgetError};
 
@@ -339,7 +359,6 @@ impl CustomError {
 pub(crate) struct Surfaces<'a> {
     definitions: &'a dyn Definitions,
     metrics: &'a MetricRunner,
-    people: &'a People,
     catalog: &'a Catalog,
 }
 
@@ -347,13 +366,11 @@ impl<'a> Surfaces<'a> {
     pub(crate) fn new(
         definitions: &'a dyn Definitions,
         metrics: &'a MetricRunner,
-        people: &'a People,
         catalog: &'a Catalog,
     ) -> Self {
         Self {
             definitions,
             metrics,
-            people,
             catalog,
         }
     }
@@ -426,7 +443,7 @@ impl<'a> Surfaces<'a> {
         let body = self.get(DefinitionKind::Metric, name).await?;
 
         let metric: MetricQuery = serde_json::from_value(body).map_err(CustomError::Body)?;
-        let compiled = metric.compile(self.people).map_err(CustomError::Compile)?;
+        let compiled = metric.compile().map_err(CustomError::Compile)?;
 
         self.metrics.run(&compiled).await.map_err(CustomError::Run)
     }
@@ -511,7 +528,6 @@ pub(crate) fn surfaces(&self) -> crate::custom::Surfaces<'_> {
     crate::custom::Surfaces::new(
         self.definitions.as_ref(),
         &self.metrics,
-        &self.people,
         &self.catalog,
     )
 }
@@ -1119,22 +1135,17 @@ git commit -m "feat(insight-v3-core): verify an MCP access token minted for this
 - Modify: `src/backend/services/insight-v3-core/src/mcp/mod.rs`
 
 **Interfaces:**
-- Consumes: `crate::custom::{CustomError, Surfaces}`, `crate::definitions::{DefinitionKind, DefinitionName, Definitions}`, `crate::metric_query::{MetricRunner, People}`, `crate::catalog::Catalog`.
+- Consumes: `crate::api::AppState`, `crate::custom::{CustomError, Surfaces}`, `crate::definitions::{DefinitionKind, DefinitionName}`, `crate::catalog::{Layer, TableSchema}`.
 - Produces:
   ```rust
-  pub(crate) struct CustomSurfaces { /* Clone */ }
+  pub(crate) struct CustomSurfaces { /* Clone: holds Arc<AppState> */ }
   impl CustomSurfaces {
-      pub(crate) fn new(
-          definitions: Arc<dyn Definitions>,
-          metrics: MetricRunner,
-          people: People,
-          catalog: Catalog,
-      ) -> Self;
+      pub(crate) fn new(state: Arc<AppState>) -> Self;
   }
   ```
   with the eight `#[tool]` methods and a `ServerHandler` impl.
 
-`CustomSurfaces` owns its dependencies rather than borrowing, because `StreamableHttpService` needs a `'static` factory. It hands out a `Surfaces<'_>` per call.
+`CustomSurfaces` holds the `Arc<AppState>` the gear already built, because `StreamableHttpService` needs a `'static`, `Clone` factory and neither `Catalog` (it holds a `RwLock`) nor `MetricRunner` is `Clone`. It hands out a `Surfaces<'_>` per call via `AppState::surfaces()`, so it can reach only the three stores that view exposes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1149,11 +1160,18 @@ use rmcp::model::CallToolResult;
 use serde_json::json;
 
 use super::*;
+use crate::api::AppState;
+use crate::catalog::Catalog;
+use crate::chat::ChatClient;
 use crate::definitions::memory::MemoryDefinitions;
+use crate::identity::IdentityClient;
+use crate::metric_query::MetricRunner;
+use crate::raw_data::RawDataStore;
+use crate::tables::TableStore;
 
 type R = Result<(), Box<dyn Error>>;
 
-fn surfaces() -> CustomSurfaces {
+fn app_state() -> Arc<AppState> {
     let client = || {
         insight_clickhouse::Client::new(insight_clickhouse::Config::new(
             "http://clickhouse.invalid",
@@ -1161,12 +1179,19 @@ fn surfaces() -> CustomSurfaces {
         ))
     };
 
-    CustomSurfaces::new(
+    Arc::new(AppState::new(
+        RawDataStore::new(client()),
+        TableStore::new(client()),
         Arc::new(MemoryDefinitions::new()),
         MetricRunner::new(client()),
-        People::new("identity"),
+        ChatClient::canned(),
+        IdentityClient::fixed(true),
         Catalog::new(client(), "insight".to_owned()),
-    )
+    ))
+}
+
+fn surfaces() -> CustomSurfaces {
+    CustomSurfaces::new(app_state())
 }
 
 fn metric_body() -> serde_json::Value {
@@ -1389,10 +1414,10 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{Catalog, Layer, TableSchema};
+use crate::api::AppState;
+use crate::catalog::{Layer, TableSchema};
 use crate::custom::{CustomError, Surfaces};
-use crate::definitions::{DefinitionKind, DefinitionName, Definitions};
-use crate::metric_query::{MetricRunner, People};
+use crate::definitions::{DefinitionKind, DefinitionName};
 
 #[cfg(test)]
 mod tests;
@@ -1456,10 +1481,7 @@ struct ColumnEntry {
 
 #[derive(Clone)]
 pub(crate) struct CustomSurfaces {
-    definitions: Arc<dyn Definitions>,
-    metrics: MetricRunner,
-    people: People,
-    catalog: Catalog,
+    state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -1470,28 +1492,15 @@ impl std::fmt::Debug for CustomSurfaces {
 }
 
 impl CustomSurfaces {
-    pub(crate) fn new(
-        definitions: Arc<dyn Definitions>,
-        metrics: MetricRunner,
-        people: People,
-        catalog: Catalog,
-    ) -> Self {
+    pub(crate) fn new(state: Arc<AppState>) -> Self {
         Self {
-            definitions,
-            metrics,
-            people,
-            catalog,
+            state,
             tool_router: Self::tool_router(),
         }
     }
 
     fn surfaces(&self) -> Surfaces<'_> {
-        Surfaces::new(
-            self.definitions.as_ref(),
-            &self.metrics,
-            &self.people,
-            &self.catalog,
-        )
+        self.state.surfaces()
     }
 
     async fn write(&self, kind: ToolKind, request: PutRequest) -> CallToolResult {
@@ -1694,7 +1703,7 @@ fn tool_error_message(message: &str) -> CallToolResult {
 
 Add `pub(crate) mod tools;` to `src/mcp/mod.rs`.
 
-`Catalog` and `MetricRunner` must be `Clone` for `CustomSurfaces` to be. If either is not, derive `Clone` on it — both hold only an `insight_clickhouse::Client` and plain values.
+No new `Clone` impls are needed: `CustomSurfaces` is `Clone` because `Arc<AppState>` is.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1755,12 +1764,17 @@ fn surfaces() -> crate::mcp::tools::CustomSurfaces {
         ))
     };
 
-    crate::mcp::tools::CustomSurfaces::new(
+    let state = Arc::new(crate::api::AppState::new(
+        crate::raw_data::RawDataStore::new(client()),
+        crate::tables::TableStore::new(client()),
         Arc::new(MemoryDefinitions::new()),
         crate::metric_query::MetricRunner::new(client()),
-        crate::metric_query::People::new("identity"),
+        crate::chat::ChatClient::canned(),
+        crate::identity::IdentityClient::fixed(true),
         crate::catalog::Catalog::new(client(), "insight".to_owned()),
-    )
+    ));
+
+    crate::mcp::tools::CustomSurfaces::new(state)
 }
 
 fn enabled_config() -> McpConfig {
@@ -1943,21 +1957,13 @@ In `src/gear.rs`, after `self.runtime.set(runtime)` succeeds, build the tool sta
 ```rust
         crate::mcp::start(
             config.mcp(),
-            crate::mcp::tools::CustomSurfaces::new(
-                definitions,
-                crate::metric_query::MetricRunner::new(config.clickhouse_query_client()),
-                crate::metric_query::People::new(config.identity_database()),
-                crate::catalog::Catalog::new(
-                    config.clickhouse_query_client(),
-                    config.clickhouse_database(),
-                ),
-            ),
+            crate::mcp::tools::CustomSurfaces::new(app_state),
             ctx.cancellation_token().child_token(),
         )
         .await?;
 ```
 
-`definitions` is the `Arc<dyn Definitions>` already built above; clone it into `RuntimeState` so both the REST router and the MCP server share the one store.
+`app_state` is the `Arc<AppState>` `RuntimeState` already holds — clone it out of the runtime after `self.runtime.set(..)` succeeds, so the REST router and the MCP server share one state and one definitions store.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2521,6 +2527,6 @@ git commit -m "test(insight-v3-core): drive the MCP server end to end"
 
 **Spec coverage.** Section 1 (own listener) → Task 5. Section 2 (verifier, new scope and resource, token-as-admin-proof) → Tasks 3 and 5. Section 3 (resource set, paired scopes, per-resource metadata) → Task 6. Section 4 (eight tools, per-kind put schemas, reused validation, domain errors as tool errors) → Tasks 1 and 4. Section 5 (gateway route, per-route metadata URL, chart values) → Tasks 7 and 8. Section 6 (unit, authenticator, end-to-end) → Tasks 1, 2, 3, 4, 5, 6, 7 and 9. Section 7 (out of scope) → no task, correctly. Section 8 (known defect) → no task, deliberately.
 
-**Type consistency.** `Surfaces` is constructed by `Surfaces::new(&dyn Definitions, &MetricRunner, &People, &Catalog)` in Tasks 1, 4 and 5. `CustomError` variants are matched in Tasks 1 and 4 with the same names. `CustomSurfaces::new(Arc<dyn Definitions>, MetricRunner, People, Catalog)` is used identically in Tasks 4 and 5. `MCP_PATH` and `MCP_SCOPE` are defined in Task 3 and consumed in Tasks 4 and 5. `mcp_scope` is added to the schema in Task 7 and consumed by the YAML in Task 8.
+**Type consistency.** `Surfaces` is constructed by `Surfaces::new(&dyn Definitions, &MetricRunner, &Catalog)` in Task 1, and reached through `AppState::surfaces()` everywhere else. `CustomError` variants are matched in Tasks 1 and 4 with the same names. `CustomSurfaces::new(Arc<AppState>)` is used identically in Tasks 4 and 5. `MCP_PATH` and `MCP_SCOPE` are defined in Task 3 and consumed in Tasks 4 and 5. `mcp_scope` is added to the schema in Task 7 and consumed by the YAML in Task 8.
 
-**Open risk carried into execution.** Task 4 assumes `MetricRunner` and `Catalog` are `Clone`; Task 4's step 3 says to derive it if they are not. Task 8 assumes the gateway Helm chart renders routes from a values list; if that template turns out to hardcode the route set, the route is added there instead, and the task's deliverable is unchanged.
+**Open risk carried into execution.** Resolved before starting: `Catalog` is not `Clone` and cannot be made so, which is why `CustomSurfaces` holds `Arc<AppState>` (see Amendments). Still open: Task 8 assumes the gateway Helm chart renders routes from a values list; if that template hardcodes the route set, the route is added there instead, and the task's deliverable is unchanged.
