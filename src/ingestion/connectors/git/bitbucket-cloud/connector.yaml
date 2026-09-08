@@ -169,6 +169,43 @@ definitions:
         action: RETRY
         error_message: Transient Bitbucket error
 
+  # The `repository_visibility` probe, which asks for repositories without a
+  # date filter. Only there does an empty page mean the token reaches nothing:
+  # on the date-filtered discovery above the same body also means "nothing
+  # changed since bitbucket_start_date", which is not an error.
+  visibility_error_handler: &visibility_error_handler
+    type: DefaultErrorHandler
+    max_retries: 5
+    backoff_strategies: *vendor_backoff
+    response_filters:
+      - type: HttpResponseFilter
+        http_codes: [429]
+        action: RATE_LIMITED
+        error_message: Bitbucket hourly rate budget exhausted
+      - type: HttpResponseFilter
+        http_codes: [401]
+        action: FAIL
+        failure_type: config_error
+        error_message: >-
+          Bitbucket rejected the credentials. Personal API tokens need
+          bitbucket_username set (Basic auth); workspace access tokens must
+          NOT set it (Bearer). Mixing the two is the most common cause.
+      - type: HttpResponseFilter
+        http_codes: [500, 502, 503, 504]
+        action: RETRY
+        error_message: Transient Bitbucket error
+      # A token that reaches no repository is answered 200 with an empty page,
+      # not an error code, so only the body shape catches it. An error body
+      # carries no `values` key and cannot match.
+      - type: HttpResponseFilter
+        predicate: "{{ response.get('values') is not none and response.get('values') | length == 0 }}"
+        action: FAIL
+        failure_type: config_error
+        error_message: >-
+          No repository in this workspace is visible to the token. Check that
+          bitbucket_workspaces names the right workspace and that the token
+          still carries repository read on it.
+
   # Per-repository pull-request listings, standalone stream and the fan-out
   # parents inside every PR child stream alike. Unlike workspace discovery,
   # a 403/404 here is about ONE repository (suspended, deleted, or denied to
@@ -413,6 +450,97 @@ streams:
           - [workspace]
           - [owner]
           - [links]
+
+  # ── Repository visibility probe (Bitbucket API) ─────────────────────────
+  # One unfiltered repository per workspace, purely so an empty answer has a
+  # single meaning. Every other repository listing carries
+  # `updated_on >= bitbucket_start_date`, where an empty page is ordinary; here
+  # there is no date filter, so an empty page means the token reaches nothing
+  # and `visibility_error_handler` fails the sync on it.
+  #
+  # pagelen=1 and no paginator: one request per workspace per sync. The record
+  # is kept rather than dropped so the answer is auditable in bronze.
+  - type: DeclarativeStream
+    name: repository_visibility
+    primary_key:
+      - unique_key
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        type: object
+        $schema: http://json-schema.org/schema#
+        properties:
+          unique_key: {type: string}
+          tenant_id: {type: [string, "null"]}
+          source_id: {type: [string, "null"]}
+          data_source: {type: [string, "null"]}
+          collected_at: {type: [string, "null"]}
+          workspace: {type: [string, "null"]}
+          repository_uuid: {type: [string, "null"]}
+        required:
+          - unique_key
+        additionalProperties: true
+    retriever:
+      type: SimpleRetriever
+      requester:
+        type: HttpRequester
+        url_base: "{{ config.get('bitbucket_api_base_url', 'https://api.bitbucket.org/2.0') }}"
+        authenticator:
+          type: ApiKeyAuthenticator
+          inject_into:
+            type: RequestOption
+            inject_into: header
+            field_name: Authorization
+          # Personal API tokens are Basic username:token; workspace access
+          # tokens are Bearer and must leave bitbucket_username empty.
+          api_token: >-
+            {{ ('Basic ' ~ ((config['bitbucket_username'] ~ ':' ~ config['bitbucket_token']) | base64encode)) if config.get('bitbucket_username') else ('Bearer ' ~ config['bitbucket_token']) }}
+        path: "/repositories/{{ stream_partition.workspace }}"
+        http_method: GET
+        request_parameters:
+          pagelen: "1"
+          fields: "next,values.uuid"
+        error_handler: *visibility_error_handler
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: [values]
+      partition_router:
+        type: ListPartitionRouter
+        values: "{{ config['bitbucket_workspaces'] }}"
+        cursor_field: workspace
+    transformations:
+      - type: AddFields
+        fields:
+          - type: AddedFieldDefinition
+            path: [tenant_id]
+            value: "{{ config['insight_tenant_id'] }}"
+          - type: AddedFieldDefinition
+            path: [source_id]
+            value: "{{ config['insight_source_id'] }}"
+          - type: AddedFieldDefinition
+            path: [data_source]
+            value: insight_bitbucket_cloud
+          - type: AddedFieldDefinition
+            path: [collected_at]
+            value: "{{ now_utc().strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+          - type: AddedFieldDefinition
+            path: [workspace]
+            value: "{{ stream_partition.workspace }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [repository_uuid]
+            value: "{{ record.get('uuid') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [unique_key]
+            value: >-
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_partition.workspace | replace(':', '%3A') }}
+      - type: RemoveFields
+        # Hoisted above; the nested original stays out of bronze.
+        field_pointers:
+          - [uuid]
 
   # ── Commits (git-cli-proxy) ─────────────────────────────────────────────
   - type: DeclarativeStream

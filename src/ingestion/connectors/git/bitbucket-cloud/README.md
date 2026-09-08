@@ -15,8 +15,18 @@ API and (forwarded per request, never stored) for the clone the proxy performs.
 
 ## Prerequisites
 
-1. A Bitbucket API token with `repository:read`, plus the account username or
-   email it belongs to.
+1. A credential that can read both repositories and pull requests — neither
+   permission implies the other, and a token holding only the first lists
+   repositories while every pull-request call 403s, which the per-repository
+   handler skips silently. The two families name them differently:
+
+   | credential | `bitbucket_username` | permissions |
+   |---|---|---|
+   | Atlassian API token | account email | `read:repository:bitbucket`, `read:pullrequest:bitbucket` |
+   | workspace / project / repository access token | empty | `repository`, `pullrequest` |
+
+   The roster stream additionally wants workspace membership read; without it
+   `workspace_members` 403s and is skipped, costing account display names.
 2. A reachable git-cli-proxy deployment and its bearer token. In-cluster the
    umbrella composes both (`insight-git-cli-proxy-config`); the proxy accepts
    traffic only from the namespaces its NetworkPolicy allows.
@@ -53,7 +63,7 @@ repository nobody has touched since it is never listed, so never cloned.
 | Field | Required | Description |
 |-------|----------|-------------|
 | `bitbucket_username` | No | Atlassian account email/username. Set for personal API tokens (Basic `username:token`); leave empty for workspace/repository access tokens (Bearer). The clone username the proxy presents is derived from the same choice |
-| `bitbucket_token` | Yes | API token with `repository:read` |
+| `bitbucket_token` | Yes | API token or access token; see Prerequisites for the permissions each family names |
 | `bitbucket_workspaces` | Yes | JSON array of workspace slugs |
 | `bitbucket_api_base_url` | No | API base URL (default `https://api.bitbucket.org/2.0`) |
 | `bitbucket_exclude_repositories` | No | JSON array of regular expressions matched against a repository slug; a match is never listed, cloned or walked. Matched with `search`, so anchor with `$` for "ends with" (e.g. `["\\.rospecs$"]`). Empty collects everything |
@@ -80,6 +90,7 @@ kubectl apply -f src/ingestion/secrets/connectors/bitbucket-cloud.yaml
 | Stream | Upstream | Sync Mode | Cursor |
 |--------|----------|-----------|--------|
 | `repositories` | Bitbucket `/2.0/repositories/{workspace}` | incremental | `updated_on` |
+| `repository_visibility` | Bitbucket `/2.0/repositories/{workspace}`, unfiltered, one row | full refresh | — |
 | `commits` | proxy `/v1/commits` | incremental, per repository | `committed_date` |
 | `file_changes` | proxy `/v1/file-changes` | incremental, per repository | `committed_date` |
 | `branches` | proxy `/v1/branches` | full refresh, per repository | — |
@@ -142,13 +153,21 @@ forms so an omission is visible:
 
 | anchor | applies to | form |
 |---|---|---|
-| `repos_since_start` | every repository listing (12 of them) | `q=updated_on >= start_date`, server-side |
+| `repos_since_start` | every repository listing that feeds partitions (12 of them) | `q=updated_on >= start_date`, server-side |
 | `prs_since_start` | the four per-PR fan-out parents | `q=updated_on >= max(start_date, now - 30d)` |
 
 Filtering repositories server-side is what bounds the clone cost: an untouched
 repository is never returned, so the proxy never walks it. VERIFIED against the
 live API — a workspace of 407 public repositories returns 47 for a cutoff six
 weeks back, and no row below the cutoff.
+
+That filtering is also why an empty repository listing is ordinary rather than
+alarming, and why the one listing that must mean something is exempt from it:
+`repository_visibility` asks for a single repository with no `q`, so its empty
+answer has exactly one cause — the token reaches nothing. A token that has lost
+repository access is served `200` with an empty page, not an error code, so
+without that probe every stream lands zero rows and the sync still reports
+success.
 
 One stream cannot comply. The deployments endpoint rejects `sort=created_on`
 (400) and **accepts a `q` on `created_on` while silently ignoring it** — a
