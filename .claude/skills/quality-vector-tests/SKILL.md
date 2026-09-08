@@ -193,7 +193,6 @@ For a FEATURE:
 cfs toc docs/<path>/FEATURE.md
 cfs validate --artifact docs/<path>/FEATURE.md
 cfs validate-toc docs/<path>/FEATURE.md
-.claude/skills/quality-vector-tests/scripts/rollup.sh docs/<path>/FEATURE.md
 ```
 
 Use the guide for advisory improvement suggestions after canonical validation.
@@ -201,19 +200,7 @@ Review the chain in both directions: PRD IDs resolve; DESIGN allocates responsib
 the FEATURE declares its requirements; scenarios reference the right subset;
 implemented test links resolve and tests cite their owner. Explain missing or
 deferred evidence without certifying an unmet requirement. This review adds no
-QV pass/fail gate. CFS validates canonical artifact references; the optional
-rollup counts declarations and does not validate metadata or prove coverage.
+QV pass/fail gate. CFS validates canonical artifact references; nothing here
+certifies coverage or results.
 
-The rollup retains older criterion-tagged lines for compatibility and reports
-deferred scenarios separately. It ignores fenced examples and comments.
-Do not use a ratio of ACs to scenarios as a quality or traceability gate.
-
-It prints one line per vector: a count of scenarios or tagged NFRs, `inherited (n)`
-and `deferred (n)` alongside that count, `n/a (declared)` where an exclusion names
-the vector, and `MISSING` where the vector is neither tagged nor excluded. `MISSING`
-records an absence for the author to consider, not a failure — which vectors a
-feature or module needs is a product judgement, not a completeness rule. The script
-does exit non-zero on shapes it cannot read: an unreadable path, a `**Vector**` value
-outside the five, an NFR entry with neither an ID nor `**Inherits**`, and a vector
-both tagged and excluded. Those are contradictions in the artifact, not verdicts on
-its quality.
+Do not use a ratio of requirements to scenarios as a quality or traceability gate.

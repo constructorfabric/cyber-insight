@@ -18,4 +18,3 @@ test collection continues to require one native vector marker per test.
 
 Existing artifacts adopt this extension only within the requested scope. Agreed
 requirements define expectations; record implementation disagreements for review.
-The optional rollup counts declarations and does not certify coverage or results.

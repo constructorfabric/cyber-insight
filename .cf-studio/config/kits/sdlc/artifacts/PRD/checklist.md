@@ -758,8 +758,8 @@ Not a checklist item: it carries no ID, no severity and no verdict.
 
 **Authoring aid:** Use the [quality-vector guide](../../guides/quality-vectors.md)
 to suggest clearer expectations, scope, conditions or measurements. Report these
-as improvement opportunities, without a severity, pass/fail verdict or mandatory
-rollup. Canonical criteria above and agreed requirements retain their meaning.
+as improvement opportunities, without a severity or pass/fail verdict. Canonical
+criteria above and agreed requirements retain their meaning.
 
 ---
 

@@ -2,8 +2,8 @@
 
 Use the five vectors to help an author discover and clarify product quality
 expectations. This guide produces improvement suggestions, not a new PRD or
-FEATURE readiness gate. Missing tags, a missing vector row, or an unavailable
-rollup do not create a validation failure. Existing canonical validation and
+FEATURE readiness gate. Missing tags or a missing vector row do not create a
+validation failure. Existing canonical validation and
 agreed product requirements retain their meaning.
 
 ## Meanings and useful questions
@@ -57,8 +57,8 @@ excluded with a reason while other requirements in its vector remain applicable.
 A wholly inapplicable vector is a separate, explicit scope decision.
 
 An optional vector summary should reference these IDs and explain business
-consequences without introducing a second definition or target. Tags permit
-grouping when useful; the rollup counts declarations, not adequacy or results.
+consequences without introducing a second definition or target. A tag groups a
+requirement under a vector; it says nothing about adequacy or results.
 
 ## Carry the obligation into DESIGN and FEATURE
 

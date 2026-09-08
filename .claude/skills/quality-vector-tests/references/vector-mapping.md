@@ -31,4 +31,4 @@ Efficiency and Performance are measured on **the same reference-organisation dat
 user count, connector set and concurrency profile. Do not invent its size: take it from the perf
 target the feature itself cites, name that number in the framing sentence, and reuse it across
 both vectors so results compare run to run. Features that predate a shared fixture use their own
-demo org (the examples here use a 3,000-person one); say which you measured on.
+demo org; say which you measured on.
