@@ -18,6 +18,7 @@ DO:
   - LOAD {cf-studio-path}/config/artifacts.toml to resolve FEATURE path (artifacts_dir default `architecture`, subdir `features/`)
   - LOAD {feature_template} for structure
   - RUN author content: actor flows (complete user journeys), algorithms (processing logic), state machines (entity lifecycle), DoD/acceptance criteria, test scenarios
+  - RUN author `## 7. Testing` with the `quality-vector-tests` skill (`.claude/skills/quality-vector-tests`): one checkbox scenario per line, each carrying exactly one quality vector (Efficiency, Reliability, Performance, Security, Versatility), one suite tag, and the acceptance criterion it covers, with a do → expect pass criterion
   - RUN define featstatus ID under H1 (before `## Feature Context`): `cpt-{system}-featstatus-{feature-slug}` (status rollup, not to_code)
   - RUN assign IDs: flow `cpt-{system}-flow-{feature-slug}-{slug}`, algo `cpt-{system}-algo-{feature-slug}-{slug}`, state `cpt-{system}-state-{feature-slug}-{slug}`, dod `cpt-{system}-dod-{feature-slug}-{slug}`
   - RUN assign priority markers `p1`-`p9` per feature priority
@@ -32,6 +33,7 @@ RULES:
   - ALWAYS check FEATURE element when ALL its code markers exist and implementation verified (dod: when impl complete AND tests pass)
   - ALWAYS treat {feature_checklist} as the source of semantic quality criteria
   - NEVER duplicate semantic criteria already in {feature_checklist}
+  - ALWAYS give every scenario exactly one vector and one suite tag; a vector with nothing to check says `n/a` with a one-line reason — silence reads as an oversight, an explicit n/a reads as a decision
   - NEVER include placeholder content (TODO, TBD, FIXME)
   - NEVER create duplicate IDs within the document
 
