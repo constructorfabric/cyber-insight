@@ -1,453 +1,194 @@
 ---
 name: quality-vector-tests
 description: >-
-  Write or revise an Insight feature's Testing section in a GitHub issue or FEATURE.md.
-  Review acceptance criteria, then write tracked do → expect scenarios with one quality
-  vector, one suite tag and criterion references. Use when adding quality-vector tests or
-  fixing a Testing section's coverage, attribution or formatting. Use scope-feature-tests
-  to reason about the broader test scope; this skill owns the scenario format and write-back.
+  Write or revise vector-attributed tests for an Insight feature. Trace PRD FR/NFRs
+  through the canonical FEATURE requirement references to scenarios and executable
+  tests. Use when adding a Testing section or reviewing its vectors, test links,
+  inherited obligations or coverage gaps; keep Acceptance Criteria in the kit's form.
 ---
 
-# Quality-vector Testing sections (Insight features)
+# Quality-vector tests for Insight features
 
-Turn a feature's testing needs into the **standard Testing section** that lives inside the
-constructorfabric/insight GitHub issue or FEATURE artifact: a list of **tracked scenarios** — checkbox lines, each
-attributed to one quality vector, one target suite, and the acceptance criteria it covers — written
-into the chosen target. This is the format the Insight quality program uses so that any
-engineer or QA lead reading a feature sees the *same shape* of test plan every time, and so that
-**after implementation, the unchecked boxes are the coverage gaps**.
+Attach tests to the feature they verify. The trace is:
 
-## The one idea
+`PRD FR/NFR → FEATURE Requirements + feature ID → vector-attributed scenario → test`
 
-A Testing section is a **tracker, not an essay**. Each scenario is one checkbox line a stranger
-could execute and score:
+The canonical SDLC kit already supplies the feature ID, the `Requirements` field
+in section 1.2, flows, DoDs and a plain Acceptance Criteria checklist. Preserve
+those. `## 7. Testing` is Insight's small extension to that structure; it does
+not introduce AC IDs, AC coverage ratios, a new test artifact kind, or new code
+marker syntax.
 
-> `- [ ] 3. **Refusal landing** — Reliability · stand-ui · AC-2 — drive all three unhappy paths
-> → each lands back on the sign-in screen, every option intact, reason shown.`
+## 1. Resolve the owning feature and requirements
 
-The box starts unchecked. When the test lands, the box gets checked and the line gets a link to
-the test. A checked box records implementation; current passing evidence separately names the
-tested revision and conditions. The post-implementation coverage audit reads the unchecked boxes — GitHub
-even shows the checked/total count in the issue list. That only works if every line carries three
-attributions:
+Read the registered FEATURE, its DECOMPOSITION entry, PRD and DESIGN. In section
+1.2, retain the FR/NFR IDs that the feature implements, including inherited NFRs.
+Confirm that each inherited ID resolves to the upstream definition and that its
+target and verification owner remain applicable.
 
-- **one vector** — which quality promise this protects (see `references/vector-mapping.md`);
-- **one suite tag** — where the test will live (see the layer table below); a gap is checkable
-  precisely because the named suite either contains the test or it doesn't;
-- **the acceptance criteria it covers** — `AC-n`, against a reviewed AC list (see workflow step 1).
+Read Acceptance Criteria as the feature's observable completion conditions.
+Improve unclear criteria when that is within the user's requested scope, but do
+not number or rewrite them just to attach tests. An existing author's criterion
+IDs may remain for compatibility; they are not this skill's traceability key.
 
-The pass criterion is a **do → expect** sentence, not a metric by default. A number appears only
-where the number *is* the oracle — a latency bar, a coverage ratio, a count of zero. Forcing every
-behaviour into metric costume ("Metric: where a refused sign-in leaves the user") makes sections
-longer and no more falsifiable. What stays non-negotiable: the *expect* half must be an observable
-outcome that would fail on a broken build, and it must restate the covered AC's outcome — a tag
-whose test would pass anyway is coverage theater, not coverage.
+Each scenario belongs to the FEATURE identified once by `**Feature**` in Testing.
+Its `**Requirements**` field cites the relevant upstream FR/NFR subset already
+listed in section 1.2. This makes a precise path through the feature without
+inserting an AC layer. An applicable NFR needs a scenario, shared-test link, or
+an explicit deferred entry naming the owner and reason.
 
-The vectors are not decoration. The canonical set is Efficiency, Reliability, Performance,
-Security and Versatility, and that ranking reflects importance to the customer — it is not the
-order of the section, which follows risk. Each scenario belongs to exactly one vector; getting the
-assignment right is half the value.
+An issue is a planning surface. If a FEATURE exists, keep Testing there and link
+the issue to it when issue editing is authorized. If no FEATURE exists, use the
+issue URL as temporary ownership and its existing requirement references; state
+that the PRD → FEATURE → test chain is incomplete. Do not invent a registered
+feature ID or an AC taxonomy to make the report look complete.
 
-## Two targets: an issue or a FEATURE artifact
+## 2. Ground the scope and expected outcomes
 
-The section is identical either way. Only where it lands, what it cites, and how it is written
-back differ.
+Agreed requirements define expected outcomes. Code inspection locates the real
+boundaries, suitable suites, existing tests and specification disagreements; it
+must not silently redefine the oracle to match current behaviour. Read
+`scope-feature-tests` for deeper scope analysis.
 
-| | GitHub issue | FEATURE artifact |
-|---|---|---|
-| Location | `## Testing` in the issue body | `## 7. Testing` in `FEATURE.md` |
-| Criterion ids | issue-native (`BR-n`, `REQ-n`), else `AC-n` | `AC-n` over `## 6. Acceptance Criteria`, numbered in reading order; a DoD id may be named additionally |
-| Write-back | `gh issue edit --body-file` (step 6) | edit the file, then `cfs toc` and `cfs validate` (step 6) |
-| Gap audit | GitHub's checked/total counter | the unchecked boxes |
+For existing code, distinguish a retrospective test plan from new capability.
+For a port or migration, lead with parity on the same synthetic inputs. Tag
+differences `exact`, `known-diff(direction)`, or `merge` where appropriate.
+New specs may precede code; say so.
 
-Pick the target the user names. When a feature has both — a `FEATURE.md` under `docs/` and an
-issue — the section goes in the **FEATURE artifact** and the issue links to it. The long-lived
-artifact holds the content and the short-lived one points at it, never the reverse; that is
-what keeps the reference resolvable after the issue closes.
+Keep unresolved product decisions in feature context, with owners and resolution
+points. A test with no agreed upstream requirement is deferred and identifies
+that missing link. Missing infrastructure is also a gap, never a reason to mark
+an applicable vector n/a. Do not manufacture targets, fixtures, supported-source
+counts, or degraded behaviour.
 
-`.claude/skills/quality-vector-tests/scripts/rollup.sh <artifact>` prints the five-vector view
-for either target by grouping the tags. It reports `MISSING` for a vector that is neither
-claimed nor explicitly `n/a`. It reads only scenario lines in `## Testing` / `## 7. Testing`
-and NFR entries in `### 6.1 NFR Inclusions`, ignoring fenced examples and comments. An inherited
-NFR entry has `**Vector**`, `**Inherits**` with the upstream NFR ID, and `**Verification**`
-naming shared evidence and its owner; the report labels inherited counts separately, and labels
-`deferred` scenarios separately too — a vector whose only scenario is deferred reads
-`deferred (1)`, never `MISSING`, so a declared deferral is not reported as an omission. Only a
-vector declaration in `### 6.2 NFR Exclusions` is an explicit n/a. The counts describe planned
-or implemented declarations, not successful tests. Resolve upstream references and apply the
-artifact's semantic checklist after inspecting the report. Existing PRDs are deliberately not
-backfilled. Run the reporter's regression cases with
-`python3 -m unittest discover -s .claude/skills/quality-vector-tests/scripts -p 'test_*.py'`.
+## 3. Choose one vector and one suite per scenario
 
-## Workflow
+Use [vector-mapping.md](references/vector-mapping.md). Efficiency is compute cost;
+Reliability is correctness and availability; Performance is response time;
+Security is protection of access and information; Versatility is supported
+sources and surfaces. Do not classify test rigor as Efficiency. A scenario
+claiming an NFR's vector must preserve that NFR's meaning and target.
 
-### 1. Review the acceptance criteria first
-Feature ACs are often arbitrary — written before the design settled, gating deferred behaviour, or
-missing the promise the Goal paragraph actually makes. **Never build the scenario list on an
-unreviewed AC set.** Number the issue's criteria AC-1..N in reading order, then check each on
-three counts:
+Choose the cheapest existing suite capable of falsifying the claim:
 
-- **Testable?** One behaviour per AC, stated as an observable outcome. Vague ("works correctly",
-  "fast") or compound ACs get a proposed rewrite or split — an untestable AC is a requirements
-  defect, not a testing gap to pad over.
-- **Complete?** Every promise in Goal/Scope and relevant local or inherited PRD NFR has an AC.
-  Preserve upstream NFR IDs in the ACs so the scenario-to-requirement chain stays resolvable.
-  The usual failure is a missing criterion, not a wrong one.
-- **Real?** An AC that gates deliberately-deferred or out-of-scope behaviour is flagged, not
-  silently tested around.
-
-If the set needs changing, your first output is the **proposed AC-1..N list** — each rewrite,
-split, addition or drop justified in one line — shown to the user before any scenario is designed.
-The author owns that contract: the revised set goes into the issue's Acceptance criteria section
-only on confirmation. Scenarios then map to the agreed set. An AC that stays but can't be tested
-yet is marked **deferred** with a reason and owner in the Testing section — never left untagged.
-
-Three mechanics that make the tags resolvable:
-
-- **Artifact-native criterion ids win.** When the issue defines its own ids (`BR-n`, `REQ-n`),
-  cite those verbatim. In a FEATURE artifact the criterion is an **acceptance criterion, not a
-  Definition of Done**: number `## 6. Acceptance Criteria` as `AC-1..N` in reading order and cite
-  those. A scenario MAY additionally name the DoD it proves where that adds something, but the
-  coverage denominator is the AC list — DoDs are implementation tasks carrying `to_code = true`,
-  and anchoring coverage to what someone decided to build rather than to what the feature promises
-  is the same description→code leak 2a exists to prevent. `AC-n` is also the fallback in an issue
-  whose checkbox criteria are unlabelled.
-- **File the numbering back.** The same edit that lands the Testing section prefixes each
-  acceptance criterion with its id (`AC-1.` …) — a numbering-only change that needs no
-  confirmation — otherwise the section cites ids no reader can resolve.
-- **Keep criterion ids current.** When the issue's criteria list is later edited, reordered or
-  renumbered, the same edit rebuilds the criteria map and every scenario's criterion tag — a
-  stale id silently points the gap audit and merged tests' docstring citations at the wrong
-  requirement.
-- **A scenario may lack a criterion only while its proposal is pending.** The completeness check
-  normally supplies a criterion for every scenario; until the author confirms a proposed one, the
-  scenario stays untagged and the framing paragraph names it explicitly ("scenarios 6–8 await the
-  proposed criteria"). Silence is not an option. Malfunction scenarios are the common case:
-  degraded behaviour rarely has a criterion until the review's completeness check proposes one,
-  so they arrive tagged with the proposed id or named as awaiting it.
-
-### 2. Ground the scenarios in the real feature
-**Not every job needs this step.** When the request is purely cosmetic — regrouping existing
-scenarios under the right vectors, fixing numbering, tightening wording, with no scenario added,
-removed or re-targeted — read the issue body and skip to step 4, running step 3's ten-second
-lookup first for any tool a kept line names: a pure reformat that preserves an inherited
-"Lighthouse" or "k6" line is exactly the silent-green failure step 3 exists to catch.
-
-Otherwise, read the FEATURE and its upstream references, or fetch the issue with
-`gh issue view n --repo constructorfabric/insight --json title,body,labels,parent`.
-Locate the implementation branch or merged PR when it exists, then inspect the code as
-`scope-feature-tests` does — backend, ingestion and dbt, and `src/frontend` for UI. A new
-specification can be authored before implementation exists; record that in its framing.
-Use code inspection to discover risks and disagreements; source expected outcomes from agreed
-requirements — see 2a.
-
-Three things this grounding is *for*, beyond correctness:
-
-- **The denominators.** Where a scenario does carry a count ("all connectors", "every offered
-  option"), know what it counts: endpoints in the router, cases in the reviewed AC list, and the
-  repo-wide values from `.claude/skills/quality-vector-tests/scripts/counts.sh`. Prefer phrasing
-  that survives suite growth — "all current journeys plus the new one", not "11/11" — and quote an
-  absolute number only when it is the point of the check.
-- **Whether the feature's own framing still holds.** When the shipped code contradicts the issue —
-  scope was dropped, scope was added, a "table" shipped as a general-purpose component — report
-  the disagreement for resolution in the specification before changing scenario expectations.
-  Report what you found, not what you think
-  it means: "the endpoint takes 4 filters, the issue lists 2" is checkable; "the filter work was
-  descoped" is a story about people you did not talk to.
-- **Component malfunctions the design surfaced.** When `scope-feature-tests` mapped the components
-  the feature touches and found a real failure that hurts it (a dependency down, slow, returning
-  wrong or stale data), that arrives here as a scenario like any other — with the **expected
-  degraded behaviour** as its expect half ("the dashboard shows the error banner", never "doesn't
-  crash"). If the product defines no degraded behaviour, that's a design finding to raise, not a
-  scenario to invent.
-
-If the feature is a **port**, **consolidation**, or **rolling migration**, the headline scenario is
-almost always a **differential / parity gate** (old vs new on the same data) — and it is frequently
-*missing* from the author's first draft. Add it.
-
-For the deeper grounding discipline (feature shapes, differential tags, per-source coverage
-matrices, deferred-behavior handling), read the sibling skill `scope-feature-tests` — this skill
-reuses its reasoning and only differs in the **output format and location**.
-
-To *run* the vectors against a change that has already merged rather than write scenarios into an
-issue, hand over to `probe-merged-change`. It takes vector semantics from
-[vector-mapping.md](./references/vector-mapping.md) and owns execution.
-
-### 2a. Grounding isolation — what may inform what
-
-Expected outcomes come from agreed requirements, including referenced PRDs and inherited NFRs.
-Code inspection can discover boundaries, risks and missing requirements; it cannot silently
-replace the expected behavior with what the implementation happens to do. Record exploratory
-findings and resolve missing behavior in the specification before claiming AC coverage.
-
-| Artefact | May be informed by | Must NOT be informed by |
-|---|---|---|
-| Each **expect**, its vector and criterion tag | agreed feature requirements and referenced PRD/NFR contracts | implementation behavior used as a substitute for the agreed outcome |
-| Candidate scenarios, boundaries, **do**, suite tags and denominators | agreed scope, code inspection, existing tests and test infrastructure | treating an unimplemented promise as out of scope without a specification decision |
-| The **test code** that later implements a scenario | anything, the implementation included | — |
-
-Step 2's grounding pass exists to catch **contradictions** — scope that shipped differently from
-the description, a denominator that moved, a component malfunction with no defined degraded
-behaviour. It reports those as findings for the author to resolve in the description. It never
-quietly rewrites an expect half to match what the code turned out to do: when the code and the
-description disagree, that disagreement **is** the finding.
-
-When a feature is already implemented, say so in the framing paragraph and name the requirements
-used as the oracle. A retrospective scenario list still needs independent expected outcomes.
-
-### 3. Verify every tool you are about to name
-This is where drafts quietly lie. "Semgrep + Trivy in CI" is a sentence anyone can type; whether
-those scanners exist in this repo's pipeline is a fact you can check in about ten seconds. Run only
-the line matching a tool the draft actually names — these are lookups, not a survey:
-
-```sh
-grep -rniE "semgrep|trivy|codeql|snyk|grype" .github/          # scanners
-grep -rniE "k6|locust|gatling|jmeter|vegeta" . --include='*.yml' --include='*.md'   # load harness
-grep -rn "lighthouse" src/frontend/package.json .github/   # page-load tooling
-grep -n '"test' src/frontend/package.json  # frontend suites (vitest projects)
-```
-
-If the tool is not there, you have found something worth reporting, and the honest line names the
-gap rather than pretending: *"expect: 0 critical — **not measurable today**, no load harness is
-wired in CI; wiring one is a prerequisite."* A scenario that silently assumes infrastructure nobody
-built is worse than none, because it will be reported green by default.
-
-The same applies to numbers with no precedent in the repo. If you propose a 30-minute soak at <5%
-memory growth and nothing in the codebase establishes that bar, say it's your proposal and let the
-user set it.
-
-### 4. Attribute: one vector, one suite, its ACs
-**Vector** — use `references/vector-mapping.md`. Common miss: "code coverage" and "e2e coverage"
-belong under **Reliability** (leading indicators of correctness), not Efficiency — Efficiency is
-*compute cost to run*, not test rigor. Pagination correctness is Reliability too, however often it
-gets filed under Efficiency because it involves volume.
-
-**Suite tag** — the layer a scenario names is **the suite the test will land in**, and the menu
-depends on the component the scenario targets. Pick the cheapest suite from the target component's
-row that can falsify the claim; issues use the tags, never reproduce this table:
-
-| Target component | Suite tags, cheapest first |
+| Target component | Suite tags, cheapest adequate first |
 |---|---|
-| Frontend | `fe-unit` (vitest `unit` project, jsdom — hooks, clients, pure logic) → `fe-component` (vitest `storybook` browser project — rendered components in isolation) → `stand-ui` (Playwright journeys on a deployed stand, `tests/stand/ui`) |
-| Backend: serving / analytics | `rust-unit` (inline `#[cfg(test)]`) → `metric-spec` (the data-path suite, `tests/datapath/metrics/<class>` — seeded bronze → served value, on a compose test-stand instance) → `stand-api` (HTTP contract on a deployed stand, `tests/stand/api`) |
-| Backend: auth (authenticator / gateway / Keycloak) | `rust-unit` → `auth-rig` (the authenticator's own e2e tests with a container-imported Keycloak realm) → `stand-api` / `stand-ui` (real gateway, real sessions) |
-| Backend: identity / identity-resolution | `rust-unit` → `identity-e2e` (`tests/datapath/identity` — a connector's output reaching persons-seed, corrections surviving it, read as stand personas) → `stand-api` |
-| Ingestion (connectors + dbt) | `connector-tests` (per-connector suites under `src/ingestion/connectors/*/*/tests`) → `dbt-tests` (data tests over silver/gold) → `metric-spec` (bronze → dbt → served metric, end to end) |
-| Cross-cutting | `ci-static` (secret scan, image scan, coverage gates in `.github/`) · `manual` (docs walkthroughs, once-per-release legs a stand cannot drive) |
+| Frontend | `fe-unit` → `fe-component` → `stand-ui` |
+| Serving / analytics | `rust-unit` → `metric-spec` → `stand-api` |
+| Authentication | `rust-unit` → `auth-rig` → `stand-api` / `stand-ui` |
+| Identity | `rust-unit` → `identity-e2e` (`tests/datapath/identity`) → `stand-api` |
+| Ingestion | `connector-tests` → `dbt-tests` → `metric-spec` |
+| Cross-cutting | `ci-static` or `manual` |
 
-Performance and Efficiency scenarios have no suite of their own today — no load or soak lane is
-wired anywhere in the repo — so they take `manual` (or `stand-api` only when that suite can
-genuinely issue the run) and say so in the line, as the tool-verification step demands.
+Verify tools before naming them: inspect the relevant test directory, package
+scripts or CI workflows. A browser scenario must need browser-observable
+behaviour. Performance and Efficiency may use `manual` when no suitable load or
+soak lane exists, but must identify the missing procedure and conditions.
+Measure them on the same approved reference fixture at each NFR's own load.
 
-A `stand-ui` tag carries the same burden the UI suite itself imposes: the scenario must be about
-what a user *sees or traverses* — rendering, navigation, a real sign-in — and the justification
-should name what is user-visible that a cheaper suite cannot observe. Browser tests pay a
-permanent flake tax; spend them only where they are the only possible prover.
+## 4. Write Testing
 
-**ACs** — every scenario cites at least one `AC-n` from the reviewed list, and every AC is cited by
-at least one scenario. That's breadth, not depth: one scenario at the cheapest adequate suite per
-low-risk AC is fully compliant; risk decides where to go deeper. One AC does not license unlimited
-scenarios — consolidate variants of the same rule into one data-driven scenario rather than
-enumerating near-duplicates.
+Use this shape in a FEATURE; an issue uses `## Testing` instead:
 
-### 5. Write the section in the canonical format
-Follow the template below. Then edit it into the issue body, replacing the loose Testing block and
-preserving everything else (Goal, Scope, Acceptance, Planning).
+```markdown
+## 7. Testing
 
-The section states what gets checked and how — never why something is broken or where a fix would
-go. Grounding often turns up a real defect; that belongs in its own issue via `file-bug-insight`,
-not in a paragraph here. Two different readers use these two artifacts, and a diagnosis buried in a
-feature's Testing section reaches neither.
+**Feature**: `cpt-{system}-feature-{slug}`
 
-### 6. Draft-or-push
-Show the scenarios for review first whenever you are changing what is tested — adding a scenario,
-moving one between vectors or suites, changing the AC set, or setting numbers the user hasn't
-seen. The scenario lines themselves are the fastest thing to review; a table adds nothing.
+{Brief scope, primary risk, fixtures and test boundaries. Reference upstream
+targets instead of defining new ones here.}
 
-Push straight through only when the change is purely cosmetic. Edit via a body file, never inline,
-so the rest of the body survives verbatim. Write that file **outside this repo** — nothing here is
-gitignored for scratch output, so a body file left behind shows up in someone's `git status`:
-```sh
-BODY="$(mktemp -d)/<n>-body.md"   # never a fixed /tmp name: it collides between concurrent
-                                  # runs and leaves the last body lying around
-gh issue view <n> --repo constructorfabric/insight --json body -q .body > "$BODY"
-# replace only the Testing block in that file, then drop the trailing newline `-q` adds —
-# without this, every edit appends one more blank line to the end of the issue body
-perl -0pi -e 's/\n+\z/\n/' "$BODY"
-gh issue edit <n> --repo constructorfabric/insight --body-file "$BODY"
+- [ ] 1. **Scenario name** — Security · identity-e2e — perform an action → observe the required outcome.
+  **Requirements**: `cpt-{system}-nfr-{slug}`.
+  **Test**: Not implemented.
+- **deferred** 2. **Scenario name** — Performance · manual — perform the defined measurement → satisfy the upstream target.
+  **Requirements**: `cpt-{system}-nfr-{other-slug}`.
+  **Blocked by**: {owner, reason and resolution point}.
+
+**Versatility** — n/a: {why no local or inherited obligation applies to this feature}.
 ```
-Re-fetch the body immediately before every edit. These issues are actively co-authored, and a body
-built from a stale copy silently reverts someone else's work — if the fresh copy differs from what
-you last saw, rebuild on the new one and tell the user what changed.
 
-For a FEATURE artifact, replace only `## 7. Testing` when present, or insert it immediately after
-the `## 6. Acceptance Criteria` section when absent. Include the AC numbering from step 1 in the
-same edit. Re-read the file before editing to preserve concurrent changes, then regenerate the
-TOC and validate:
+The canonical AC checklist stays in section 6. Do not expand it into a copy of
+the test plan or add a scenario-to-AC map. Test ownership comes from the
+feature ID; scenario numbers are stable local anchors for test references, not
+another requirement namespace.
+
+- One numbered checkbox tracks one scenario, with exactly one vector, one suite,
+  and an executable do → expect. Subordinate metadata uses plain continuation
+  lines, never additional checkboxes.
+- Keep numbers stable once published. Append new numbers; retain a dropped
+  number with its disposition. Do not renumber tests to match changed ACs.
+- `*(main gate)*` after a scenario name is optional for the parity gate.
+- `**Requirements**` names exact upstream IDs. A shared test can satisfy several
+  features, but each feature must link to its applicable scenario and target.
+- `**Test**` links to the exact file and function or case when implemented.
+  Otherwise distinguish `Not implemented` from `Not yet mapped to the complete
+  scenario`; a directory is not implementation evidence.
+- Replace the checkbox with `**deferred**` when a scenario cannot yet be defined
+  or executed. Preserve its number, vector, requirement reference and owner.
+  If the requirement itself is missing, say so and link the decision that must
+  establish it; do not cite an unrelated NFR.
+- Account for all five vectors through scenarios or justified n/a declarations.
+  Inheriting unchanged Security or Performance obligations still requires shared
+  evidence, not n/a.
+- Group by risk; keep prose understandable without reading implementation code.
+  Keep feature and requirement IDs because they are the traceability links.
+
+See [example-feature.md](references/example-feature.md) for a worked synthetic
+PRD → FEATURE → test example. The older port, migration and lean examples are
+historical scope studies, not the current output contract.
+
+## 5. Link executable tests back to the feature
+
+When implementing or mapping a scenario:
+
+1. Verify that the test asserts the full outcome and the same vector.
+2. Put the FEATURE path, its existing `cpt-…-feature-…` ID and stable scenario
+   number in test metadata, a docstring, or an appropriate test reference.
+   Keep the native vector marker where the suite supports one: stand API/UI tests
+   require exactly one pytest vector marker under `tests/pyproject.toml`.
+   For YAML metric specs, use their existing description field.
+3. Link the scenario's `**Test**` field back to that exact test and check its box.
+   A checked box means implemented, not currently passing.
+4. Record passing evidence separately: tested revision, fixture/version, run
+   command, conditions and result. Skipped tests, missing personas and absent
+   source fixtures are not passing evidence.
+
+Use the canonical `flow/algo/state/dod` markers when FULL code traceability is
+required by the kit. Do not invent `@cpt-test` or `@cpt-feature` markers: those
+are not supported code marker kinds. FEATURE/test links complement, rather than
+replace, the kit's implementation trace.
+
+For an existing test, link only the behaviour its assertions actually prove.
+Do not check a broad scenario merely because a nearby test passes.
+
+## 6. Write back and validate
+
+Keep the target the user named and the requested scope. Existing authorization
+to update a draft or PR covers those edits. If a product decision is unresolved,
+record it for review instead of silently deciding it while formatting tests.
+
+Re-read the file or issue immediately before editing to preserve concurrent work.
+For GitHub bodies, use a file outside the product repository and `--body-file`;
+re-fetch after editing. When both an issue and FEATURE exist, the long-lived
+FEATURE owns the test content.
+
+For a FEATURE:
 
 ```sh
 cfs toc docs/<path>/FEATURE.md
-cfs validate --artifact docs/<path>/FEATURE.md   # must report Errors: 0
-cfs validate-toc docs/<path>/FEATURE.md          # must report PASS
+cfs validate --artifact docs/<path>/FEATURE.md
+cfs validate-toc docs/<path>/FEATURE.md
 .claude/skills/quality-vector-tests/scripts/rollup.sh docs/<path>/FEATURE.md
 ```
 
-Apply `QV-FDESIGN-001` in the FEATURE checklist after these commands; CFS and tag counts do not
-prove semantic quality. For an issue, apply the same scenario checks to its Testing section.
-When both targets exist and updating the issue is authorized, use the issue write-back flow above
-to replace duplicated Testing content with a link to the canonical FEATURE, then re-fetch and
-verify that link. Otherwise include the proposed link in the handoff. Commit artifact changes
-with the feature's other spec changes when those are part of the request.
+Apply `QV-FDESIGN-001` after deterministic validation. Check the chain in both
+directions: PRD IDs resolve; the FEATURE declares them; scenarios reference the
+right subset; implemented test links resolve and tests cite their owner.
+Inspect all applicable NFRs for missing or deferred evidence. CFS validates the
+canonical artifact references; the rollup counts vector declarations only and
+does not validate test metadata or prove requirement coverage.
 
-## The format
-
-This shows the heading as it reads in an issue (`## Testing`); a FEATURE artifact numbers the
-same section `## 7. Testing`, per the table above.
-
-```markdown
-## Testing
-
-<1–3 framing sentences: the feature shape (port / migration / new capability), what leads the
-risk, and where the checks run. For a port/migration, name the parity bar here.>
-All <N>/<N> acceptance criteria covered: <criterion-id> → 1,4 · <criterion-id> → 2,3 · …
-<deferred criteria named here, with reason and owner>. <criterion-id> is whatever scheme the
-issue itself uses — AC-n, BR-n, REQ-n — never renumbered.
-
-- [ ] 1. **<Scenario name>** — <Vector> · <suite-tag> · <criterion-id> — <do → expect, one
-      sentence; the expect half restates the criterion's outcome; a number only where the number
-      is the oracle>.
-- [ ] 2. **<Scenario name>** — <Vector> · <suite-tag> · <criterion-id> — <do → expect>.
-…
-
-**<Vector with nothing to check>** — n/a: <one line saying why, e.g. no new query path of its own;
-latency is measured on the shared runtime.>
-```
-
-Order scenarios by risk, headline first — for most Insight features that's **Reliability** (the
-data promise: the number is right). Scenarios of the same vector sit together so a vector's
-block reads contiguously — the tag still repeats on every line. When one sentence genuinely
-can't hold a scenario (a multi-part oracle, a tagged differential), spill into two or three
-sub-bullets — plain bullets, never checkboxes, so GitHub's checked/total count stays one box per
-scenario — but treat that as the exception; a section of anatomy-per-scenario is the old failure
-mode.
-
-### Rules that make the format work
-
-- **The expect half must be able to fail.** Reread each scenario asking: if the feature were
-  broken this specific way, would this line catch it? "Suites green" next to an AC tag is theater
-  unless the suite contains a test that fails on that AC's breakage — which is why the box links
-  to the test once it lands.
-- **Name a scenario, not a sentence.** Two to four plain words — "Session parity", "Refusal
-  landing", "Unknown email refused". No `snake_case`, no invented coinages.
-- **One scenario → one vector.** Never pair vectors. If a scenario seems to span two, it's usually
-  two scenarios with two different expects — split it (the refusal that must *deny access* is
-  Security; the refusal that must *land the user somewhere sane* is Reliability).
-- **One scenario → one suite tag.** If it needs two suites, it's two scenarios. The tag is
-  checkable — a wrong tag shows up as a test living in the wrong home.
-- **Numbers are permanent.** Number continuously (1..N) when first writing the section; after
-  that a number is never reused or shifted — new scenarios append with fresh numbers, a dropped
-  scenario keeps its line marked ~~dropped~~, and every edit regenerates the AC map line. Merged
-  tests cite scenario numbers in their docstrings, so renumbering silently repoints them.
-- **Every vector appears.** A vector with nothing to check says **n/a** and why, in one line.
-  Silence reads as an oversight; an explicit n/a reads as a decision. Don't invent a scenario to
-  fill a vector — an honest n/a beats a padded one.
-- **Counts survive drift.** Prefer "all current journeys plus the new one" over "11/11" — absolute
-  counts in issue text rot as suites grow. Where a count is the point, take it fresh
-  (`counts.sh`), never copy one from this skill or an example.
-- **Plain language, no internal jargon.** Table names, symbol paths, ADR/`@cpt-*` ids are how
-  *you* reason; strip them from the filed text. The `AC-n` ids and suite tags are the exception —
-  they are the tracking scheme itself.
-- **The do half needs a verb.** A noun phrase listing ingredients is not a procedure. Watch for a
-  definite article pointing at something the reader has never seen — "**the** public allowlist",
-  "**the** resolved person set". If it's `the`, either name it or say where to find it.
-- **The framing paragraph orients an outsider.** Ordinary words: what the feature does, what could
-  go wrong, where the checks run. If the section's opening and the issue's title appear to
-  describe two different things, say that they are the same feature.
-- **Read it back as a stranger.** Could someone handed this ticket with no project context execute
-  each line, or would they have to find the author first? Anything in the second category isn't
-  finished.
-- **Match the issue's heading levels.** If its sections are `##`, use `## Testing`; if `###`,
-  demote one step. Testing sits level with Scope and Acceptance.
-- **Follow the author's scope.** These sections are drafted by the feature's engineer; your job is
-  to make their intent trackable, not to replace it. Add at most the one scenario whose absence
-  would make the section dishonest — usually the differential/parity gate — and flag it explicitly
-  rather than slipping it in.
-- **The differential/parity gate is the headline** for ports, consolidations, and migrations. It
-  carries `*(main gate)*` right after the scenario name — the one extra tag the format allows —
-  and its diff expectations are tagged, never blanket zero-diff: `exact` (must match) /
-  `known-diff(direction)` (deliberate change — assert the direction) / `merge` (siblings collapse
-  — merged == Σ parts).
-
-## Tracking coverage after implementation
-
-The section stays alive after it's written — that is its point:
-
-- A test that implements scenario n cites the issue and scenario in its docstring — or, for a
-  metric-spec YAML, in its `description` — (`#2163 scenario 3`), and the scenario's box gets
-  checked with a link to the test
-  (`→ tests/stand/ui/test_login.py`). Link by id, never copy scenario or AC prose into
-  the test — copies drift, the id is the link.
-- The **gap audit** is: fetch the issue, read the unchecked boxes. Each unchecked box after
-  implementation is a named, attributed coverage gap — vector, suite, AC — not a vague "needs
-  more tests".
-- A scenario that will *stay* unimplemented gets its checkbox replaced by **deferred** with a
-  reason and owner, so the tracker never silently under-reports.
-- In the stand suites the vector attribution is machine-enforced: every api/ui test carries
-  exactly one vector marker, declared in `tests/pyproject.toml` (which owns the rule's why)
-  and checked at collection — any other count aborts the session, and the marker must equal
-  the scenario's vector tag. metric-spec YAML has no marker
-  mechanism — its vector
-  lives issue-side only.
-
-## Turning a vague line into a scenario
-
-Numbers are omitted from these rows only because each is a single line out of context; in a
-filed section every scenario is numbered.
-
-| Author wrote | Scenario line |
-|---|---|
-| "pagination tests" | `- [ ] **Page honesty** — Reliability · stand-api · AC-3 — page a 3,000-record fixture at size 500 (6 pages) → 0 duplicates, 0 omissions, total exact.` |
-| "UI e2e tests - coverage?" | `- [ ] **Dashboard renders for a signed-in lead** — Reliability · stand-ui · AC-1 — sign in as a seeded lead → the four KPI tiles render with non-empty values.` |
-| "no critical issues in ci" | `- [ ] **Critical findings** — Security · ci-static · AC-5 — Trivy CRITICAL + Semgrep ERROR counts from the workflows in .github/ → 0.` |
-| "check it degrades ok" | `- [ ] **Warehouse outage banner** — Reliability · fe-component · AC-2 — render the dashboard with the metrics client erroring → the error banner shows, no blank panel, recovers on retry.` |
-| "latency for drilldowns" | `- [ ] **Drilldown latency** — Performance · stand-api · AC-4 — 200 requests on the seeded dataset, deepest lineage path → P95 < 1s.` |
-
-## Counts worth knowing — take them, never quote them
-
-Run this and use what it prints:
-
-```sh
-.claude/skills/quality-vector-tests/scripts/counts.sh
-```
-
-It reports the connectors, catalog metrics, dbt models and data tests, metrics
-carrying a regression spec, and stand tests, each beside the path it was
-counted from.
-
-**No repo-wide denominator in this skill is authoritative.** Numbers appear
-only inside labelled snapshots, where the point is the shape of a finished
-scenario, not the value. The numbers move, and the last time they moved the
-failure was silent: the catalog used to live inline in `builtin.rs`, became
-`include_str!("registry.yaml")`, and the documented `grep … builtin.rs | wc -l`
-kept returning a number — `0` — which reads exactly like an answer. A
-denominator of `0` is worse than no denominator at all. So every count in the
-script proves its source first and reports **MOVED** rather than zero when the
-source has shifted; `--check` exits non-zero, which is what to wire into CI if
-you want the drift caught rather than discovered.
-
-If a count comes back MOVED, re-derive it from the tree and fix the script.
-Do not write a scenario against a denominator you could not take.
-
-"Metrics with a spec" over "catalog metrics" is the coverage ratio for *which
-metrics have a regression test* — and note the denominator is the catalog, not
-the specs, so the ratio is under 1 and stays honest. It is the natural
-Reliability scenario for any metric feature; `metric-test` authors those specs.
-
-## Worked examples
-Read the one closest to the feature in front of you — they show the format applied end to end:
-- `references/example-migration.md` — a rolling **migration platform** (unified metric system).
-  Reliability-led, differential as the main gate, registry-driven coverage.
-- `references/example-port.md` — a C#→Rust **port** (identity resolution). Shows the vector
-  spread across all five, and the correction that the first draft under-tested core correctness.
-- `references/example-lean.md` — a **greenfield epic** trimmed back to the author's own draft.
-  Shows explicit `n/a` vectors, AC citations, and unmeasurable-tooling flags.
+The rollup retains older criterion-tagged lines for compatibility and reports
+deferred scenarios separately. It ignores fenced examples and comments.
+Do not use a ratio of ACs to scenarios as a quality or traceability gate.

@@ -1,5 +1,9 @@
 # Worked example — a unified metric system (rolling migration)
 
+> Historical scope study. Its criterion tags and coverage maps are not the current
+> output contract. Use [example-feature.md](example-feature.md) for feature-owned
+> tests; unchanged inherited obligations need evidence rather than an n/a label.
+
 A generic metrics runtime that the whole catalog migrates onto, wave by wave. Shape: **migration
 platform** → the headline scenario is a reusable differential gate, and coverage must be
 registry-driven (the metric list is still settling, so measure the machinery, not a fixed list).

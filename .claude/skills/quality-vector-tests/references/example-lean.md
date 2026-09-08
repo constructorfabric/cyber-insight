@@ -1,5 +1,9 @@
 # Worked example — metric → source drill-down (greenfield, lean)
 
+> Historical scope study. Its criterion tags and coverage maps are not the current
+> output contract. Use [example-feature.md](example-feature.md) for feature-owned
+> tests; unchanged inherited obligations need evidence rather than an n/a label.
+
 Drill from any metric value to the source records behind it. Shape: **new capability, not yet
 built** — no branch, no PR. This example shows three things the other two don't: staying inside the
 author's own draft scope, explicit `n/a` handling, and how to handle a scenario whose tooling

@@ -1,5 +1,9 @@
 # Worked example — identity resolution (C#→Rust port)
 
+> Historical scope study. Its criterion tags and coverage maps are not the current
+> output contract. Use [example-feature.md](example-feature.md) for feature-owned
+> tests; unchanged inherited obligations need evidence rather than an n/a label.
+
 > **Snapshot.** Denominators here were counted when the example was written.
 > Re-take them with `.claude/skills/quality-vector-tests/scripts/counts.sh`; the *form* is what this teaches.
 

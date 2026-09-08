@@ -740,11 +740,11 @@ Before evaluating each checklist item, the expert MUST:
 ### QV-FDESIGN-001: Quality Vector Scenarios
 **Severity**: HIGH (new FEATURE artifacts and explicitly added or migrated Testing sections)
 
-- [ ] Section 7 is present; every scenario has exactly one vector, one existing suite tag, resolvable AC IDs, and an observable do → expect outcome
-- [ ] Every AC is covered or explicitly deferred with an owner and reason; relevant PRD NFR IDs, including inherited obligations, trace through the ACs
+- [ ] Section 6 retains the canonical Acceptance Criteria checklist; section 7 names the owning feature ID and every scenario has exactly one vector, one existing suite tag and an observable do → expect outcome
+- [ ] PRD FR/NFR IDs resolve through FEATURE section 1.2 to scenario requirement references; every applicable local or inherited NFR has scenarios, shared test evidence or an explicit deferral with owner and reason
 - [ ] Each vector has scenarios or an explicit reason for non-applicability; missing test infrastructure is recorded as a gap
 - [ ] Expectations follow agreed requirements; implementation disagreements remain findings until the specification decision is resolved
-- [ ] Checked scenarios link to their tests; current passing evidence identifies the tested revision and conditions separately from implementation status
+- [ ] Checked scenarios link to exact tests; tests reference the feature path, feature ID and scenario number with matching vector attribution; passing evidence identifies revision and conditions separately from implementation status
 - [ ] The rollup was inspected for missing vectors; examples and tag counts do not establish coverage or successful execution
 
 ---
