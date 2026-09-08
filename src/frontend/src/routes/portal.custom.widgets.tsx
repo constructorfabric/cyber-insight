@@ -54,6 +54,34 @@ function WidgetRow({ name }: { name: string }) {
   );
 }
 
+/** What the row beside the metric is called, per kind. */
+function drawnLabel(widget: Widget): string {
+  switch (widget.type) {
+    case "table":
+      return "Columns";
+    case "stat":
+      return "Value";
+    case "pie":
+      return "Slices";
+    default:
+      return "Axes";
+  }
+}
+
+/** The columns this widget reads, as it reads them. */
+function drawn(widget: Widget): string {
+  switch (widget.type) {
+    case "table":
+      return widget.columns.join(", ");
+    case "stat":
+      return widget.label ? `${widget.value} as ${widget.label}` : widget.value;
+    case "pie":
+      return `${widget.label} by ${widget.value}`;
+    default:
+      return `x ${widget.x} · y ${widget.y}`;
+  }
+}
+
 function WidgetSummary({ widget }: { widget: Widget }) {
   return (
     <div className="flex flex-col gap-2">
@@ -71,21 +99,10 @@ function WidgetSummary({ widget }: { widget: Widget }) {
             {widget.metric}
           </Link>
         </dd>
-        {widget.type === "table" ? (
-          <>
-            <dt className={TEXT_LABEL}>Columns</dt>
-            <dd className={cn(TEXT_BODY, "min-w-0 break-words font-mono")}>
-              {widget.columns.join(", ")}
-            </dd>
-          </>
-        ) : (
-          <>
-            <dt className={TEXT_LABEL}>Axes</dt>
-            <dd className={cn(TEXT_BODY, "min-w-0 break-words font-mono")}>
-              x {widget.x} · y {widget.y}
-            </dd>
-          </>
-        )}
+        <dt className={TEXT_LABEL}>{drawnLabel(widget)}</dt>
+        <dd className={cn(TEXT_BODY, "min-w-0 break-words font-mono")}>
+          {drawn(widget)}
+        </dd>
       </dl>
     </div>
   );

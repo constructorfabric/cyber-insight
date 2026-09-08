@@ -1,6 +1,10 @@
 import type { MetricResult, Widget } from "@/api/custom-client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CustomAreaChart } from "@/components/custom/custom-area-chart";
+import { CustomBarChart } from "@/components/custom/custom-bar-chart";
 import { CustomLineChart } from "@/components/custom/custom-line-chart";
+import { CustomPieChart } from "@/components/custom/custom-pie-chart";
+import { CustomStat } from "@/components/custom/custom-stat";
 import { CustomTable } from "@/components/custom/custom-table";
 
 export interface CustomWidgetProps {
@@ -33,6 +37,38 @@ export function CustomWidget({ widget, result, error }: CustomWidgetProps) {
       return (
         drawable(widget.metric, [widget.x, widget.y], result) ?? (
           <CustomLineChart result={result} x={widget.x} y={widget.y} />
+        )
+      );
+    case "bar":
+      return (
+        drawable(widget.metric, [widget.x, widget.y], result) ?? (
+          <CustomBarChart result={result} x={widget.x} y={widget.y} />
+        )
+      );
+    case "area":
+      return (
+        drawable(widget.metric, [widget.x, widget.y], result) ?? (
+          <CustomAreaChart result={result} x={widget.x} y={widget.y} />
+        )
+      );
+    case "stat":
+      return (
+        drawable(widget.metric, [widget.value], result) ?? (
+          <CustomStat
+            result={result}
+            value={widget.value}
+            label={widget.label}
+          />
+        )
+      );
+    case "pie":
+      return (
+        drawable(widget.metric, [widget.label, widget.value], result) ?? (
+          <CustomPieChart
+            result={result}
+            label={widget.label}
+            value={widget.value}
+          />
         )
       );
     default:

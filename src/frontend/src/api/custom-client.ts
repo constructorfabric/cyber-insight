@@ -9,14 +9,29 @@ export interface TableWidget {
   columns: string[];
 }
 
-export interface LineWidget {
-  type: "line";
+/** A line, a bar and an area all read one column against another. */
+export interface SeriesWidget {
+  type: "line" | "bar" | "area";
   metric: string;
   x: string;
   y: string;
 }
 
-export type Widget = TableWidget | LineWidget;
+export interface StatWidget {
+  type: "stat";
+  metric: string;
+  value: string;
+  label?: string;
+}
+
+export interface PieWidget {
+  type: "pie";
+  metric: string;
+  label: string;
+  value: string;
+}
+
+export type Widget = TableWidget | SeriesWidget | StatWidget | PieWidget;
 
 /**
  * A metric's stored query, as the service interprets it.

@@ -24,13 +24,35 @@ pub(crate) enum Widget {
         x: String,
         y: String,
     },
+    Bar {
+        metric: String,
+        x: String,
+        y: String,
+    },
+    Area {
+        metric: String,
+        x: String,
+        y: String,
+    },
+    /// One number, which is what most questions actually answer with.
+    Stat { metric: String, value: String },
+    Pie {
+        metric: String,
+        label: String,
+        value: String,
+    },
 }
 
 impl Widget {
     /// The metric this widget draws.
     pub(crate) fn metric(&self) -> &str {
         match self {
-            Self::Table { metric, .. } | Self::Line { metric, .. } => metric,
+            Self::Table { metric, .. }
+            | Self::Line { metric, .. }
+            | Self::Bar { metric, .. }
+            | Self::Area { metric, .. }
+            | Self::Stat { metric, .. }
+            | Self::Pie { metric, .. } => metric,
         }
     }
 
@@ -38,7 +60,11 @@ impl Widget {
     fn columns(&self) -> Vec<&str> {
         match self {
             Self::Table { columns, .. } => columns.iter().map(String::as_str).collect(),
-            Self::Line { x, y, .. } => vec![x.as_str(), y.as_str()],
+            Self::Line { x, y, .. } | Self::Bar { x, y, .. } | Self::Area { x, y, .. } => {
+                vec![x.as_str(), y.as_str()]
+            }
+            Self::Stat { value, .. } => vec![value.as_str()],
+            Self::Pie { label, value, .. } => vec![label.as_str(), value.as_str()],
         }
     }
 
@@ -62,7 +88,11 @@ impl Widget {
 
 #[derive(Debug, Error)]
 pub(crate) enum WidgetError {
-    #[error("a widget needs a type of `table` or `line`, a metric, and the columns it draws")]
+    #[error(
+        "a widget needs a metric, a type of `table`, `line`, `bar`, `area`, `stat` or `pie`, \
+         and the columns that type draws: columns for a table, x and y for a line, bar or \
+         area, value for a stat, label and value for a pie"
+    )]
     Shape(#[from] serde_json::Error),
     #[error("`{column}` is not a column of metric `{metric}`; its columns are: {available}")]
     UnknownColumn {
@@ -95,6 +125,83 @@ mod tests {
 
     fn widget(value: serde_json::Value) -> Widget {
         serde_json::from_value(value).unwrap_or_else(|error| panic!("the fixture parses: {error}"))
+    }
+
+    #[test]
+    fn every_kind_that_draws_two_columns_checks_both() {
+        for kind in ["line", "bar", "area"] {
+            let drawn = widget(json!({
+                "type": kind, "metric": "lines_per_day", "x": "day", "y": "total_lines"
+            }));
+            assert!(
+                drawn.check_against(&metric()).is_ok(),
+                "{kind} draws its metric"
+            );
+
+            let wrong = widget(json!({
+                "type": kind, "metric": "lines_per_day", "x": "day", "y": "lines"
+            }));
+            assert!(
+                matches!(
+                    wrong.check_against(&metric()),
+                    Err(WidgetError::UnknownColumn { .. })
+                ),
+                "{kind} refuses a column the metric has not got"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stat_reads_one_value() {
+        let drawn = widget(json!({
+            "type": "stat", "metric": "lines_per_day", "value": "total_lines", "label": "Lines"
+        }));
+
+        assert!(drawn.check_against(&metric()).is_ok());
+    }
+
+    #[test]
+    fn a_stat_naming_nothing_the_metric_returns_is_refused() {
+        let drawn = widget(json!({
+            "type": "stat", "metric": "lines_per_day", "value": "lines"
+        }));
+
+        assert!(matches!(
+            drawn.check_against(&metric()),
+            Err(WidgetError::UnknownColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pie_reads_a_label_and_a_value() {
+        let drawn = widget(json!({
+            "type": "pie", "metric": "lines_per_day", "label": "day", "value": "total_lines"
+        }));
+
+        assert!(drawn.check_against(&metric()).is_ok());
+    }
+
+    #[test]
+    fn a_pie_whose_label_is_not_a_column_is_refused() {
+        let drawn = widget(json!({
+            "type": "pie", "metric": "lines_per_day", "label": "author", "value": "total_lines"
+        }));
+
+        assert!(matches!(
+            drawn.check_against(&metric()),
+            Err(WidgetError::UnknownColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn a_kind_the_renderer_does_not_have_is_not_a_widget() {
+        // The tool schema and the renderer are two views of one vocabulary,
+        // and this is the check that keeps a third out of the store.
+        let refused: Result<Widget, _> = serde_json::from_value(json!({
+            "type": "sankey", "metric": "lines_per_day", "x": "day", "y": "total_lines"
+        }));
+
+        assert!(refused.is_err());
     }
 
     #[test]

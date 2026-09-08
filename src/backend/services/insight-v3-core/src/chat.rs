@@ -575,7 +575,9 @@ fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue, map: &str) -> Str
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
          A column holding a person carries `person`: \"email\" for an address, \"id\" for a person id. The rows then read the name that person is known by rather than the handle a source system wrote, so group by people that way in preference to any name column on the table itself.\n\
          A widget draws its metric's columns by their as_name, never by the raw json field: a metric whose as_name is total_lines is drawn as y total_lines.\n\
-         A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
+         A widget is one of: {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}; {\"type\":\"line\"|\"bar\"|\"area\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}; {\"type\":\"stat\",\"metric\":<metric name>,\"value\":<string>,\"label\":<string>}; {\"type\":\"pie\",\"metric\":<metric name>,\"label\":<string>,\"value\":<string>}.\n\
+         Pick the one that answers the question: a count per category is a bar, a count over time is a line, a running total is an area, a single number is a stat, a share of a total is a pie, and anything with several columns worth reading is a table.\n\
+         A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
     );
 
     if tables.is_empty() {
@@ -780,11 +782,13 @@ fn proposal_tools() -> Vec<Value> {
         "additionalProperties": false,
         "required": ["type", "metric"],
         "properties": {
-            "type": { "enum": ["table", "line"] },
+            "type": { "enum": ["table", "line", "bar", "area", "stat", "pie"] },
             "metric": name,
             "columns": { "type": "array", "items": plain },
             "x": plain,
             "y": plain,
+            "value": plain,
+            "label": plain,
         },
     });
     let dashboard = json!({
@@ -1431,6 +1435,24 @@ mod tests {
         // Which shape belongs to which table is the thing it gets wrong.
         assert!(prompt.contains("`column`"), "{prompt}");
         assert!(prompt.contains("`json`"), "{prompt}");
+    }
+
+    #[test]
+    fn the_widget_schema_offers_exactly_the_kinds_the_renderer_draws() {
+        // The schema the model writes against and the switch that draws the
+        // result are two views of one vocabulary. Every bug here came from
+        // those two drifting apart.
+        let created = tool(CREATE_TOOL);
+        let widget = &created["input_schema"]["properties"]["widgets"]["items"]["properties"]["body"]
+            ["properties"];
+
+        assert_eq!(
+            widget["type"]["enum"],
+            json!(["table", "line", "bar", "area", "stat", "pie"])
+        );
+        for field in ["metric", "columns", "x", "y", "value", "label"] {
+            assert!(widget[field].is_object(), "{field} is offered");
+        }
     }
 
     #[test]
