@@ -67,6 +67,8 @@ pub fn register_routes(
 
 #[cfg(test)]
 mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
 
 /// Every wait a handler can make is individually bounded (git budgets, the
 /// in-connection preparation wait, the read-lock wait), but a hold that is

@@ -59,6 +59,39 @@ async fn probe_handler() -> &'static str {
     "ok"
 }
 
+/// Everything a JSON subscriber captured while `f` ran — the raw material for
+/// seeded-leak assertions: log through the real call site inside `f`, then
+/// assert the seeded secret is absent from the returned lines.
+pub fn capture_output(f: impl FnOnce()) -> String {
+    let writer = SharedWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_writer(writer.clone())
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, f);
+
+    let captured = writer.0.lock().unwrap_or_else(PoisonError::into_inner);
+    String::from_utf8_lossy(&captured).into_owned()
+}
+
+/// Everything logged while one probe request travels the layer — for leak
+/// checks over a whole request (seeded credential headers must not surface).
+///
+/// # Errors
+/// The probe request could not be built or served.
+pub fn capture_probe_output(
+    layer: LogContextLayer,
+    headers: &[(&str, &str)],
+    tenant: Option<Uuid>,
+) -> Result<String, CaptureError> {
+    let mut outcome = Ok(());
+    let output = capture_output(|| outcome = run_probe(layer, headers, tenant));
+    outcome?;
+    Ok(output)
+}
+
 /// # Errors
 /// The probe line is missing from the captured output or carries no `log_ctx`
 /// span — either means the layer is not doing its job.
@@ -67,42 +100,9 @@ pub fn capture_probe_line(
     headers: &[(&str, &str)],
     tenant: Option<Uuid>,
 ) -> Result<(serde_json::Value, serde_json::Value), CaptureError> {
-    let writer = SharedWriter::default();
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .with_writer(writer.clone())
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
+    let output = capture_probe_output(layer, headers, tenant)?;
 
-    let app = Router::new()
-        .route("/probe", get(probe_handler))
-        .layer(layer);
-
-    let mut request = Request::builder().uri("/probe");
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    if let Some(tenant_id) = tenant {
-        let security = SecurityContext::builder()
-            .subject_id(Uuid::from_u128(1))
-            .subject_tenant_id(tenant_id)
-            .build()
-            .map_err(|e| CaptureError::Request(e.to_string()))?;
-        request = request.extension(security);
-    }
-    let request = request
-        .body(Body::empty())
-        .map_err(|e| CaptureError::Request(e.to_string()))?;
-
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    tracing::subscriber::with_default(subscriber, || {
-        runtime
-            .block_on(app.oneshot(request))
-            .map_err(|e| CaptureError::Request(e.to_string()))
-    })?;
-
-    let captured = writer.0.lock().unwrap_or_else(PoisonError::into_inner);
-    let lines = String::from_utf8_lossy(&captured)
+    let lines = output
         .lines()
         .map(serde_json::from_str::<serde_json::Value>)
         .collect::<Result<Vec<_>, _>>()?;
@@ -128,4 +128,36 @@ pub fn capture_probe_line(
         .ok_or(CaptureError::LogCtxSpanMissing)?;
 
     Ok((probe_line, log_ctx))
+}
+
+fn run_probe(
+    layer: LogContextLayer,
+    headers: &[(&str, &str)],
+    tenant: Option<Uuid>,
+) -> Result<(), CaptureError> {
+    let app = Router::new()
+        .route("/probe", get(probe_handler))
+        .layer(layer);
+
+    let mut request = Request::builder().uri("/probe");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    if let Some(tenant_id) = tenant {
+        let security = SecurityContext::builder()
+            .subject_id(Uuid::from_u128(1))
+            .subject_tenant_id(tenant_id)
+            .build()
+            .map_err(|e| CaptureError::Request(e.to_string()))?;
+        request = request.extension(security);
+    }
+    let request = request
+        .body(Body::empty())
+        .map_err(|e| CaptureError::Request(e.to_string()))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    runtime
+        .block_on(app.oneshot(request))
+        .map_err(|e| CaptureError::Request(e.to_string()))?;
+    Ok(())
 }
