@@ -87,10 +87,9 @@ say "the ingest table a metric can be written over"
 table="$(python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
-content = payload["result"]["structuredContent"]["tables"]
-for entry in content:
+for entry in payload["result"]["structuredContent"]["tables"]:
     if entry["layer"] == "ingest":
-        print(f"{entry[\"database\"]}\t{entry[\"table\"]}")
+        print(entry["database"] + "\t" + entry["table"])
         break
 ' <<<"${tables}")"
 [[ -n "${table}" ]] || fail "no ingest table to build a metric over: ${tables}"
