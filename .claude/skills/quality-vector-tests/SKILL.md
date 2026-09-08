@@ -1,33 +1,19 @@
 ---
 name: quality-vector-tests
 description: >-
-  Write or reformat the **Testing** section of a constructorfabric/insight feature — either a
-  GitHub issue or a FEATURE.md spec artifact under docs/ — as
-  tracked scenarios: one checkbox line per scenario, each attributed to one quality vector
-  (Efficiency, Reliability, Performance, Security, Versatility), one target suite (the layer),
-  and the acceptance criteria it covers, with a do → expect pass criterion — so that after
-  implementation the unchecked boxes ARE the coverage gaps. Reviews the issue's acceptance
-  criteria first and proposes a corrected set when they are arbitrary. Use this whenever the task
-  is to add, fix, format, clean up, or standardize the Testing / QA section of an Insight feature
-  or epic — "format the testing section of #<n>", "add quality-vector tests to this feature",
-  "the testing block is messy, clean it up", "make the testing section consistent", "put the
-  tests into the feature", "simplify the testing section", "track test scenarios in the feature",
-  "add the Testing section to this FEATURE.md", "fill section 7 of the feature spec" —
-  or when a feature's Testing section has loose bullets, open questions (`coverage?`,
-  `Lighthouse?`), mispaired vectors, vague pass criteria, or broken numbering. This is the
-  *authoring/formatting* counterpart to scope-feature-tests: reach for scope-feature-tests to
-  REASON OUT what to cover (risk-ordered lean scope); reach for THIS to lay that coverage into
-  the feature body in the canonical tracked-scenario format the Insight quality program uses.
-  Trigger even when the user only says "quality vector tests" or "fix the formatting for testing"
-  without naming the format.
+  Write or revise an Insight feature's Testing section in a GitHub issue or FEATURE.md.
+  Review acceptance criteria, then write tracked do → expect scenarios with one quality
+  vector, one suite tag and criterion references. Use when adding quality-vector tests or
+  fixing a Testing section's coverage, attribution or formatting. Use scope-feature-tests
+  to reason about the broader test scope; this skill owns the scenario format and write-back.
 ---
 
 # Quality-vector Testing sections (Insight features)
 
 Turn a feature's testing needs into the **standard Testing section** that lives inside the
-constructorfabric/insight GitHub issue: a list of **tracked scenarios** — checkbox lines, each
+constructorfabric/insight GitHub issue or FEATURE artifact: a list of **tracked scenarios** — checkbox lines, each
 attributed to one quality vector, one target suite, and the acceptance criteria it covers — written
-straight into the issue body. This is the format the Insight quality program uses so that any
+into the chosen target. This is the format the Insight quality program uses so that any
 engineer or QA lead reading a feature sees the *same shape* of test plan every time, and so that
 **after implementation, the unchecked boxes are the coverage gaps**.
 
@@ -40,7 +26,8 @@ could execute and score:
 > → each lands back on the sign-in screen, every option intact, reason shown.`
 
 The box starts unchecked. When the test lands, the box gets checked and the line gets a link to
-the test. The post-implementation coverage audit is literally reading the unchecked boxes — GitHub
+the test. A checked box records implementation; current passing evidence separately names the
+tested revision and conditions. The post-implementation coverage audit reads the unchecked boxes — GitHub
 even shows the checked/total count in the issue list. That only works if every line carries three
 attributions:
 
@@ -80,10 +67,15 @@ what keeps the reference resolvable after the issue closes.
 
 `.claude/skills/quality-vector-tests/scripts/rollup.sh <artifact>` prints the five-vector view
 for either target by grouping the tags. It reports `MISSING` for a vector that is neither
-claimed nor explicitly `n/a` — the rollup is derived, so a gap in it is a gap in the artifact,
-not in a summary someone forgot to update. The PRD side reads `**Vector**:` lines, and treats a
-vector named in `### 6.2 NFR Exclusions` as an explicit n/a. It has no artifact to read until
-the next PRD is authored; existing PRDs are deliberately not backfilled.
+claimed nor explicitly `n/a`. It reads only scenario lines in `## Testing` / `## 7. Testing`
+and NFR entries in `### 6.1 NFR Inclusions`, ignoring fenced examples and comments. An inherited
+NFR entry has `**Vector**`, `**Inherits**` with the upstream NFR ID, and `**Verification**`
+naming shared evidence and its owner; the report labels inherited counts separately. Only a
+vector declaration in `### 6.2 NFR Exclusions` is an explicit n/a. The counts describe planned
+or implemented declarations, not successful tests. Resolve upstream references and apply the
+artifact's semantic checklist after inspecting the report. Existing PRDs are deliberately not
+backfilled. Run the reporter's regression cases with
+`python3 -m unittest discover -s .claude/skills/quality-vector-tests/scripts -p 'test_*.py'`.
 
 ## Workflow
 
@@ -96,8 +88,9 @@ three counts:
 - **Testable?** One behaviour per AC, stated as an observable outcome. Vague ("works correctly",
   "fast") or compound ACs get a proposed rewrite or split — an untestable AC is a requirements
   defect, not a testing gap to pad over.
-- **Complete?** Every promise in Goal/Scope has an AC. The usual failure is a missing one, not a
-  wrong one.
+- **Complete?** Every promise in Goal/Scope and relevant local or inherited PRD NFR has an AC.
+  Preserve upstream NFR IDs in the ACs so the scenario-to-requirement chain stays resolvable.
+  The usual failure is a missing criterion, not a wrong one.
 - **Real?** An AC that gates deliberately-deferred or out-of-scope behaviour is flagged, not
   silently tested around.
 
@@ -138,12 +131,13 @@ removed or re-targeted — read the issue body and skip to step 4, running step 
 lookup first for any tool a kept line names: a pure reformat that preserves an inherited
 "Lighthouse" or "k6" line is exactly the silent-green failure step 3 exists to catch.
 
-Otherwise, don't invent a generic checklist. Read the issue and the actual implementation the same
-way `scope-feature-tests` does — pull the issue (`gh issue view n --repo constructorfabric/insight
---json title,body,labels,parent`), check for a branch or merged PR (`gh pr list --repo
-constructorfabric/insight --search "n" --state all`), then read the code — all in this repo:
-backend, ingestion and dbt, and `src/frontend` for UI.
-Read the code to check the description against reality, never to source the scenarios — see 2a.
+Otherwise, read the FEATURE and its upstream references, or fetch the issue with
+`gh issue view n --repo constructorfabric/insight --json title,body,labels,parent`.
+Locate the implementation branch or merged PR when it exists, then inspect the code as
+`scope-feature-tests` does — backend, ingestion and dbt, and `src/frontend` for UI. A new
+specification can be authored before implementation exists; record that in its framing.
+Use code inspection to discover risks and disagreements; source expected outcomes from agreed
+requirements — see 2a.
 
 Three things this grounding is *for*, beyond correctness:
 
@@ -153,8 +147,9 @@ Three things this grounding is *for*, beyond correctness:
   that survives suite growth — "all current journeys plus the new one", not "11/11" — and quote an
   absolute number only when it is the point of the check.
 - **Whether the feature's own framing still holds.** When the shipped code contradicts the issue —
-  scope was dropped, scope was added, a "table" shipped as a general-purpose component — correct
-  the scenarios against reality and say so to the user. Report what you found, not what you think
+  scope was dropped, scope was added, a "table" shipped as a general-purpose component — report
+  the disagreement for resolution in the specification before changing scenario expectations.
+  Report what you found, not what you think
   it means: "the endpoint takes 4 filters, the issue lists 2" is checkable; "the filter work was
   descoped" is a story about people you did not talk to.
 - **Component malfunctions the design surfaced.** When `scope-feature-tests` mapped the components
@@ -178,15 +173,15 @@ issue, hand over to `probe-merged-change`. It takes vector semantics from
 
 ### 2a. Grounding isolation — what may inform what
 
-Scenarios come from the feature description. Test code may consult the implementation. Keep the
-two apart: a scenario derived from the code asserts what the code does, so it passes by
-construction — and a behaviour the code never implemented produces no scenario at all, which
-makes the gap invisible.
+Expected outcomes come from agreed requirements, including referenced PRDs and inherited NFRs.
+Code inspection can discover boundaries, risks and missing requirements; it cannot silently
+replace the expected behavior with what the implementation happens to do. Record exploratory
+findings and resolve missing behavior in the specification before claiming AC coverage.
 
 | Artefact | May be informed by | Must NOT be informed by |
 |---|---|---|
-| The scenario list, each **do → expect**, its vector, its criterion tag | the feature description only — Goal/Scope, actor flows, processes, states, Definitions of Done, acceptance criteria | the implementation under test |
-| The **suite tag**, denominators, and whether a named lane exists | the repo's test infrastructure — suite directories, the markers declared in `tests/pyproject.toml`, CI workflows | the implementation under test |
+| Each **expect**, its vector and criterion tag | agreed feature requirements and referenced PRD/NFR contracts | implementation behavior used as a substitute for the agreed outcome |
+| Candidate scenarios, boundaries, **do**, suite tags and denominators | agreed scope, code inspection, existing tests and test infrastructure | treating an unimplemented promise as out of scope without a specification decision |
 | The **test code** that later implements a scenario | anything, the implementation included | — |
 
 Step 2's grounding pass exists to catch **contradictions** — scope that shipped differently from
@@ -195,9 +190,8 @@ behaviour. It reports those as findings for the author to resolve in the descrip
 quietly rewrites an expect half to match what the code turned out to do: when the code and the
 description disagree, that disagreement **is** the finding.
 
-When a feature is already implemented, say so in the framing paragraph. A Testing section
-retrofitted onto shipped code is weaker evidence than one written from the description, and a
-reader deserves to know which one they are holding.
+When a feature is already implemented, say so in the framing paragraph and name the requirements
+used as the oracle. A retrospective scenario list still needs independent expected outcomes.
 
 ### 3. Verify every tool you are about to name
 This is where drafts quietly lie. "Semgrep + Trivy in CI" is a sentence anyone can type; whether
@@ -284,18 +278,24 @@ Re-fetch the body immediately before every edit. These issues are actively co-au
 built from a stale copy silently reverts someone else's work — if the fresh copy differs from what
 you last saw, rebuild on the new one and tell the user what changed.
 
-For a FEATURE artifact, edit the file directly — replacing only the `## 7. Testing` block — then
-regenerate the TOC and validate. A new or edited heading is a validation error until `cfs toc`
-runs:
+For a FEATURE artifact, replace only `## 7. Testing` when present, or insert it immediately after
+the `## 6. Acceptance Criteria` section when absent. Include the AC numbering from step 1 in the
+same edit. Re-read the file before editing to preserve concurrent changes, then regenerate the
+TOC and validate:
 
 ```sh
 cfs toc docs/<path>/FEATURE.md
 cfs validate --artifact docs/<path>/FEATURE.md   # must report Errors: 0
 cfs validate-toc docs/<path>/FEATURE.md          # must report PASS
+.claude/skills/quality-vector-tests/scripts/rollup.sh docs/<path>/FEATURE.md
 ```
 
-Unlike an issue body, the artifact is version-controlled — so there is no re-fetch race, and the
-diff is the review. Commit the section with the feature's other spec changes, not on its own.
+Apply `QV-FDESIGN-001` in the FEATURE checklist after these commands; CFS and tag counts do not
+prove semantic quality. For an issue, apply the same scenario checks to its Testing section.
+When both targets exist and updating the issue is authorized, use the issue write-back flow above
+to replace duplicated Testing content with a link to the canonical FEATURE, then re-fetch and
+verify that link. Otherwise include the proposed link in the handoff. Commit artifact changes
+with the feature's other spec changes when those are part of the request.
 
 ## The format
 

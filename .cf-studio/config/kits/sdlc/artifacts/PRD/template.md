@@ -98,7 +98,7 @@ The system **MUST** {do something specific and verifiable}.
 
 ### 6.1 NFR Inclusions
 
-{Only include this section if there are NFRs that deviate from or extend project defaults.}
+{Document local extensions and inherited obligations here. Reference unchanged project NFRs by ID instead of restating their targets. No local extension does not mean the vector is inapplicable.}
 
 #### {NFR Name}
 
@@ -114,11 +114,19 @@ The system **MUST** {measurable NFR with specific thresholds, e.g., "respond wit
 
 **Verification Method** (optional): {Only if non-standard approach needed}
 
+#### Inherited {NFR Name}
+
+**Vector**: {Efficiency | Reliability | Performance | Security | Versatility — exactly one}
+
+**Inherits**: `cpt-{system}-nfr-{upstream-slug}`
+
+**Verification**: {Shared test/evidence reference and its owner; preserve the upstream target and conditions}
+
 ### 6.2 NFR Exclusions
 
 {Document any project-default NFRs that do NOT apply to this module}
 
-- {Quality vector with no NFR, or a default NFR name}: {Reason for exclusion}
+- {Quality vector with no local or inherited obligation, or an excluded default NFR name}: {Reason for non-applicability; inherited or not-yet-measurable requirements are not exclusions}
 
 ## 7. Public Library Interfaces
 
