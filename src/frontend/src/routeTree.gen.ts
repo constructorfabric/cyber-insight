@@ -11,11 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SplatRouteImport } from './routes/$'
-import { Route as CustomMetricsRouteImport } from './routes/custom-metrics'
-import { Route as MetricsRouteImport } from './routes/metrics'
 import { Route as PortalRouteImport } from './routes/portal'
-import { Route as QueriesRouteImport } from './routes/queries'
-import { Route as WhatsNewRouteImport } from './routes/whats-new'
 import { Route as IcPersonRouteImport } from './routes/ic.$person'
 import { Route as IcPersonIndexRouteImport } from './routes/ic.$person.index'
 import { Route as IcPersonPersonalRouteImport } from './routes/ic.$person.personal'
@@ -31,29 +27,9 @@ const SplatRoute = SplatRouteImport.update({
   path: '/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const CustomMetricsRoute = CustomMetricsRouteImport.update({
-  id: '/custom-metrics',
-  path: '/custom-metrics',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MetricsRoute = MetricsRouteImport.update({
-  id: '/metrics',
-  path: '/metrics',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const PortalRoute = PortalRouteImport.update({
   id: '/portal',
   path: '/portal',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const QueriesRoute = QueriesRouteImport.update({
-  id: '/queries',
-  path: '/queries',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const WhatsNewRoute = WhatsNewRouteImport.update({
-  id: '/whats-new',
-  path: '/whats-new',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IcPersonRoute = IcPersonRouteImport.update({
@@ -80,11 +56,7 @@ const IcPersonTeamRoute = IcPersonTeamRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/custom-metrics': typeof CustomMetricsRoute
-  '/metrics': typeof MetricsRoute
   '/portal': typeof PortalRoute
-  '/queries': typeof QueriesRoute
-  '/whats-new': typeof WhatsNewRoute
   '/ic/$person': typeof IcPersonRouteWithChildren
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
@@ -93,11 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/custom-metrics': typeof CustomMetricsRoute
-  '/metrics': typeof MetricsRoute
   '/portal': typeof PortalRoute
-  '/queries': typeof QueriesRoute
-  '/whats-new': typeof WhatsNewRoute
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
   '/ic/$person': typeof IcPersonIndexRoute
@@ -106,11 +74,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
-  '/custom-metrics': typeof CustomMetricsRoute
-  '/metrics': typeof MetricsRoute
   '/portal': typeof PortalRoute
-  '/queries': typeof QueriesRoute
-  '/whats-new': typeof WhatsNewRoute
   '/ic/$person': typeof IcPersonRouteWithChildren
   '/ic/$person/personal': typeof IcPersonPersonalRoute
   '/ic/$person/team': typeof IcPersonTeamRoute
@@ -121,11 +85,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$'
-    | '/custom-metrics'
-    | '/metrics'
     | '/portal'
-    | '/queries'
-    | '/whats-new'
     | '/ic/$person'
     | '/ic/$person/personal'
     | '/ic/$person/team'
@@ -134,11 +94,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/$'
-    | '/custom-metrics'
-    | '/metrics'
     | '/portal'
-    | '/queries'
-    | '/whats-new'
     | '/ic/$person/personal'
     | '/ic/$person/team'
     | '/ic/$person'
@@ -146,11 +102,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/$'
-    | '/custom-metrics'
-    | '/metrics'
     | '/portal'
-    | '/queries'
-    | '/whats-new'
     | '/ic/$person'
     | '/ic/$person/personal'
     | '/ic/$person/team'
@@ -160,11 +112,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SplatRoute: typeof SplatRoute
-  CustomMetricsRoute: typeof CustomMetricsRoute
-  MetricsRoute: typeof MetricsRoute
   PortalRoute: typeof PortalRoute
-  QueriesRoute: typeof QueriesRoute
-  WhatsNewRoute: typeof WhatsNewRoute
   IcPersonRoute: typeof IcPersonRouteWithChildren
 }
 
@@ -184,39 +132,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/custom-metrics': {
-      id: '/custom-metrics'
-      path: '/custom-metrics'
-      fullPath: '/custom-metrics'
-      preLoaderRoute: typeof CustomMetricsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/metrics': {
-      id: '/metrics'
-      path: '/metrics'
-      fullPath: '/metrics'
-      preLoaderRoute: typeof MetricsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/portal': {
       id: '/portal'
       path: '/portal'
       fullPath: '/portal'
       preLoaderRoute: typeof PortalRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/queries': {
-      id: '/queries'
-      path: '/queries'
-      fullPath: '/queries'
-      preLoaderRoute: typeof QueriesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/whats-new': {
-      id: '/whats-new'
-      path: '/whats-new'
-      fullPath: '/whats-new'
-      preLoaderRoute: typeof WhatsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ic/$person': {
@@ -269,11 +189,7 @@ const IcPersonRouteWithChildren = IcPersonRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
-  CustomMetricsRoute: CustomMetricsRoute,
-  MetricsRoute: MetricsRoute,
   PortalRoute: PortalRoute,
-  QueriesRoute: QueriesRoute,
-  WhatsNewRoute: WhatsNewRoute,
   IcPersonRoute: IcPersonRouteWithChildren,
 }
 export const routeTree = rootRouteImport

@@ -8,6 +8,11 @@ use crate::domain::metric_drilldown::MetricDrilldownCapability;
 pub struct MetricResultsRequest {
     pub entity: MetricResultsEntity,
     pub period: MetricResultsPeriod,
+    /// A second window answered alongside `period` in the same response — the
+    /// range a delta or a half-against-half comparison is measured against.
+    /// Carried by the `period` and `breakdown` views only; every other view
+    /// kind answers over `period` alone.
+    pub compare_to: Option<MetricResultsPeriod>,
     pub metrics: Vec<MetricRequest>,
 }
 
@@ -78,7 +83,10 @@ pub enum MetricViewRequest {
         dimensions: Vec<String>,
         group_limit: Option<MetricGroupLimitRequest>,
     },
-    Histogram,
+    Histogram {
+        #[serde(default)]
+        dimensions: Vec<String>,
+    },
 }
 
 impl MetricViewRequest {
@@ -89,7 +97,7 @@ impl MetricViewRequest {
             Self::Timeseries { .. } => MetricResultViewKind::Timeseries,
             Self::Breakdown { .. } => MetricResultViewKind::Breakdown,
             Self::Rollup { .. } => MetricResultViewKind::Rollup,
-            Self::Histogram => MetricResultViewKind::Histogram,
+            Self::Histogram { .. } => MetricResultViewKind::Histogram,
         }
     }
 }
@@ -186,6 +194,10 @@ pub enum MetricResultViewDto {
         values: Vec<RollupValueDto>,
     },
     Histogram {
+        /// Present only for the pooled (dimensioned) shape; absent for the
+        /// per-entity shape, keeping that wire form unchanged.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        dimensions: Vec<String>,
         values: Vec<HistogramValueDto>,
     },
     /// This view's computation failed; sibling views and metrics are
@@ -207,10 +219,17 @@ pub enum MetricViewErrorCode {
     QueryFailed,
 }
 
+/// One histogram row. Per-entity shape: `entity_id` set, `dimensions` absent,
+/// every requested entity listed. Pooled shape (dimensioned request):
+/// `dimensions` set, `entity_id` absent, one row per observed dimension tuple
+/// over all selected entities' events — no entity grain, like rollup.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct HistogramValueDto {
-    pub entity_id: String,
-    /// Empty when the entity has no events in the period — the entity is
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dimensions: Vec<MetricDimensionDto>,
+    /// Empty when a listed entity has no events in the period — the entity is
     /// still listed, mirroring the period view's every-requested-entity rule.
     pub bins: Vec<HistogramBinDto>,
 }
@@ -236,6 +255,12 @@ pub struct MetricDimensionDto {
 pub struct PeriodValueDto {
     pub entity_id: String,
     pub value: Option<f64>,
+    /// The same reading over `compare_to`. Omitted both when no comparison
+    /// window was asked for and when the entity has no value in it — the two
+    /// are not distinguished on the wire, and a reader that asked knows which
+    /// case it is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compare_to: Option<f64>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -257,6 +282,15 @@ pub struct TimeseriesDto {
 pub struct TimeseriesPointDto {
     pub bucket_start: String,
     pub value: Option<f64>,
+    /// What the bucket's ratio was taken from, above the line. Ratio metrics
+    /// only, and absent on a bucket whose numerator measure has no rows —
+    /// a share is argued with its denominator, and a reader who can see
+    /// "6 of 8" can tell a quiet day from a bad one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numerator: Option<f64>,
+    /// What it was taken from, below the line. Ratio metrics only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denominator: Option<f64>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -276,6 +310,28 @@ pub struct BreakdownValueDto {
     pub entity_id: String,
     pub dimensions: Vec<MetricDimensionDto>,
     pub value: Option<f64>,
+    /// Whether this group has any observation inside the primary period.
+    /// Present only on a windowed response, where the group set spans every
+    /// window and a reader has to know which of them each group belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    /// This group's reading over `compare_to`; absent when no comparison window
+    /// was asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compare_to: Option<BreakdownWindowValueDto>,
+}
+
+/// One group's reading over the comparison window.
+///
+/// `value` and `present` are independent: a ratio over a group that IS in the
+/// window reads NULL whenever its denominator is zero, so absence cannot be
+/// inferred from the value. A reader that wants what a standalone request over
+/// that window would have returned keeps the rows with `present` and renders
+/// their `value` as it stands, NULL included.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BreakdownWindowValueDto {
+    pub value: Option<f64>,
+    pub present: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -331,6 +387,28 @@ mod tests {
         }));
 
         assert!(request.is_ok());
+    }
+
+    #[test]
+    fn histogram_view_deserializes_with_and_without_dimensions() {
+        // Bare `{"view": "histogram"}` must keep parsing exactly as before the
+        // pooled shape existed (dimensions default to empty).
+        let bare = serde_json::from_value::<MetricResultsRequest>(json!({
+            "entity": { "type": "person", "ids": ["019e27bc-dec0-7626-81a9-c5524662a6a9"] },
+            "period": { "from": "2026-01-01", "to": "2026-01-31" },
+            "metrics": [{ "metric_key": "git.x", "views": [{ "view": "histogram" }] }]
+        }));
+        assert!(bare.is_ok());
+
+        let pooled = serde_json::from_value::<MetricResultsRequest>(json!({
+            "entity": { "type": "person", "ids": ["019e27bc-dec0-7626-81a9-c5524662a6a9"] },
+            "period": { "from": "2026-01-01", "to": "2026-01-31" },
+            "metrics": [{
+                "metric_key": "git.x",
+                "views": [{ "view": "histogram", "dimensions": ["repository"] }]
+            }]
+        }));
+        assert!(pooled.is_ok());
     }
 
     #[test]

@@ -7,7 +7,8 @@ Two halves, and a reader should be able to tell which one they are in:
 * `identity_internal.py` — hand-written from the Rust DTO, because the two
   `/internal/persons/*` S2S routes are registered raw and stay out of the
   generated document by design.
-* `analytics.py`, `authenticator.py`, `identity.py` — GENERATED from documents
+* `analytics.py`, `authenticator.py`, `identity.py`, `previews.py` — GENERATED
+  from documents
   the services emit themselves (`cargo run -p <service> -- openapi`) and CI
   drift-gates in `.github/workflows/openapi-specs.yml`, so the models describe
   the very structs that serialize the wire. `authenticator.py` is currently just
@@ -50,8 +51,10 @@ from .analytics import (
     FeedbackListResponse,
     ImportCustomMetricsRequest,
     ImportCustomMetricsResponse,
+    IngestionIntensityResponse,
     MetricDefinitionListResponse,
     MetricResultsResponse,
+    ReportPreviewResponse,
     RunResponse,
     SavedQuery,
     SavedQueryListResponse,
@@ -61,6 +64,12 @@ from .analytics import (
 )
 from .analytics import (
     MetricResultViewDto1 as PeriodView,
+)
+from .analytics import (
+    MetricResultViewDto4 as BreakdownView,
+)
+from .analytics import (
+    MetricResultViewDto5 as RollupView,
 )
 from .common import (
     EXTRACTOR_REJECTION_CONTENT_TYPE,
@@ -72,6 +81,7 @@ from .identity import (
     AccountBindingResponse,
     AccountSearchResponse,
     AttentionResponse,
+    BatchProfilesResponse,
     CorrectionResponse,
     MeResponse,
     PersonAccountsResponse,
@@ -129,6 +139,8 @@ __all__: Sequence[str] = (
     "AccountBindingResponse",
     "AccountSearchResponse",
     "AttentionResponse",
+    "BatchProfilesResponse",
+    "BreakdownView",
     "ConnectorHealthResponse",
     "CorrectionResponse",
     "CustomMetric",
@@ -140,6 +152,7 @@ __all__: Sequence[str] = (
     "IdentityValue",
     "ImportCustomMetricsRequest",
     "ImportCustomMetricsResponse",
+    "IngestionIntensityResponse",
     "ListResponse",
     "MeResponse",
     "MetricDefinitionListResponse",
@@ -152,8 +165,10 @@ __all__: Sequence[str] = (
     "PersonRoleList",
     "ProblemDocument",
     "Profile",
+    "ReportPreviewResponse",
     "Role",
     "RoleList",
+    "RollupView",
     "RunResponse",
     "SavedQuery",
     "SavedQueryListResponse",

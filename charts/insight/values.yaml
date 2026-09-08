@@ -93,6 +93,12 @@ credentials:
 global:
   imagePullSecrets: [] # pull-secrets for a private registry
   storageClass: "" # empty = default StorageClass of the cluster
+  sqlApi:
+    enabled: false
+  mcp:
+    enabled: false
+    # Public origin of this Insight instance, for example https://insight.example.com.
+    publicUrl: ""
   security:
     # bitnami charts check that the image belongs to their "secure images"
     # list. We use bitnamilegacy (see mariadb.image / redis.image) so we
@@ -104,36 +110,41 @@ global:
   # analytics metric-catalog fallback + identity-resolution's bootstrap-admin
   # seed. Empty (default) = no default anywhere; a missing tenant fails closed.
   tenantDefaultId: ""
-# ═══════════════════════════════════════════════════════════════════════════
-#  OBSERVABILITY — logs & traces EMISSION (the product contract)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Insight ALWAYS emits structured JSON to stdout — that is the product
-# contract and is not toggleable. WHETHER it ALSO exports OTLP, and WHERE,
-# is driven entirely by `otlp.endpoint`:
-#
-#   endpoint: ""   — stdout only. No OTEL_* vars are published; whoever
-#                    runs the cluster collects stdout (the host's own node
-#                    agent, or the Loki/Alloy/Grafana stack installed via
-#                    the deploy pipeline's system layer). SAFE DEFAULT for
-#                    a drop into an unknown existing cluster.
-#   endpoint: set  — services additionally export OTLP there: the
-#                    in-cluster Alloy for a self-hosted stack
-#                    (http://alloy.insight-infra.svc.cluster.local:4317),
-#                    or the customer's own collector.
-#
-# The umbrella NEVER installs the collector stack — like Airbyte and Argo
-# it is separate releases, driven by the deploy pipeline (inventory
-# toggles; see deploy/gitops/system/README.md). This block only governs what
-# services EMIT. The values are published into the `{release}-platform`
-# ConfigMap as INSIGHT_LOG_LEVEL / OTEL_* env vars, so every pod that does
-# `envFrom` picks them up uniformly — no per-service wiring.
-observability:
-  logs:
-    level: info # debug|info|warn|error — default level for all services
-  otlp:
-    endpoint: "" # empty = stdout only; set = services export OTLP here
-    protocol: grpc # grpc | http/protobuf
+  # ═════════════════════════════════════════════════════════════════════════
+  #  OBSERVABILITY — logs & traces EMISSION (the product contract)
+  # ═════════════════════════════════════════════════════════════════════════
+  #
+  # Insight ALWAYS emits structured JSON to stdout — that is the product
+  # contract and is not toggleable. WHETHER it ALSO exports OTLP, and WHERE,
+  # is driven entirely by `otlp.endpoint`:
+  #
+  #   endpoint: ""   — stdout only. No OTEL_* vars are published; whoever
+  #                    runs the cluster collects stdout (the host's own node
+  #                    agent, or the Loki/Alloy/Grafana stack installed via
+  #                    the deploy pipeline's system layer). SAFE DEFAULT for
+  #                    a drop into an unknown existing cluster.
+  #   endpoint: set  — services additionally export OTLP there: the
+  #                    in-cluster Alloy for a self-hosted stack
+  #                    (http://alloy.insight-infra.svc.cluster.local:4317),
+  #                    or the customer's own collector. Gears services then
+  #                    export OTel metrics and traces too.
+  #
+  # The umbrella NEVER installs the collector stack — like Airbyte and Argo
+  # it is separate releases, driven by the deploy pipeline (inventory
+  # toggles; see deploy/gitops/system/README.md). This block only governs what
+  # services EMIT. The values are published into the `{release}-platform`
+  # ConfigMap as INSIGHT_LOG_LEVEL / INSIGHT_LOG_FORMAT / OTEL_* env vars (plus the gears-rust
+  # dialect, APP__opentelemetry__*), so every pod that does `envFrom` picks
+  # them up uniformly. Lives under `global` so the service subcharts can hash
+  # it into a pod-template annotation and roll on change (a top-level
+  # `observability:` block is still honoured, but cannot roll pods).
+  observability:
+    logs:
+      level: info # debug|info|warn|error — default level for all services
+      format: json # json|text — console line shape for the gears services
+    otlp:
+      endpoint: "" # empty = stdout only; set = services export OTLP here
+      protocol: grpc # grpc | http/protobuf
 # ═══════════════════════════════════════════════════════════════════════════
 #  EXTERNAL — Airbyte (installed as a separate Helm release)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,6 +219,21 @@ ingestion:
   airbyteSync:
     pollIntervalSeconds: 30
     idleThresholdSeconds: 1800 # 30 min without any byte/record/state movement → fail
+  # jira-enrich (templates/ingestion/tt-enrich-jira-run.yaml). Phase 1 of the
+  # binary holds the whole reference set in memory — field metadata, every
+  # issue snapshot, and the last known value of each field it must diff
+  # against — before the first row is written, so its peak scales with the
+  # size of the Jira corpus rather than with the run's backlog. An instance
+  # whose journal has outgrown the default OOM-kills in that phase, having
+  # written nothing; raise the limit here rather than editing the template.
+  jiraEnrich:
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "8Gi"
   # Data-quality checks: a CronWorkflow runs the dbt check catalog (the
   # `data_quality` selector — tests tagged data_quality, not every dbt test) on
   # a schedule, independent of the per-connector pipeline. See
@@ -338,6 +364,9 @@ gateway:
   resources:
     requests: {cpu: 25m, memory: 32Mi}
     limits: {cpu: 500m, memory: 128Mi}
+  # nginx-prometheus-exporter sidecar; enable per-stand where it is scraped.
+  metrics:
+    enabled: false
   # The gateway's route attaches to the shared Gateway; it routes "/" internally.
   route:
     enabled: true
@@ -451,7 +480,7 @@ keycloak:
   deploy: false
   image:
     repository: quay.io/keycloak/keycloak
-    tag: "26.4"
+    tag: "26.7"
     pullPolicy: IfNotPresent
   # Advertised issuer BASE (must end in /kc) — the URL browser AND
   # authenticator reach, e.g. https://<host>/kc.
@@ -486,7 +515,7 @@ keycloakConfig:
   image:
     repository: adorsys/keycloak-config-cli
     # Release line must match the Keycloak server major.
-    tag: "6.5.1-26.1.0"
+    tag: "6.5.1-26.5.5"
     pullPolicy: IfNotPresent
   # Keycloak base URL (tpl-rendered). Must be https; plain http only with
   # allowInsecureUrl=true (in-cluster dev/CI Keycloak only).
@@ -530,6 +559,16 @@ analytics:
     # installation; when off, the catalog omits them and the CI lens renders
     # its honest not-enabled state.
     tenantMetricsEnabled: false
+  mcp:
+    port: 8086
+    maxConcurrentQueries: 16
+    # Operator-managed Secret carrying the dedicated ClickHouse user's password.
+    credentialsSecret: insight-mcp-creds
+    clickhouseUser: insight_mcp
+    clickhousePasswordKey: clickhouse-password
+  sqlApi:
+    tokenSecret: insight-sql-api-creds
+    tokenKey: token
   externalSources: []
   # Explaining a metric with an LLM. Off everywhere until an operator turns it
   # on, and turning it on without `tokenEncryptionKey` stops the service at
@@ -609,15 +648,17 @@ gitCliProxy:
     repository: ghcr.io/constructorfabric/insight-git-cli-proxy
     tag: ""
     pullPolicy: IfNotPresent
-  # The git subprocesses (clone, fetch, repack) run in this pod's cgroup and
-  # dominate its memory. The service caps git's own pack budgets so their
-  # peak cannot scale with the repository; this limit is the headroom above
-  # that ceiling rather than a figure derived from cache.maxRepoBytes. Lower
-  # cache.heavyOpsConcurrency before raising it — overlapping heavy
-  # operations are what push a correctly-capped pod over.
+  # The git subprocesses run in this pod's cgroup and dominate its memory,
+  # and page serves over blob-heavy windows legitimately run for minutes of
+  # CPU each — the CPU limit paces how long their buffers coexist, so it is
+  # sized to drain rather than to average load. Memory is the serve cap times
+  # the heaviest window plus headroom, and it must also fit the node's budget
+  # beside the warehouse and the platform pods — limits do not reserve, so a
+  # limit the node cannot honour under load takes the container runtime down
+  # with it. Lower cache.serveConcurrency before raising it.
   resources:
     requests: {cpu: 200m, memory: 1Gi}
-    limits: {cpu: "2", memory: 8Gi}
+    limits: {cpu: "4", memory: 8Gi}
   persistence:
     size: 50Gi
     storageClass: ""
@@ -626,11 +667,16 @@ gitCliProxy:
     # headroom absorbs transient packs and git temp files. Override with
     # diskBudgetBytes (must stay within 50-90% of the volume).
     maxRepoBytes: 10737418240
-    defaultMaxStalenessSeconds: 300
-    heavyOpsConcurrency: 4
+    # Under a daily sync cadence so every sync reads fresh refs, above any
+    # steady-state run length so no walk refetches mid-flight.
+    defaultMaxStalenessSeconds: 43200
+    # A fetch holds its entry's write lock while queued for a slot, so one
+    # slow clone must not convoy every other repository's refresh.
+    heavyOpsConcurrency: 2
     # Concurrent page serves; the pod's peak memory is roughly this times the
-    # heaviest window's blob bytes. Size with the CPU limit — serves are
-    # CPU-bound and extra slots past ~2x it only add memory risk.
+    # heaviest window's blob bytes, so this is the cap that bounds proxy
+    # memory. Serves are CPU-bound — extra slots past ~2x the CPU limit only
+    # add memory risk.
     serveConcurrency: 4
     caCertPath: ""
   caCertSecret: ""
@@ -707,6 +753,39 @@ identityResolution:
   # Gateway-JWT verification (NGINX_BFF R1) — same wiring as analytics: the
   # oidc-authn-plugin resolves the authenticator's JWKS via OIDC discovery
   # over https on `issuer` and trusts its CA from the authn-tls cert Secret.
+  gateway:
+    issuer: 'https://{{ .Release.Name }}-authenticator.{{ .Release.Namespace }}.svc.cluster.local:8443'
+    audience: "internal-services"
+    caCertSecret: "insight-authenticator-authn-tls-cert"
+    caCertPaths:
+      - /etc/insight/authn-ca/ca.crt
+# ─── Previews (preview-experiment provisioning, epic #1981) ──────────────
+# Manages preview experiments: one FE build per experiment, served under
+# /exp/<name> as a Deployment/Service/HTTPRoute trio in a dedicated namespace
+# — Kubernetes is the only store, and the subchart's Role/RoleBinding confine
+# the service to that namespace. Reached through the gateway at /api/previews.
+# Structurally inert until the stand sets `experiments.routeHost` (creates
+# fail closed without it) and the shared Gateway's `allowedRoutes` admits the
+# experiments namespace (bootstrap/<env>/gateway.yaml in gitops).
+previews:
+  deploy: true
+  replicaCount: 1 # the subchart refuses more: the TTL sweep has no leader election
+  image:
+    repository: ghcr.io/constructorfabric/insight-previews
+    tag: "" # MUST be set (e.g. "0.1.0")
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  experiments:
+    # Single source for every place the experiments namespace appears (gear
+    # config, Namespace object, Role/RoleBinding) — see the subchart values.
+    namespace: insight-previews
+    # The single preview host experiments serve under (e.g.
+    # preview.example.com). Per-stand; empty refuses every create.
+    routeHost: ""
+  # Gateway-JWT verification (NGINX_BFF R1) — same wiring as
+  # identityResolution.gateway above.
   gateway:
     issuer: 'https://{{ .Release.Name }}-authenticator.{{ .Release.Namespace }}.svc.cluster.local:8443'
     audience: "internal-services"

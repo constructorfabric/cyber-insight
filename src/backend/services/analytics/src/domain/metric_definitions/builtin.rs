@@ -3,8 +3,8 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::metric_definitions::definition::{
-    EvidenceGranularity, MetricComputation, MetricDirection, MetricFormat, MetricInputRole,
-    RatioDenominatorAggregation, SourceKind, ValueTransform,
+    AliasCollapse, EvidenceGranularity, MetricComputation, MetricDirection, MetricFormat,
+    MetricInputRole, RatioDenominatorAggregation, SourceKind, ValueTransform,
 };
 use crate::domain::metric_definitions::evidence_presentation::EvidencePresentation;
 
@@ -110,14 +110,33 @@ pub struct SourceSeed {
     /// `ObservationRelation::parse` (pinned by a registry test).
     pub source_ref: String,
     pub evidence_ref: String,
-    /// How many days a delivered day keeps changing before it settles, when the
-    /// suppliers revise one. Absent where nothing revises, or where nobody has
-    /// established it — a reader treats absence as "settles on arrival" rather
-    /// than as zero uncertainty. Where several suppliers feed one source the
-    /// longest window wins: calling a settled day provisional costs less than
-    /// the reverse.
+    /// When a delivered day stops changing, where the suppliers revise one.
+    /// Absent where nothing revises, or where nobody has established it — a
+    /// reader treats absence as "settles on arrival" rather than as zero
+    /// uncertainty. Where several suppliers feed one source the later boundary
+    /// wins: calling a settled day provisional costs less than the reverse.
     #[serde(default)]
-    pub revision_window_days: Option<u16>,
+    pub revision: Option<RevisionRule>,
+}
+
+/// What has to happen before a delivered day is reported settled.
+///
+/// The distinction is the date the supplier's correction is normally scoped to.
+/// A supplier that re-reads a fixed tail revises a day for a fixed time after
+/// that day. A supplier reporting a month-to-date figure revises within the
+/// month it is reporting, so its days settle together when that month closes —
+/// a duration cannot express that boundary, because how long a day stays open
+/// depends on where in its month it falls.
+///
+/// Either way this is the supplier's usual behaviour, and a correction outside
+/// it can still reach a day already reported settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionRule {
+    /// A delivered day keeps changing for this many days after itself.
+    RollingDays(u16),
+    /// A delivered day settles when the calendar month it falls in closes.
+    BillingMonth,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +153,19 @@ pub struct BuiltinSource {
 pub struct MeasureSeed {
     pub key: String,
     pub evidence_granularity: EvidenceGranularity,
+    /// Overrides the source's rule where this measure settles differently.
+    ///
+    /// One supplier can report facts on two date anchors: a month-to-date total
+    /// stamped at the month it bills for is rewritten by every later reading,
+    /// while the step between two readings is closed by the ordinary next one.
+    /// A rule describes how the supplier normally revises, not what it cannot
+    /// do. Absent = the source's rule.
+    #[serde(default)]
+    pub revision: Option<RevisionRule>,
+    /// Declared per (source, measure): `active_day` is a per-day flag in
+    /// `ai_usage` and a distinct-count subject in `collab`.
+    #[serde(default)]
+    pub alias_collapse: AliasCollapse,
     /// How this measure's evidence rows read in the drilldown. Absent where
     /// the rows carry no human-facing details of their own.
     #[serde(default)]
@@ -255,7 +287,7 @@ mod tests {
     #[test]
     fn registry_declares_the_expected_counts() {
         assert_eq!(builtin_sources().len(), 7, "builtin source count");
-        assert_eq!(builtin_metrics().len(), 100, "builtin metric count");
+        assert_eq!(builtin_metrics().len(), 105, "builtin metric count");
     }
 
     #[test]
@@ -302,7 +334,8 @@ mod tests {
 
     /// Column keys the drilldown fills from the evidence row rather than from
     /// its details map; a declaration claiming one would be overwritten.
-    const STRUCTURAL_COLUMN_KEYS: &[&str] = &["date", "value", "numerator", "denominator"];
+    const STRUCTURAL_COLUMN_KEYS: &[&str] =
+        &["person", "date", "value", "numerator", "denominator"];
 
     #[test]
     fn every_event_measure_declares_the_columns_its_rows_carry() {
@@ -331,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn a_counted_pull_request_reads_its_number_title_repository_and_author() {
+    fn a_counted_pull_request_reads_the_request_and_where_it_was_headed() {
         for measure_key in [
             "pr_created",
             "pr_merged",
@@ -339,13 +372,24 @@ mod tests {
             "default_pr_merged",
         ] {
             let presentation = declared_presentation("git", measure_key);
+            // Where the work went is part of the record on every path that
+            // opens the dialog: a column that appeared only for a reader who
+            // arrived through a grouped table left the same request looking
+            // like a different one.
             assert_eq!(
                 presentation
                     .detail_columns
                     .iter()
                     .map(|column| column.key.as_str())
                     .collect::<Vec<_>>(),
-                ["ref", "title", "repository", "author"],
+                [
+                    "ref",
+                    "title",
+                    "repository",
+                    "author",
+                    "branch_scope",
+                    "destination_branch"
+                ],
                 "{measure_key} should read the request it counted"
             );
             // The row IS the request it counted, so a value column would be 1s.
@@ -544,6 +588,56 @@ mod tests {
         }
     }
 
+    // INVARIANT: a distribution statistic may not declare a collapse — median,
+    // percentile and standard deviation are event-grain, and merging same-day
+    // rows moves the statistic. Additive computations collapse by design, and
+    // distinct counts are unaffected: they read `uniqExact(subject_key)` and the
+    // collapse groups by `subject_key`, so the collapse is a no-op there.
+    #[test]
+    fn alias_collapse_is_never_declared_on_distribution_inputs() {
+        let collapse_by_source: HashMap<&str, HashMap<&str, AliasCollapse>> = builtin_sources()
+            .iter()
+            .map(|builtin_source| {
+                (
+                    builtin_source.source.key.as_str(),
+                    builtin_source
+                        .measures
+                        .iter()
+                        .map(|measure| (measure.key.as_str(), measure.alias_collapse))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        for metric in builtin_metrics() {
+            let collapses = collapse_by_source
+                .get(metric.source_key.as_str())
+                .unwrap_or_else(|| panic!("unknown source for {}", metric.metric_key));
+            if !matches!(
+                metric.computation,
+                SeedComputation::Median
+                    | SeedComputation::Percentile { .. }
+                    | SeedComputation::Stddev
+            ) {
+                continue;
+            }
+            for input in &metric.inputs {
+                let collapse = collapses
+                    .get(input.measure_key.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                assert!(
+                    !collapse.needs_pre_collapse(),
+                    "{} is {:?} but binds {}, which declares alias_collapse: {}",
+                    metric.metric_key,
+                    metric.computation,
+                    input.measure_key,
+                    collapse.as_db(),
+                );
+            }
+        }
+    }
+
     #[test]
     fn metric_keys_are_unique_and_shaped() {
         let mut seen = BTreeSet::new();
@@ -696,6 +790,33 @@ mod tests {
                 metric.metric_key
             );
         }
+    }
+
+    #[test]
+    fn percentile_metrics_have_single_value_role_and_an_inside_quantile() {
+        let mut seen = 0;
+        for metric in builtin_metrics() {
+            let SeedComputation::Percentile { q } = metric.computation else {
+                continue;
+            };
+            seen += 1;
+            assert!(
+                (0.0..=1.0).contains(&q),
+                "{} declares q={q}, outside [0, 1]",
+                metric.metric_key
+            );
+            assert_eq!(metric.inputs.len(), 1, "{}", metric.metric_key);
+            assert_eq!(
+                metric.inputs[0].input_role,
+                MetricInputRole::Value,
+                "{}",
+                metric.metric_key
+            );
+        }
+        assert!(
+            seen >= 1,
+            "registry declares at least one percentile metric"
+        );
     }
 
     #[test]

@@ -10,7 +10,8 @@ use crate::domain::metric_definitions::MetricDefinition;
 use super::compiler::{
     CompiledQuery, PeerQueryRow, PeriodQueryRow, compile_breakdown_query,
     compile_group_ranking_query, compile_histogram_query, compile_peer_batch_query,
-    compile_period_batch_query, compile_rollup_query, compile_timeseries_query,
+    compile_period_batch_query, compile_pooled_histogram_query, compile_rollup_query,
+    compile_timeseries_query,
 };
 use super::failure::ViewFailure;
 use super::validation::{
@@ -47,6 +48,11 @@ pub enum UnbatchedView {
     // Histogram bins one entity's own per-event values; it never batches with
     // other metrics (per-entity bin membership is metric-specific).
     Histogram,
+    // The pooled shape bins the same values per dimension tuple instead, with
+    // no entity grain — same reason it cannot batch.
+    PooledHistogram {
+        dimensions: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +162,37 @@ pub fn plan_rankings(req: &ValidatedMetricResultsRequest) -> Vec<PlannedRanking>
         .collect()
 }
 
+/// Both histogram shapes are single (never batched) queries; which one is
+/// planned is decided by whether the request asked to bin per dimension tuple
+/// instead of per entity.
+fn plan_histogram(
+    req: &ValidatedMetricResultsRequest,
+    metric: &ValidatedMetricRequest,
+    (metric_index, view_index): (usize, usize),
+    dimensions: &[String],
+) -> PlannedQuery {
+    let (view, query) = if dimensions.is_empty() {
+        (
+            UnbatchedView::Histogram,
+            compile_histogram_query(&metric.def, req, &metric.filters),
+        )
+    } else {
+        (
+            UnbatchedView::PooledHistogram {
+                dimensions: dimensions.to_vec(),
+            },
+            compile_pooled_histogram_query(&metric.def, req, dimensions, &metric.filters),
+        )
+    };
+    PlannedQuery::Single {
+        metric_index,
+        view_index,
+        def: Box::new(metric.def.clone()),
+        view,
+        query,
+    }
+}
+
 pub fn plan_queries(
     req: &ValidatedMetricResultsRequest,
     rankings: &RankingResults,
@@ -228,14 +265,13 @@ pub fn plan_queries(
                         view,
                     )?);
                 }
-                ValidatedMetricView::Histogram => {
-                    singles.push(PlannedQuery::Single {
-                        metric_index,
-                        view_index,
-                        def: Box::new(metric.def.clone()),
-                        view: UnbatchedView::Histogram,
-                        query: compile_histogram_query(&metric.def, req, &metric.filters),
-                    });
+                ValidatedMetricView::Histogram { dimensions } => {
+                    singles.push(plan_histogram(
+                        req,
+                        metric,
+                        (metric_index, view_index),
+                        dimensions,
+                    ));
                 }
             }
         }
@@ -336,7 +372,7 @@ fn plan_timeseries(
         query: compile_timeseries_query(
             &metric.def,
             req,
-            *bucket,
+            (*bucket).into(),
             dimensions,
             &metric.filters,
             resolved.as_ref(),
@@ -391,6 +427,13 @@ pub(crate) fn period_alias(item_index: usize) -> String {
     format!("m{item_index}")
 }
 
+/// The alias carrying one item's value over the comparison window. The primary
+/// period keeps the bare `period_alias`, so a request without a comparison
+/// window compiles unchanged.
+pub(crate) fn period_compare_alias(item_index: usize) -> String {
+    format!("m{item_index}_compare")
+}
+
 pub(crate) struct PeerAliases {
     pub target: String,
     pub p25: String,
@@ -430,12 +473,19 @@ pub struct PeerWideRow {
 pub fn demux_period_rows(
     items: &[BatchItem],
     rows: Vec<PeriodWideRow>,
+    compared: bool,
 ) -> Result<Vec<Vec<PeriodQueryRow>>, CanonicalError> {
     let mut per_item: Vec<Vec<PeriodQueryRow>> = items.iter().map(|_| Vec::new()).collect();
     for row in rows {
         for (item_index, item_rows) in per_item.iter_mut().enumerate() {
             let value = wide_field(&row.extra, &period_alias(item_index))?;
-            let narrow = json!({ "entity_id": row.entity_id, "value": value });
+            let compare_to = if compared {
+                Some(wide_field(&row.extra, &period_compare_alias(item_index))?)
+            } else {
+                None
+            };
+            let narrow =
+                json!({ "entity_id": row.entity_id, "value": value, "compare_to": compare_to });
             item_rows.push(decode_narrow_row(narrow)?);
         }
     }
@@ -499,8 +549,8 @@ mod tests {
     use serde_json::json;
 
     use crate::domain::metric_definitions::definition::{
-        ComputationSpec, MetricBase, MetricDirection, MetricFormat, MetricInput, MetricInputRole,
-        ObservationRelation, ObservationSource,
+        AliasCollapse, ComputationSpec, MetricBase, MetricDirection, MetricFormat, MetricInput,
+        MetricInputRole, ObservationRelation, ObservationSource,
     };
     use crate::domain::metric_results::validation::ValidatedMetricRequest;
 
@@ -529,6 +579,7 @@ mod tests {
                     ),
                     source_key: "ai_usage".to_owned(),
                     measure_key: format!("{key}_measure"),
+                    alias_collapse: AliasCollapse::Sum,
                 },
             },
         }
@@ -542,6 +593,7 @@ mod tests {
             },
             from: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap_or_default(),
             to: NaiveDate::from_ymd_opt(2026, 1, 31).unwrap_or_default(),
+            compare_to: None,
             metrics,
             enforce_tenant_scope: true,
         }
@@ -793,7 +845,7 @@ mod tests {
             .into_iter()
             .collect(),
         }];
-        let Ok(per_item) = demux_period_rows(&items(2), rows) else {
+        let Ok(per_item) = demux_period_rows(&items(2), rows, false) else {
             panic!("expected demux to succeed");
         };
         assert_eq!(per_item[0][0].value, Some(1.5));
@@ -803,6 +855,36 @@ mod tests {
                 .iter()
                 .all(|rows| rows[0].entity_id == "00000000-0000-0000-0000-00000000000a")
         );
+    }
+
+    #[test]
+    fn demux_period_reads_the_comparison_column() {
+        let rows = vec![PeriodWideRow {
+            entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            extra: [
+                ("m0".to_owned(), json!(4.0)),
+                ("m0_compare".to_owned(), json!(2.0)),
+            ]
+            .into_iter()
+            .collect(),
+        }];
+
+        let Ok(per_item) = demux_period_rows(&items(1), rows, true) else {
+            panic!("expected demux to succeed");
+        };
+
+        assert_eq!(per_item[0][0].value, Some(4.0));
+        assert_eq!(per_item[0][0].compare_to, Some(2.0));
+    }
+
+    #[test]
+    fn demux_period_fails_when_the_comparison_column_is_absent() {
+        let rows = vec![PeriodWideRow {
+            entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            extra: [("m0".to_owned(), json!(4.0))].into_iter().collect(),
+        }];
+
+        assert!(demux_period_rows(&items(1), rows, true).is_err());
     }
 
     #[test]
@@ -838,7 +920,7 @@ mod tests {
             entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
             extra: HashMap::new(),
         }];
-        assert!(demux_period_rows(&items(1), period_rows).is_err());
+        assert!(demux_period_rows(&items(1), period_rows, false).is_err());
 
         let peer_rows = vec![PeerWideRow {
             entity_id: "00000000-0000-0000-0000-00000000000a".to_owned(),

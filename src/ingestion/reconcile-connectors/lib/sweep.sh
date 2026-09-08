@@ -5,7 +5,8 @@
 # Runs at the end of a reconcile tick, which already authenticates to the mover
 # and knows which connectors it manages. This file is the gatherer: it resolves
 # the connector -> connection map, mints the token, and hands the work to
-# `python3 -m sweep` on stdin. The planning and the writing live there.
+# `python3 -m sweep` on stdin. The planning and the writing live there; the
+# sweep logs its own structured JSON lines straight to stderr.
 #
 # INVARIANT: this never fails a tick. Observability is subordinate to the thing
 # observed — a sweep that cannot record must not stop connectors from being
@@ -18,6 +19,7 @@
 
 _SWEEP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _SWEEP_PY_DIR="$(cd "${_SWEEP_LIB_DIR}/../python" && pwd)"
+_SWEEP_SCRIPTS_DIR="$(cd "${_SWEEP_LIB_DIR}/../../scripts" && pwd)"
 
 # ---------------------------------------------------------------------------
 # sweep_run
@@ -62,14 +64,14 @@ sweep_run() {
 
   # SAFETY: the token rides the child's environment, never its argv — argv is
   # world-readable inside the pod and the environment is not.
-  local output status=0
-  output="$(printf '%s' "${work}" \
-    | AIRBYTE_TOKEN="${token}" PYTHONPATH="${_SWEEP_PY_DIR}" python3 -m sweep 2>&1)" \
+  # The sweep writes structured JSON lines to stderr itself, so stderr flows
+  # to the pod log untouched — re-wrapping would nest JSON in JSON.
+  local status=0
+  printf '%s' "${work}" \
+    | AIRBYTE_TOKEN="${token}" \
+      PYTHONPATH="${_SWEEP_PY_DIR}:${_SWEEP_SCRIPTS_DIR}" \
+      python3 -m sweep \
     || status=$?
-
-  while IFS= read -r line; do
-    [[ -n "${line}" ]] && log_line INFO "${line}"
-  done <<< "${output}"
 
   if (( status != 0 )); then
     log_line WARN "sweep: this tick recorded nothing or only part of it (exit ${status}); reconciliation is unaffected"

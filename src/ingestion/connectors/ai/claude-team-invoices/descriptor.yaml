@@ -1,5 +1,5 @@
 name: claude-team-invoices
-version: "0.9.0"
+version: "0.10.0"
 type: cdk
 schedule: "0 4 * * *" # daily at 04:00 UTC — invoices are monthly; a daily pass keeps a new one within a day
 workflow: sync
