@@ -36,6 +36,14 @@ impl DefinitionKind {
             Self::Dashboard => "dashboards",
         }
     }
+
+    pub(crate) fn singular(self) -> &'static str {
+        match self {
+            Self::Metric => "metric",
+            Self::Widget => "widget",
+            Self::Dashboard => "dashboard",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

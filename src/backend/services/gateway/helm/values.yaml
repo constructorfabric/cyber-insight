@@ -69,6 +69,12 @@ gateway:
       auth: bearer
       timeoutMs: 40000
       mcpOnly: true
+    - prefix: /mcp/v3
+      upstream: 'http://{{ .Release.Name }}-v3-core:8087'
+      auth: bearer
+      mcpScope: "mcp:author"
+      timeoutMs: 40000
+      mcpOnly: true
     - prefix: /api/analytics
       upstream: 'http://{{ .Release.Name }}-analytics:8081'
       timeoutMs: 135000

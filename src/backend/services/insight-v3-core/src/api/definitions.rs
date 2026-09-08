@@ -12,6 +12,7 @@ use toolkit_canonical_errors::{CanonicalError, resource_error};
 use utoipa::ToSchema;
 
 use super::AppState;
+use crate::custom::{CustomError, held_by};
 use crate::definitions::{
     Change, DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError,
 };
@@ -172,64 +173,36 @@ fn register_kind(
         .merge(rename)
 }
 
-/// What still draws the definition the caller is removing.
-///
-/// A widget whose metric is gone renders an error where a chart should be, and
-/// a dashboard holding a widget that is gone renders a gap. Both were the
-/// failure the reader could not diagnose, so a definition in use is kept and
-/// the dependents named.
-async fn dependents_of(
-    state: &AppState,
-    kind: DefinitionKind,
-    name: &DefinitionName,
-) -> Result<Vec<String>, CanonicalError> {
-    let Some((holder, needle)) = held_by(kind) else {
-        return Ok(Vec::new());
-    };
-
-    let mut used_by = Vec::new();
-    for holder_name in state
-        .definitions()
-        .list(holder)
-        .await
-        .map_err(definition_store_error)?
-    {
-        let Ok(parsed) = DefinitionName::parse(&holder_name) else {
-            continue;
-        };
-        let Some(body) = state
-            .definitions()
-            .get(holder, &parsed)
-            .await
-            .map_err(definition_store_error)?
-        else {
-            continue;
-        };
-
-        let names = match body.get(needle) {
-            Some(serde_json::Value::String(one)) => vec![one.as_str()],
-            Some(serde_json::Value::Array(many)) => {
-                many.iter().filter_map(serde_json::Value::as_str).collect()
-            }
-            _ => Vec::new(),
-        };
-        if names.contains(&name.as_str()) {
-            used_by.push(holder_name);
+pub(crate) fn custom_error(error: CustomError) -> CanonicalError {
+    match error {
+        CustomError::NotFound { kind, name } => {
+            DefinitionApiError::not_found(format!("{} `{name}` was not found", kind.singular()))
+                .with_resource(&name)
+                .create()
         }
-    }
-
-    Ok(used_by)
-}
-
-/// Which kind names this one, and under which field.
-///
-/// A widget names its metric; a dashboard names its widgets. Nothing names a
-/// dashboard.
-fn held_by(kind: DefinitionKind) -> Option<(DefinitionKind, &'static str)> {
-    match kind {
-        DefinitionKind::Metric => Some((DefinitionKind::Widget, "metric")),
-        DefinitionKind::Widget => Some((DefinitionKind::Dashboard, "widgets")),
-        DefinitionKind::Dashboard => None,
+        CustomError::InUse { used_by } => DefinitionApiError::failed_precondition()
+            .with_precondition_violation(
+                "name",
+                format!("still in use by {}", used_by.join(", ")),
+                "in_use",
+            )
+            .create(),
+        CustomError::Widget(source) => widget_error(&source),
+        CustomError::Body(source) => DefinitionApiError::invalid_argument()
+            .with_field_violation("body", source.to_string(), "INVALID")
+            .create(),
+        CustomError::Compile(source) => DefinitionApiError::invalid_argument()
+            .with_field_violation("body", source.to_string(), "INVALID")
+            .create(),
+        CustomError::Store(source) => definition_store_error(source),
+        CustomError::Run(source) => {
+            tracing::error!(error = ?source, "metric query execution failed");
+            CanonicalError::internal("metric query execution failed").create()
+        }
+        CustomError::Catalog(source) => {
+            tracing::error!(error = ?source, "table catalogue read failed");
+            CanonicalError::internal("table catalogue read failed").create()
+        }
     }
 }
 
@@ -313,7 +286,12 @@ async fn rename_definition(
     ];
     let mut rewritten = Vec::new();
     if let Some((holder, field)) = held_by(kind) {
-        for holder_name in dependents_of(&state, kind, &from).await? {
+        for holder_name in state
+            .surfaces()
+            .dependents_of(kind, &from)
+            .await
+            .map_err(custom_error)?
+        {
             let parsed = DefinitionName::parse(&holder_name).map_err(definition_error)?;
             let Some(body) = state
                 .definitions()
@@ -361,28 +339,11 @@ async fn delete_definition(
 
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
-    let used_by = dependents_of(&state, kind, &name).await?;
-    if !used_by.is_empty() {
-        return Err(DefinitionApiError::failed_precondition()
-            .with_precondition_violation(
-                "name",
-                format!("still in use by {}", used_by.join(", ")),
-                "in_use",
-            )
-            .create());
+    match state.surfaces().delete(kind, &name).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(CustomError::NotFound { .. }) => Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(other) => Err(custom_error(other)),
     }
-
-    let removed = state
-        .definitions()
-        .delete(kind, &name)
-        .await
-        .map_err(definition_store_error)?;
-
-    Ok(if removed {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        StatusCode::NOT_FOUND.into_response()
-    })
 }
 
 async fn put_definition(
@@ -401,48 +362,13 @@ async fn put_definition(
 
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
-    if kind == DefinitionKind::Widget {
-        check_widget(&state, &body).await?;
-    }
-
     state
-        .definitions()
+        .surfaces()
         .put(kind, &name, &body)
         .await
-        .map_err(definition_store_error)?;
+        .map_err(custom_error)?;
 
     Ok(StatusCode::NO_CONTENT.into_response())
-}
-
-/// Refuses a widget whose metric cannot supply the columns it draws.
-///
-/// The chart used to render its axes and nothing else, which reads as missing
-/// data rather than as a definition naming a column that is not there.
-pub(crate) async fn check_widget(
-    state: &AppState,
-    body: &serde_json::Value,
-) -> Result<(), CanonicalError> {
-    let widget: crate::widget::Widget =
-        serde_json::from_value(body.clone()).map_err(|error| widget_error(&error.into()))?;
-
-    let metric_name = DefinitionName::parse(widget.metric()).map_err(definition_error)?;
-    let stored = state
-        .definitions()
-        .get(DefinitionKind::Metric, &metric_name)
-        .await
-        .map_err(definition_store_error)?
-        .ok_or_else(|| {
-            widget_error(&crate::widget::WidgetError::NoMetric(
-                widget.metric().to_owned(),
-            ))
-        })?;
-
-    let metric: crate::metric_query::MetricQuery =
-        serde_json::from_value(stored).map_err(|error| widget_error(&error.into()))?;
-
-    widget
-        .check_against(&metric)
-        .map_err(|error| widget_error(&error))
 }
 
 pub(crate) fn widget_error(error: &crate::widget::WidgetError) -> CanonicalError {
@@ -466,16 +392,11 @@ async fn get_definition(
 
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
-    let body = state
-        .definitions()
-        .get(kind, &name)
-        .await
-        .map_err(definition_store_error)?;
-
-    Ok(match body {
-        Some(body) => Json(body).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    })
+    match state.surfaces().get(kind, &name).await {
+        Ok(body) => Ok(Json(body).into_response()),
+        Err(CustomError::NotFound { .. }) => Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(other) => Err(custom_error(other)),
+    }
 }
 
 async fn list_definitions(
@@ -490,11 +411,7 @@ async fn list_definitions(
     })
     .await?;
 
-    let names = state
-        .definitions()
-        .list(kind)
-        .await
-        .map_err(definition_store_error)?;
+    let names = state.surfaces().list(kind).await.map_err(custom_error)?;
 
     Ok(Json(serde_json::json!({ "names": names })).into_response())
 }

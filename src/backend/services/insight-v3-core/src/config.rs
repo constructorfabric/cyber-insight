@@ -7,6 +7,7 @@ const DEFAULT_IDENTITY_DATABASE: &str = "identity";
 pub(crate) const MIN_INGEST_TOKEN_BYTES: usize = 32;
 pub(crate) const MAX_INGEST_TOKEN_BYTES: usize = 1024;
 const DEFAULT_CHAT_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_MCP_BIND_ADDR: &str = "0.0.0.0:8087";
 
 /// Whether the chat endpoint calls the model or returns a fixed reply.
 ///
@@ -17,6 +18,31 @@ const DEFAULT_CHAT_MODEL: &str = "claude-haiku-4-5-20251001";
 pub(crate) enum ChatMode {
     Live,
     Canned,
+}
+
+/// The MCP server's own listener, off unless a deployment asks for it.
+///
+/// It binds a second port because the gears api-gateway authenticates the REST
+/// router against its own audience, which an MCP access token does not carry.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub(crate) struct McpConfig {
+    pub(crate) enabled: bool,
+    pub(crate) bind_addr: String,
+    pub(crate) public_url: String,
+    /// Permits an `http` origin on a private network, for a stand without TLS.
+    pub(crate) allow_insecure_private_network: bool,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_addr: DEFAULT_MCP_BIND_ADDR.to_owned(),
+            public_url: String::new(),
+            allow_insecure_private_network: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +64,7 @@ pub(crate) struct GearConfig {
     pub(crate) chat_model: String,
     pub(crate) database_url: String,
     pub(crate) identity_url: String,
+    pub(crate) mcp: McpConfig,
 }
 
 impl Default for GearConfig {
@@ -56,6 +83,7 @@ impl Default for GearConfig {
             chat_model: DEFAULT_CHAT_MODEL.to_owned(),
             database_url: String::new(),
             identity_url: String::new(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -75,6 +103,7 @@ pub(crate) struct ValidatedConfig {
     chat_model: String,
     database_url: String,
     identity_url: String,
+    mcp: McpConfig,
 }
 
 impl ValidatedConfig {
@@ -142,6 +171,10 @@ impl ValidatedConfig {
         &self.database_url
     }
 
+    pub(crate) fn mcp(&self) -> &McpConfig {
+        &self.mcp
+    }
+
     pub(crate) fn identity_url(&self) -> &str {
         &self.identity_url
     }
@@ -183,6 +216,7 @@ impl GearConfig {
         if clickhouse_query_user.is_some() != clickhouse_query_password.is_some() {
             return Err(ConfigError::IncompleteQueryCredentials);
         }
+        validate_mcp(&self.mcp)?;
 
         Ok(ValidatedConfig {
             clickhouse_url: self.clickhouse_url,
@@ -198,6 +232,7 @@ impl GearConfig {
             chat_model: self.chat_model,
             database_url: self.database_url,
             identity_url: self.identity_url,
+            mcp: self.mcp,
         })
     }
 }
@@ -235,6 +270,19 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<(), ConfigError
     Ok(())
 }
 
+fn validate_mcp(mcp: &McpConfig) -> Result<(), ConfigError> {
+    if !mcp.enabled {
+        return Ok(());
+    }
+
+    require_non_empty("mcp.public_url", &mcp.public_url)?;
+    mcp.bind_addr
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| ConfigError::McpBindAddr)?;
+
+    Ok(())
+}
+
 fn validate_credentials(
     user: Option<&str>,
     password: Option<&SecretString>,
@@ -267,6 +315,8 @@ pub(crate) enum ConfigError {
     IngestTokenTooLong,
     #[error("ingest_token must contain only non-whitespace ASCII characters")]
     InvalidIngestTokenCharacters,
+    #[error("gears.insight-v3-core.config.mcp.bind_addr is not a socket address")]
+    McpBindAddr,
 }
 
 #[derive(Debug, Error)]
@@ -296,6 +346,7 @@ mod tests {
             clickhouse_query_password: None,
             ingest_token: SecretString::from("test-ingest-token-0123456789abcdef"),
             anthropic_token: SecretString::from("test-anthropic-token"),
+            mcp: McpConfig::default(),
             chat_mode: ChatMode::Live,
             chat_model: "claude-haiku-4-5-20251001".to_owned(),
             database_url: "mysql://insight:secret@mariadb.example.test:3306/insight_v3".to_owned(),
@@ -465,5 +516,79 @@ mod tests {
             config.validate(),
             Err(ConfigError::IncompleteQueryCredentials)
         ));
+    }
+    fn mcp(enabled: bool, bind_addr: &str, public_url: &str) -> McpConfig {
+        McpConfig {
+            enabled,
+            bind_addr: bind_addr.to_owned(),
+            public_url: public_url.to_owned(),
+            allow_insecure_private_network: false,
+        }
+    }
+
+    #[test]
+    fn the_mcp_server_is_off_and_bound_to_the_documented_port_by_default() {
+        let config = McpConfig::default();
+
+        assert!(!config.enabled);
+        assert_eq!(config.bind_addr, "0.0.0.0:8087");
+        assert!(config.public_url.is_empty());
+    }
+
+    #[test]
+    fn a_disabled_mcp_server_needs_no_public_url() {
+        assert!(validate_mcp(&McpConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn an_enabled_mcp_server_without_a_public_url_is_refused() {
+        let Err(error) = validate_mcp(&mcp(true, "0.0.0.0:8087", "")) else {
+            panic!("a server with no origin has no issuer to verify a token against");
+        };
+
+        assert!(
+            matches!(error, ConfigError::Empty("mcp.public_url")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_enabled_mcp_server_with_an_unparseable_bind_address_is_refused() {
+        let Err(error) = validate_mcp(&mcp(
+            true,
+            "not-an-address",
+            "https://insight.example.invalid",
+        )) else {
+            panic!("an address that is not a socket address cannot be bound");
+        };
+
+        assert!(matches!(error, ConfigError::McpBindAddr), "{error:?}");
+    }
+
+    #[test]
+    fn an_enabled_mcp_server_is_accepted_with_an_origin_and_an_address() {
+        assert!(
+            validate_mcp(&mcp(
+                true,
+                "0.0.0.0:8087",
+                "https://insight.example.invalid"
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_config_whose_mcp_section_is_invalid_is_refused_as_a_whole() {
+        let mut raw = valid_config();
+        raw.mcp = mcp(true, "0.0.0.0:8087", "");
+
+        let Err(error) = raw.validate() else {
+            panic!("an enabled server with no origin makes the whole config invalid");
+        };
+
+        assert!(
+            matches!(error, ConfigError::Empty("mcp.public_url")),
+            "{error:?}"
+        );
     }
 }

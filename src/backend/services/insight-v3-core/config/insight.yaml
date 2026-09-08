@@ -85,3 +85,8 @@ gears:
       anthropic_token: ""
       chat_mode: "live"
       chat_model: "claude-haiku-4-5-20251001"
+      mcp:
+        enabled: false
+        bind_addr: "0.0.0.0:8087"
+        public_url: ""
+        allow_insecure_private_network: false

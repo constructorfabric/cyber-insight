@@ -10,8 +10,9 @@ use toolkit::api::{OpenApiRegistry, OperationBuilder, ParamLocation, ParamSpec};
 use toolkit_canonical_errors::{CanonicalError, resource_error};
 
 use super::AppState;
-use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
-use crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError};
+use crate::custom::CustomError;
+use crate::definitions::{DefinitionError, DefinitionName, DefinitionStoreError};
+use crate::metric_query::{MetricQueryError, MetricRunError};
 
 #[resource_error("gts.cf.insight.insight_v3_core.metric_run.v1~")]
 struct MetricRunApiError;
@@ -62,20 +63,11 @@ async fn run_metric(
 
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
 
-    let body = state
-        .definitions()
-        .get(DefinitionKind::Metric, &name)
+    let result = state
+        .surfaces()
+        .run_metric(&name)
         .await
-        .map_err(definition_store_error)?
-        .ok_or_else(|| metric_not_found(name.as_str()))?;
-
-    let metric: MetricQuery =
-        serde_json::from_value(body).map_err(|error| invalid_metric_body(&error))?;
-    let compiled = metric
-        .compile(state.metrics().people())
-        .map_err(|error| compile_error(&error))?;
-
-    let result = state.metrics().run(&compiled).await.map_err(run_error)?;
+        .map_err(custom_error)?;
 
     Ok(Json(result).into_response())
 }
@@ -84,6 +76,20 @@ fn definition_error(error: DefinitionError) -> CanonicalError {
     MetricRunApiError::invalid_argument()
         .with_field_violation("name", error.to_string(), "INVALID")
         .create()
+}
+
+fn custom_error(error: CustomError) -> CanonicalError {
+    match error {
+        CustomError::NotFound { name, .. } => metric_not_found(&name),
+        CustomError::Body(source) => invalid_metric_body(&source),
+        CustomError::Compile(source) => compile_error(&source),
+        CustomError::Run(source) => run_error(source),
+        CustomError::Store(source) => definition_store_error(source),
+        CustomError::InUse { .. } | CustomError::Widget(_) | CustomError::Catalog(_) => {
+            tracing::error!(%error, "running a metric produced an unrelated failure");
+            CanonicalError::internal("metric query execution failed").create()
+        }
+    }
 }
 
 fn metric_not_found(name: &str) -> CanonicalError {

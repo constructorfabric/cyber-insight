@@ -50,27 +50,35 @@ impl Gear for InsightV3CoreGear {
             }
             crate::config::ChatMode::Canned => crate::chat::ChatClient::canned(),
         };
+        let app = Arc::new(crate::api::AppState::new(
+            crate::raw_data::RawDataStore::new(config.clickhouse_client()),
+            crate::tables::TableStore::new(config.clickhouse_client()),
+            definitions,
+            crate::metric_query::MetricRunner::new(
+                config.clickhouse_query_client(),
+                crate::metric_query::People::new(config.identity_database()),
+            ),
+            chat,
+            crate::identity::IdentityClient::new(config.identity_url())?,
+            crate::catalog::Catalog::new(
+                config.clickhouse_query_client(),
+                config.clickhouse_database(),
+            ),
+        ));
         let runtime = RuntimeState {
-            app: Arc::new(crate::api::AppState::new(
-                crate::raw_data::RawDataStore::new(config.clickhouse_client()),
-                crate::tables::TableStore::new(config.clickhouse_client()),
-                definitions,
-                crate::metric_query::MetricRunner::new(
-                    config.clickhouse_query_client(),
-                    crate::metric_query::People::new(config.identity_database()),
-                ),
-                chat,
-                crate::identity::IdentityClient::new(config.identity_url())?,
-                crate::catalog::Catalog::new(
-                    config.clickhouse_query_client(),
-                    config.clickhouse_database(),
-                ),
-            )),
+            app: Arc::clone(&app),
             admission,
         };
         self.runtime
             .set(runtime)
             .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;
+
+        crate::mcp::start(
+            config.mcp(),
+            crate::mcp::tools::CustomSurfaces::new(app),
+            ctx.cancellation_token().child_token(),
+        )
+        .await?;
 
         Ok(())
     }

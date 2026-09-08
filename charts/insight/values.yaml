@@ -632,6 +632,10 @@ insightV3Core:
   # Hook-rendered twin for fresh imperative installs. GitOps pre-creates the
   # main config Secret, so this reference is optional there.
   migrateEnvSecret: "insight-v3-core-migrate-env"
+  # The custom-surface MCP server, served when global.mcp.enabled is set.
+  mcp:
+    port: 8087
+    allowInsecurePrivateNetwork: false
 # ─── Identity Resolution (Rust identity service, epic #1602) ─────────────
 # The persons-store API. Reads from MariaDB `persons`, written by the seed
 # CronJob (the service's own `seed` subcommand) fed off ClickHouse
