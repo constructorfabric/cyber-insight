@@ -1,3 +1,9 @@
+---
+status: draft
+version: "1.1"
+date: 2026-09-08
+---
+
 > [!WARNING]
 > **Under review — audited against the implementation and found inaccurate in places.**
 > Read it against the code, not as authority. The specific claims the code contradicts
@@ -5,6 +11,9 @@
 > document and the committed `openapi.json` disagree, the contract is right.
 
 # Technical Design — Identity
+
+**Revision 1.1:** Add the profile interface trace and link its quality-adoption
+FEATURE review decisions. Existing design content remains under review.
 
 <!-- toc -->
 
@@ -372,6 +381,10 @@ touching the lookup algorithm.
 - `cpt-insightspec-actor-mariadb` — runtime target.
 
 ### 3.3 API Contracts
+
+**Profile interface**: `cpt-insightspec-interface-identity-profile-resolve`. The
+[profile FEATURE](feature-profile-resolution/FEATURE.md#15-review-decisions) records
+the unresolved differences between this design, the PRD, and the committed contract.
 
 This section enumerates the public interfaces declared in the PRD's
 Public Library Interfaces section (§7) and pins them to concrete

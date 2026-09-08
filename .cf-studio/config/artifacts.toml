@@ -127,6 +127,18 @@ name = "Identity Service Design"
 traceability = "DOCS-ONLY"
 
 [[systems.artifacts]]
+kind = "DECOMPOSITION"
+path = "docs/components/backend/identity-resolution/identity/specs/DECOMPOSITION.md"
+name = "Identity Service Quality Adoption"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+kind = "FEATURE"
+path = "docs/components/backend/identity-resolution/identity/specs/feature-profile-resolution/FEATURE.md"
+name = "Profile Resolution"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
 kind = "ADR"
 path = "docs/components/backend/identity-resolution/identity/specs/ADR/0002-read-from-mariadb-persons.md"
 name = "ADR-0002: Read From the MariaDB persons Table"

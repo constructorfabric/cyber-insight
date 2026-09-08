@@ -1,3 +1,9 @@
+---
+status: draft
+version: "1.1"
+date: 2026-09-08
+---
+
 > [!WARNING]
 > **Under review — audited against the implementation and found inaccurate in places.**
 > Read it against the code, not as authority. The specific claims the code contradicts
@@ -5,6 +11,14 @@
 > document and the committed `openapi.json` disagree, the contract is right.
 
 # PRD — Identity
+
+**Revision 1.1:** Explicit quality-vector migration of section 6, with a new
+[profile-resolution FEATURE](feature-profile-resolution/FEATURE.md). Existing NFR
+IDs and numerical targets are retained. The source-coverage NFR makes the existing
+multi-source goal measurable; inherited domain obligations now have explicit
+references. Checked NFRs are reopened because no revision-specific verification
+evidence accompanied them. This revision does not resolve the older functional
+and interface contradictions identified in the warning above.
 
 <!-- toc -->
 
@@ -251,7 +265,7 @@ matches. The comparison is case-insensitive at the storage layer
 returning stale post-merge identities.
 
 **Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-argo-workflows`
+`cpt-insightspec-actor-identity-argo`
 
 #### Hydrate person attributes
 
@@ -672,84 +686,152 @@ across the three phases.
 
 ## 6. Non-Functional Requirements
 
+Reliability and Security protect against attributing activity to the wrong person
+or exposing another tenant's identity. Efficiency and Performance bound the cost
+and delay of synchronous lookups; Versatility requires those lookups to include
+every supported identity source. Each applicable requirement is an independent
+gate: a vector count is neither acceptance nor passing evidence.
+
+This is a draft baseline. The [FEATURE review decisions](feature-profile-resolution/FEATURE.md#15-review-decisions)
+name unresolved contract and measurement conditions. In particular, the older
+lookup-latency target cannot be silently transferred to a different operation,
+and inherited obligations cannot be replaced by a weaker local budget.
+
 ### 6.1 NFR Inclusions
 
 #### P95 lookup latency
 
-- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-latency`
+- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-latency`
 
-The system **MUST** answer `GET /v1/persons/{email}` within
-**50 ms p95** for tenants with under 50 000 persons.
+**Vector**: Performance
 
-**Threshold**: p95 ≤ 50 ms measured at the api-gateway → identity
-hop; tenants with > 50 000 persons fall under the project default
-(p95 ≤ 200 ms).
+The system **MUST** answer the legacy person lookup within **50 ms p95**
+for tenants with under 50 000 persons.
 
-**Rationale**: Single-row cardinality on a covered index
-(`idx_value_id`) makes this achievable without caching; the bound is
-tight to keep gateway-side timeouts conservative.
+**Threshold**: Preserve the existing p95 ≤ 50 ms target at the gateway-to-service
+boundary for under 50 000 persons. The legacy operation is absent from the current
+contract. The previous p95 ≤ 200 ms fallback above 50 000 persons had no resolvable
+upstream requirement; at exactly 50 000 persons no latency target was specified.
+Operation mapping, load conditions, and the target for 50 000 or more persons are
+unresolved. **Owner:** Identity service maintainer, with QA; **resolution point:**
+approve these conditions before making the FEATURE ready for implementation or
+claiming latency acceptance. This requirement remains open, not excluded.
+
+**Rationale**: Identity lookup delay contributes directly to the wait for a
+person's profile and analytical context.
 
 #### Memory budget without caching
 
-- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-memory`
+- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-memory`
+
+**Vector**: Efficiency
 
 The system **MUST** stay under **384 MiB RSS** at steady state with
 zero in-memory full-table cache.
 
 **Threshold**: RSS ≤ 384 MiB across a 24 h soak with 100 RPS mixed
-hot/cold reads against a 50 000-row dataset.
+hot/cold reads against a 50 000-row synthetic observation dataset. Request mix,
+person-to-observation ratio, org-tree shape, hardware, and database conditions
+are not yet fixed. **Owner:** Identity service maintainer, with QA;
+**resolution point:** approve a reproducible fixture and run procedure before
+accepting this NFR. Rows must not be relabelled as persons.
 
-**Rationale**: Architecture decision (ADR-0002): no in-memory cache,
-every read hits MariaDB; the memory budget reflects that.
+**Rationale**: A bounded service footprint keeps identity enrichment affordable
+as the observation history grows.
 
 #### Structured JSON logs with PII redaction
 
-- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-logging-pii`
+- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-logging-pii`
 
-The system **MUST** emit structured JSON logs via the gears-rust
-host's tracing subscriber with `service=identity-resolution`.
-Request logging **MUST** record only an allow-listed
-property set (method, route template, status code,
-elapsed time, request id, trace+span IDs)
-and **MUST** never log a raw email path segment (route templates
-only). Unhandled-error payloads **MUST**
-include error type + message + sanitised `db_target`
-(`host:port/db`, no credentials) and **MUST NOT** include the
-connection string.
+**Vector**: Security
 
-**Threshold**: Manual log-scrape audit shows zero raw emails in
-captured request paths across the test suite.
+The system **MUST** provide structured, correlatable request and failure logs
+without disclosing raw email lookup values or database credentials. The logging
+allow-list and sanitisation design remain in DESIGN section 4.2; request
+metadata **MUST** stay within that allow-list.
 
-**Rationale**: Emails are PII; the URL template carries the customer's
-mailbox locally — leaking it into log aggregation would breach the
-project-wide PII handling policy.
+**Threshold**: Zero raw email lookup values, connection strings, or database
+credentials in captured service logs for successful, rejected, and failing
+synthetic lookup requests.
+
+**Rationale**: Diagnostic access must not expose a person's identity lookup
+values or the credentials protecting the identity store.
 
 #### `BINARY(16)` UUID round-trip
 
-- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-uuid-roundtrip`
+- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-uuid-roundtrip`
 
-All UUIDs (`insight_tenant_id`, `insight_source_id`, `person_id`,
-`author_person_id`) **MUST** round-trip as `BINARY(16)` via the
-UUID's canonical 16 bytes (big-endian RFC 4122 order). The repository
-**MUST NOT** rely on a driver's string fallback, which produces a
-36-char form that the `BINARY(16)` column silently truncates to 16
-ASCII bytes.
+**Vector**: Reliability
 
-**Threshold**: An integration test seeds a row by bytes and reads it
-back by Guid; equality holds byte-for-byte.
+The system **MUST** preserve tenant, source-instance, person, and author
+identifiers exactly across storage and retrieval, so a lookup cannot attribute
+an observation to a different entity.
 
-**Rationale**: The truncation bug was caught in the Python seeder and
-is the canonical UUID-handling failure mode for MariaDB clients;
-this NFR forces the explicit bytes binding everywhere.
+**Threshold**: 100% byte-for-byte equality for all four identifier fields after
+a storage/read round trip; zero truncations or substitutions. The binary
+representation is specified in [DESIGN](DESIGN.md#binary16-for-every-uuid).
+
+**Rationale**: Changing an identifier changes whose activity, provenance, or
+access boundary an observation belongs to.
+
+#### Identity source coverage
+
+- [ ] `p1` - **ID**: `cpt-identity-svc-nfr-profile-source-coverage`
+
+**Vector**: Versatility
+
+The system **MUST** resolve identity observations from every supported source
+that emits them, including multiple instances of the same source, without a
+source-specific preference that overrides the lookup and hydration rules.
+
+**Threshold**: 100% of supported identity-emitting source types in a
+revision-pinned fixture manifest resolve the expected person and current alias
+set; zero source-instance collisions. This formalises the multi-source goal in
+section 1.3 and the profile requirements in section 5.2. **Owner:** Identity
+service maintainer, with connector maintainers and QA; **resolution point:**
+agree the manifest before accepting coverage. An absent fixture is a coverage
+gap, not an excluded source.
+
+**Rationale**: A person's profile must remain usable when their identity comes
+from a different connector or a second instance of an existing connector.
+
+#### Inherited tenant isolation
+
+**Vector**: Security
+
+**Inherits**: `cpt-ir-nfr-tenant-isolation`
+
+**Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#tenant-data-isolation)
+owns the unchanged zero-leak target. Identity service maintainer and QA own the
+service contribution: FEATURE AC-8 and scenarios 9–10, linked to the shared
+`tests/stand/api/identity` and `tests/datapath/identity` evidence when implemented
+and run. No passing evidence is attached yet; domain acceptance must also cover
+the upstream mirror/cache/error scope beyond this FEATURE.
+
+#### Inherited profile lookup latency
+
+**Vector**: Performance
+
+**Inherits**: `cpt-ir-nfr-alias-lookup-latency`
+
+**Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#alias-lookup-latency)
+owns the unchanged profile-lookup target and load. Identity service maintainer
+and QA own FEATURE AC-13 and scenario 13 as the shared measurement record.
+The fixture and load harness are pending (FEATURE decision D-3); no passing
+evidence exists in this migration. This obligation is additional to the local
+legacy lookup target, not a substitution for it.
 
 ### 6.2 NFR Exclusions
 
-- **High availability via in-memory replication**: not applicable —
-  the service is stateless beyond its connection pool; HA is
-  addressed by Kubernetes `replicaCount` and MariaDB's own
-  replication, not by service-level state replication.
-- **Write throughput SLO**: not applicable — service is read-only;
-  write paths (seed, reconciliation) carry their own SLOs.
+- **Service-managed in-memory replication**: excluded as an implementation
+  mechanism because the read path has no replicated in-memory identity store.
+  This does not waive availability or dependency-failure obligations.
+- **Profile-read write throughput**: no writes are part of the profile lookup
+  feature. Seed, correction, and administration write paths require their own
+  targets; the service as a whole must not be described as read-only.
+
+No quality vector is excluded: every vector has a local or inherited obligation
+in section 6.1. Missing performance evidence remains an open obligation.
 
 ## 7. Public Library Interfaces
 
