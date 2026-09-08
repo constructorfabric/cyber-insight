@@ -136,7 +136,12 @@ def test_a_rename_is_its_own_change_type_and_carries_only_its_edited_lines(
 def test_an_extension_gathers_every_code_file_sharing_it(spec: SpecRun) -> None:
     """`rs` spans app, moved and wip; `go` is util's alone. `test/single.rs` is an rs file
     the classifier calls test: were that rule to stop firing, rs would read 38. The other
-    extensions appear at all only for a comparable reason, so none may have a row."""
+    extensions appear at all only for a comparable reason, so none may have a row.
+
+    The absence guard is the weaker half: extensions are compared lower-case because gold
+    lower-cases them, so a regression losing BOTH the classifier's case-insensitivity and
+    that lower-casing would slip past it. The total asserted in the first case is what
+    catches that one."""
     r = spec.call(
         {
             "url": "/v1/metric-results",
