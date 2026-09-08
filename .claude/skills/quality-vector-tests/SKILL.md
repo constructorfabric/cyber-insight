@@ -78,6 +78,13 @@ issue — the section goes in the **FEATURE artifact** and the issue links to it
 artifact holds the content and the short-lived one points at it, never the reverse; that is
 what keeps the reference resolvable after the issue closes.
 
+`scripts/rollup.sh <artifact>` prints the five-vector view for either target by grouping the
+tags. It reports `MISSING` for a vector that is neither claimed nor explicitly `n/a` — the
+rollup is derived, so a gap in it is a gap in the artifact, not in a summary someone forgot to
+update. The PRD side reads `**Vector**:` lines, and treats a vector named in `### 6.2 NFR Exclusions` as
+an explicit n/a. It has no artifact to read until the next PRD is authored; existing PRDs are
+deliberately not backfilled.
+
 ## Workflow
 
 ### 1. Review the acceptance criteria first
