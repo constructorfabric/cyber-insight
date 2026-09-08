@@ -26,6 +26,7 @@ RULES:
   - ALWAYS version on change: increment frontmatter version when editing; when changing a capability definition add -v{N} suffix (e.g. cpt-{hierarchy-prefix}-cap-{slug}-v2) or increment existing version; keep a changelog of significant changes
   - ALWAYS keep the PRD requirements-only (WHAT not HOW); express every NFR as a business-level quality requirement (user/business outcome, SLA, measurable target) attributed to exactly one quality vector (Efficiency, Reliability, Performance, Security, Versatility), not a technical implementation spec
   - ALWAYS account for all five quality vectors: a vector with no NFR is named in `### 6.2 NFR Exclusions` with its reason — an explicit exclusion reads as a decision, silence reads as an oversight
+  - ALWAYS give every NFR a `**Threshold**` line carrying a number, a bound or an absolute with its units; an NFR whose target cannot be quantified today says so there rather than omitting the line
   - ALWAYS state authorization as exact per-actor/operation permissions (which actor may perform which action on which resource); NEVER restate the generic "every API/endpoint requires authentication/authorization", which is assumed
   - ALWAYS treat {prd_checklist} as the single source of semantic quality criteria
   - NEVER duplicate semantic criteria here; NEVER leave placeholders (TODO, TBD, FIXME); NEVER create duplicate IDs within the document
