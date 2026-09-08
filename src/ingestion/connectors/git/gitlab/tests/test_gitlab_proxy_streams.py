@@ -116,8 +116,7 @@ def test_a_resumed_commits_sync_clones_no_project_idle_since_the_stored_cursor(h
         last_activity_at="2026-06-10T10:00:00.000+00:00",
     )
     http_mocker.get(
-        HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS),
-        [_projects_page(), _projects_page(_project(), idle)],
+        HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), [_projects_page(), _projects_page(_project(), idle)]
     )
     http_mocker.get(HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS), _page([_commit("a" * 40)]))
 
@@ -253,7 +252,7 @@ def test_roster_admits_neither_forks_nor_excluded_paths_nor_idle_projects(http_m
 
 @freezegun.freeze_time(_FROZEN)
 def test_forks_are_admitted_when_the_operator_asks(http_mocker: HttpMocker) -> None:
-    config = GitlabConfigBuilder().with_field("gitlab_include_forks", True).build()
+    config = GitlabConfigBuilder().with_field("gitlab_include_forks", "true").build()
     fork = _project(
         id=8,
         path_with_namespace="acme/app-fork",
@@ -339,6 +338,35 @@ def test_commit_authors_claim_an_account_only_on_an_exact_address_match(http_moc
     lookup = next(r.url for r in http_mocker._mocker.request_history if "/users" in r.url)
     assert "search=Ada%40example.com" in lookup
     assert_records_conform(output.records, _CONNECTOR, "commit_authors", strict=True)
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_resumed_commit_authors_sync_asks_each_project_only_for_newer_authors(http_mocker: HttpMocker) -> None:
+    """The author walk is a child of the roster twice over; both cursors ride
+    along with the stream's state, so a later run asks the proxy for authors
+    who committed since the last one instead of since the start date."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+        _authors_page(_author("ada@example.com", "a" * 40)),
+    )
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/users", query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps([_user(42, "ada", public_email="ada@example.com")]), status_code=200),
+    )
+
+    first = read_stream(_CONNECTOR, "commit_authors", config)
+    assert not first.errors
+    assert first.state_messages, "an incremental child must emit state"
+    state = first.state_messages[-1].state.stream.stream_state.__dict__
+    assert state["parent_state"]["repository_authors"]["states"], f"the author walk's cursor must be persisted: {state}"
+    resumed = read_stream(_CONNECTOR, "commit_authors", config, state=[m.state for m in first.state_messages][-1:])
+    assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
+
+    asked = _proxy_calls(http_mocker, "authors")
+    assert "since=2026-06-01" in asked[0], f"first run starts at the floor: {asked[0]}"
+    assert "since=2026-06-15" in asked[-1], f"a resumed run starts at the stored cursor: {asked[-1]}"
 
 
 @freezegun.freeze_time(_FROZEN)

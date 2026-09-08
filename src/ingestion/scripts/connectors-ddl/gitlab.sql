@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS bronze_gitlab.commit_authors
     `author_name` Nullable(String),
     `author_state` Nullable(String),
     `matched_field` Nullable(String),
-    `sample_sha` Nullable(String)
+    `sample_sha` Nullable(String),
+    `last_committed_date` Nullable(String)
 )
 ENGINE = ReplacingMergeTree(_airbyte_extracted_at)
 ORDER BY unique_key

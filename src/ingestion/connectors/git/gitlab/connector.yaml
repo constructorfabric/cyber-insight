@@ -333,7 +333,7 @@ definitions:
     record_filter:
       type: RecordFilter
       condition: >-
-        {{ (config.get('gitlab_include_forks') or not record.get('forked_from_project'))
+        {{ (config.get('gitlab_include_forks') == 'true' or not record.get('forked_from_project'))
            and not (record['path_with_namespace'] | regex_search('(' ~ ((config.get('gitlab_exclude_projects') or ['$^']) | join('|')) ~ ')')) }}
 
   # Slim project roster the proxy streams partition over. Client-side
@@ -493,8 +493,11 @@ definitions:
 
 check:
   type: CheckStream
+  # branches is the cheapest proxy-backed stream; checking it makes a wrong
+  # git_proxy_url or git_proxy_token fail at setup instead of on the first sync.
   stream_names:
     - repositories
+    - branches
 
 streams:
   # ── Project discovery (GitLab API) ──────────────────────────────────────
@@ -622,6 +625,8 @@ streams:
           - [shared_with_groups]
           - [container_expiration_policy]
           - [license]
+          - [runners_token]
+          - [import_url]
 
   # ── Commits (git-cli-proxy) ─────────────────────────────────────────────
   # Every commit reachable from any branch, ascending by (committed_date, sha),
@@ -956,6 +961,7 @@ streams:
           author_state: {type: [string, "null"]}
           matched_field: {type: [string, "null"]}
           sample_sha: {type: [string, "null"]}
+          last_committed_date: {type: [string, "null"]}
         required:
           - unique_key
         additionalProperties: true
@@ -967,7 +973,7 @@ streams:
         request_parameters:
           search: "{{ stream_partition.author_email }}"
           per_page: "20"
-        error_handler: *project_scoped_error_handler
+        error_handler: *discovery_error_handler
       record_selector:
         type: RecordSelector
         extractor:
@@ -992,6 +998,8 @@ streams:
               - [project_id]
               - [repo_path]
               - [sample_sha]
+              - [last_committed_date]
+            incremental_dependency: true
             stream:
               type: DeclarativeStream
               name: repository_authors
@@ -1065,6 +1073,19 @@ streams:
                       path: [repo_path]
                       value: "{{ stream_slice.extra_fields['path_with_namespace'] }}"
                       value_type: string
+    # The stamped parent date is the cursor: it carries the author walk's state
+    # (and, through it, the roster's) along with this stream's own.
+    incremental_sync:
+      type: DatetimeBasedCursor
+      cursor_field: last_committed_date
+      datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      cursor_datetime_formats:
+        - "%Y-%m-%dT%H:%M:%S%z"
+        - "%Y-%m-%dT%H:%M:%SZ"
+      start_datetime:
+        type: MinMaxDatetime
+        datetime: "{{ config['gitlab_start_date'] }}"
+        datetime_format: "%Y-%m-%d"
     transformations:
       - type: AddFields
         fields: *standard_fields
@@ -1084,6 +1105,10 @@ streams:
           - type: AddedFieldDefinition
             path: [sample_sha]
             value: "{{ stream_slice.extra_fields['sample_sha'] }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [last_committed_date]
+            value: "{{ stream_slice.extra_fields['last_committed_date'] }}"
             value_type: string
           - type: AddedFieldDefinition
             path: [author_account_id]
@@ -2467,7 +2492,7 @@ streams:
       paginator: *link_paginator
       partition_router:
         type: ListPartitionRouter
-        values: "{{ ['*'] if config.get('gitlab_instance_users') else [] }}"
+        values: "{{ ['*'] if config.get('gitlab_instance_users') == 'true' else [] }}"
         cursor_field: scope
     transformations:
       - type: AddFields
@@ -2538,6 +2563,12 @@ streams:
           - [enterprise_group_id]
           - [enterprise_group_associated_at]
 
+concurrency_level:
+  type: ConcurrencyLevel
+  # Never 1: the concurrent CDK self-deadlocks at a single worker once a sync
+  # generates ~10k partitions.
+  default_concurrency: 4
+
 spec:
   type: Spec
   connection_specification:
@@ -2606,8 +2637,11 @@ spec:
         title: Projects
         order: 5
       gitlab_include_forks:
-        type: boolean
-        default: false
+        # A string, not a boolean: a Secret's values reach the source config as
+        # strings and the spec is validated against them.
+        type: string
+        pattern: "^(true|false)$"
+        default: "false"
         description: >-
           Sync forked projects. Off by default: a fork's history is its
           upstream's, and counting it doubles the upstream's commits.
@@ -2624,8 +2658,9 @@ spec:
         title: Exclude projects
         order: 7
       gitlab_instance_users:
-        type: boolean
-        default: false
+        type: string
+        pattern: "^(true|false)$"
+        default: "false"
         description: >-
           Also sync the instance user directory (/users) for identity
           resolution. Needs a personal token; e-mail addresses are returned

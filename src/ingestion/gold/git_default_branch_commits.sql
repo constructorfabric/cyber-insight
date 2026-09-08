@@ -34,9 +34,8 @@
 -- carries the span's end, not its steps.
 --
 -- INVARIANT: this cannot see a branch merged by a fast-forward push with no
--- pull request. GitLab still corrects those itself (advancing the default head
--- re-walks the range), the proxy-backed sources only within their lookback
--- window.
+-- pull request. The proxy-backed sources correct membership for those only
+-- inside their lookback window.
 WITH
 -- The default branch NAME per repository, which is what a pull request's
 -- destination has to be compared against. Every git connector reports it.

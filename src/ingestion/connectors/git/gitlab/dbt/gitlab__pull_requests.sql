@@ -24,7 +24,8 @@ WITH projects AS (
         source_id,
         id AS project_id,
         COALESCE(namespace_full_path, '') AS project_key,
-        COALESCE(path, '') AS repo_slug
+        COALESCE(path, '') AS repo_slug,
+        _airbyte_extracted_at
     FROM {{ source('bronze_gitlab', 'repositories') }} FINAL
 ),
 
@@ -116,8 +117,11 @@ LEFT JOIN account_email AS ae
     AND ae.source_id = mr.source_id
     AND ae.account_id = toString(COALESCE(mr.author_id, 0))
 {% if is_incremental() %}
+-- INVARIANT: the roster row is part of the watermark, so a merge request read
+-- before its project reached the roster is picked up once the project does.
 WHERE greatest(
     mr._airbyte_extracted_at,
-    COALESCE(ds._airbyte_extracted_at, mr._airbyte_extracted_at)
+    COALESCE(ds._airbyte_extracted_at, mr._airbyte_extracted_at),
+    p._airbyte_extracted_at
 ) > (SELECT max(_airbyte_extracted_at) FROM {{ this }})
 {% endif %}

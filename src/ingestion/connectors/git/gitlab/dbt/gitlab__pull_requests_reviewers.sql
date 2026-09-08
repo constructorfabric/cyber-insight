@@ -55,7 +55,9 @@ verdicts AS (
             'changes_requested'
         ) AS status,
         if(n.body = 'approved this merge request', 1, 0) AS approved,
-        parseDateTimeBestEffortOrNull(n.created_at) AS reviewed_at,
+        -- INVARIANT: a withdrawal carries no instant; gold dates a request's
+        -- first review by min(reviewed_at), which must never land on one.
+        if(n.body = 'unapproved this merge request', CAST(NULL AS Nullable(DateTime)), parseDateTimeBestEffortOrNull(n.created_at)) AS reviewed_at,
         n._airbyte_extracted_at AS _airbyte_extracted_at
     FROM {{ source('bronze_gitlab', 'pull_request_notes') }} AS n FINAL
     WHERE COALESCE(n.system, false)

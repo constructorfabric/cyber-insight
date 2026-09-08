@@ -54,7 +54,7 @@ label_events AS (
         parseDateTimeBestEffortOrNull(created_at) AS event_at,
         COALESCE(user_username, '') AS actor_name,
         'label' AS field_id,
-        if(action = 'remove', 'remove', 'add') AS delta_action,
+        multiIf(action = 'remove', 'remove', action = 'add', 'add', '') AS delta_action,
         COALESCE(label_name, '') AS delta_value_id,
         _airbyte_extracted_at
     FROM {{ source('bronze_gitlab', 'pull_request_label_events') }} FINAL

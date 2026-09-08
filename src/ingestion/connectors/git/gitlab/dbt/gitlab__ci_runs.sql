@@ -61,7 +61,7 @@ SELECT
     parseDateTimeBestEffortOrNull(finished_at) AS finished_at,
     -- GitLab's own duration: wall-clock seconds the pipeline ran, excluding
     -- queue time, NULL until it finishes.
-    if(status IN ('success', 'failed', 'canceled'), toNullable(toInt64(COALESCE(duration, 0))), CAST(NULL AS Nullable(Int64))) AS duration_s,
+    if(status IN ('success', 'failed', 'canceled'), toInt64(duration), CAST(NULL AS Nullable(Int64))) AS duration_s,
     'insight_gitlab' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version,
     _airbyte_extracted_at

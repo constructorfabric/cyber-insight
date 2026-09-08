@@ -500,14 +500,14 @@ def test_a_resumed_child_sync_resumes_the_parent_window_too(http_mocker: HttpMoc
     assert first.state_messages, "an incremental child must emit state"
     state = first.state_messages[-1].state.stream.stream_state.__dict__
     assert "parent_state" in state, f"the parent cursor must be persisted with the child: {state}"
-    resumed = read_stream(
-        _CONNECTOR, "pull_request_notes", config, state=[m.state for m in first.state_messages][-1:]
-    )
+    resumed = read_stream(_CONNECTOR, "pull_request_notes", config, state=[m.state for m in first.state_messages][-1:])
     assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
 
     listings = _urls(http_mocker, "/merge_requests?")
     assert "updated_after=2026-06-01" in listings[0], listings[0]
-    assert "updated_after=2026-06-19" in listings[-1], f"a resumed run lists from the parent's stored state: {listings[-1]}"
+    assert "updated_after=2026-06-19" in listings[-1], (
+        f"a resumed run lists from the parent's stored state: {listings[-1]}"
+    )
 
 
 # ── GraphQL ──────────────────────────────────────────────────────────────
@@ -734,7 +734,9 @@ def test_a_402_on_one_project_deployments_skips_it_not_the_stream(http_mocker: H
     """Deployments are an edition feature: a project the licence does not
     cover answers 402 and is skipped, the rest of the roster is still read."""
     config = GitlabConfigBuilder().build()
-    other = _project(id=8, path="api", path_with_namespace="acme/api", http_url_to_repo="https://gitlab.example.com/acme/api.git")
+    other = _project(
+        id=8, path="api", path_with_namespace="acme/api", http_url_to_repo="https://gitlab.example.com/acme/api.git"
+    )
     http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _ok([_project(), other]))
     http_mocker.get(
         HttpRequest(f"{API_URL}/projects/7/deployments", query_params=ANY_QUERY_PARAMS),
@@ -805,7 +807,7 @@ def test_users_stay_silent_unless_opted_in(http_mocker: HttpMocker) -> None:
 
 @freezegun.freeze_time(_FROZEN)
 def test_users_walk_the_instance_with_keyset_pagination(http_mocker: HttpMocker) -> None:
-    config = GitlabConfigBuilder().with_field("gitlab_instance_users", True).build()
+    config = GitlabConfigBuilder().with_field("gitlab_instance_users", "true").build()
     http_mocker.get(
         HttpRequest(f"{API_URL}/users", query_params=ANY_QUERY_PARAMS),
         _ok(
