@@ -126,3 +126,13 @@ The system **MUST** {clear description of what to implement}.
 
 - [ ] {Testable criterion for this feature}
 - [ ] {Another testable criterion}
+
+## 7. Testing
+
+{1-3 framing sentences: the feature shape (new capability / port / migration), what leads the risk, and where the checks run. For a port or migration, name the parity bar here.}
+All {N}/{N} acceptance criteria covered: {criterion-id} → 1,4 · {criterion-id} → 2,3 · …
+
+- [ ] 1. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect, one sentence; the expect half restates the criterion's outcome; a number only where the number is the oracle}.
+- [ ] 2. **{Scenario name}** — {Vector} · {suite-tag} · {criterion-id} — {do → expect}.
+
+{Vector with nothing to check} — n/a: {one line saying why}.
