@@ -87,11 +87,13 @@ pub async fn login(
     };
 
     // `__override` (view-as, #1941): carried into the login state only when
-    // the environment opts in; otherwise the parameter is inert — and logged,
-    // so an attempt against a real environment is visible, not silent.
-    // Sanitized before anything touches it (this log path is reachable in
-    // real environments): control characters stripped so a hostile value
-    // cannot forge log lines, length capped at the RFC 5321 address maximum.
+    // the environment opts in; otherwise the parameter is inert — and logged
+    // as an event, so an attempt against a real environment is visible, not
+    // silent. The presented address itself never reaches the line: it is a
+    // person's address, and the attempt is the fact worth recording
+    // (insight#2488 AC-4). Sanitized before anything touches it: control
+    // characters stripped so a hostile value cannot forge log lines, length
+    // capped at the RFC 5321 address maximum.
     let override_email = match params
         .override_email
         .as_deref()
@@ -102,7 +104,6 @@ pub async fn login(
             tracing::warn!(
                 target: "audit",
                 event = "login_override_ignored",
-                email,
                 "__override presented but override_enabled=false: ignored"
             );
             String::new()
@@ -292,7 +293,6 @@ pub async fn callback(
             target: "audit",
             event = "login_denied_no_tenant",
             idp_sub = %idp.identity.sub,
-            email = %idp.identity.email,
             "login denied: id_token carried no tenant and no default_tenant_id is set"
         );
         return login_error_redirect(&state.cfg.default_return_to, "access_denied");
@@ -324,7 +324,6 @@ pub async fn callback(
                 target: "audit",
                 event = "login_denied_unknown_person",
                 idp_sub = %idp.identity.sub,
-                email = %idp.identity.email,
                 "login denied: no matching person in Identity"
             );
             let client = ClientInfo::from_headers(&headers);
@@ -568,9 +567,7 @@ async fn resolve_override(
                 target: "audit",
                 event = "login_override",
                 impersonator_person_id = %resolution.person_id,
-                impersonator_email = %idp.identity.email,
                 person_id = %t.person_id,
-                email = target_email,
                 "view-as override: minting the session for another person"
             );
             Ok(SessionIdentity {
@@ -586,8 +583,6 @@ async fn resolve_override(
                 target: "audit",
                 event = "login_override_unknown_person",
                 impersonator_person_id = %resolution.person_id,
-                impersonator_email = %idp.identity.email,
-                email = target_email,
                 "view-as override denied: no matching person in Identity"
             );
             // The durable audit sink gets the denial too — an impersonation

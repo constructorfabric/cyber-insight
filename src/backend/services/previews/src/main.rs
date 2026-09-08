@@ -66,7 +66,15 @@ async fn main() -> Result<()> {
 
     match command {
         Commands::Openapi => print_openapi(),
-        Commands::Run => run_server(AppConfig::load_or_default(cli.config.as_ref())?).await,
+        Commands::Run => {
+            let config = AppConfig::load_or_default(cli.config.as_ref())?;
+            let resource = &config.opentelemetry.resource;
+            insight_log_context::init_identity_from_resource(
+                &resource.service_name,
+                &resource.attributes,
+            );
+            run_server(config).await
+        }
     }
 }
 

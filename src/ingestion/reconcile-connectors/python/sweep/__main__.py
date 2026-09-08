@@ -21,12 +21,18 @@ and no tick may abort because recording broke.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from typing import Any, NamedTuple
+
+import insight_logging
 
 from . import heal, plan
 from .ledger import Ledger, LedgerError
 from .mover import Mover, MoverError
+
+_LOG = logging.getLogger("sweep")
 
 
 class UnreadableWork(ValueError):
@@ -50,10 +56,6 @@ class Connector(NamedTuple):
     def instance(self) -> plan.Instance:
         """What the ledger records this connector's rows under."""
         return plan.Instance(self.name, self.tenant_id, self.source_id)
-
-
-def _log(message: str) -> None:
-    print(f"sweep: {message}", file=sys.stderr, flush=True)
 
 
 def _read_work(stream: Any) -> tuple[str, list[Connector], dict[str, str]]:
@@ -127,7 +129,7 @@ def _recover_from_recorded_data(
         try:
             found = ledger.recorded_instance(namespace)
         except LedgerError as error:
-            _log(f"cannot read what {connector} recorded about itself: {error}")
+            _LOG.warning(f"cannot read what {connector} recorded about itself: {error}")
             continue
         if found is None:
             continue
@@ -150,7 +152,7 @@ def _adopt_unidentified_rows(
     try:
         unidentified = ledger.unidentified_connectors()
     except LedgerError as error:
-        _log(f"cannot look for rows recorded without an identity: {error}")
+        _LOG.warning(f"cannot look for rows recorded without an identity: {error}")
         return
     if not unidentified:
         return
@@ -168,7 +170,7 @@ def _adopt_unidentified_rows(
         # One line, not one per connector: an unresolvable name stays
         # unresolvable until its rows age out, so a line each would repeat every
         # tick for as long as the ledger retains them.
-        _log(
+        _LOG.warning(
             "history left without an identity: "
             + "; ".join(f"{u.connector} ({u.reason})" for u in adoption.unresolved)
         )
@@ -177,9 +179,9 @@ def _adopt_unidentified_rows(
         try:
             ledger.adopt_identity(instance)
         except LedgerError as error:
-            _log(f"cannot give {instance.connector} history its identity: {error}")
+            _LOG.warning(f"cannot give {instance.connector} history its identity: {error}")
             continue
-        _log(
+        _LOG.info(
             f"gave {instance.connector} history recorded before the identity "
             f"existed its own ({instance.tenant_id}/{instance.source_id}), "
             f"from {claim.basis}"
@@ -190,21 +192,21 @@ def run(stream: Any) -> int:
     try:
         tick_id, connectors, namespaces = _read_work(stream)
     except UnreadableWork as error:
-        _log(f"cannot read this tick's work: {error}")
+        _LOG.error(f"cannot read this tick's work: {error}")
         return 1
 
     # INVARIANT: an empty configured set is indistinguishable from "everything
     # was removed", so a tick with nothing to record records nothing at all —
     # not an empty snapshot, and no seal to make one readable.
     if not connectors:
-        _log("no connectors resolved; recording nothing rather than an empty set")
+        _LOG.warning("no connectors resolved; recording nothing rather than an empty set")
         return 1
 
     try:
         ledger = Ledger.from_env()
         mover = Mover.from_env()
     except (LedgerError, MoverError) as error:
-        _log(f"cannot reach the inputs: {error}")
+        _LOG.error(f"cannot reach the inputs: {error}")
         return 1
 
     # Two different sets, deliberately. The connection map turns a job into a
@@ -243,14 +245,14 @@ def run(stream: Any) -> int:
             )
         if truncated:
             incomplete = True
-            _log(
+            _LOG.warning(
                 "history deeper than one tick may read; recorded what was "
                 "reached and will continue from that edge next tick"
             )
 
         planned = plan.plan_syncs(entries, by_connection, tick_id, closed)
         for refusal in planned.skipped:
-            _log(f"skipped job {refusal.job_id or '<unnamed>'}: {refusal.reason}")
+            _LOG.info(f"skipped job {refusal.job_id or '<unnamed>'}: {refusal.reason}")
 
         written += ledger.insert(planned.rows)
 
@@ -259,9 +261,8 @@ def run(stream: Any) -> int:
         # provisional word standing as the page's answer.
         stranded = plan.plan_abandoned(ledger.abandoned_jobs(watermark), tick_id)
         if stranded:
-            _log(
-                f"{len(stranded)} job(s) have fallen below the read start; "
-                "recording their state as unreadable"
+            _LOG.warning(
+                f"{len(stranded)} job(s) have fallen below the read start; recording their state as unreadable"
             )
             written += ledger.insert(stranded)
     # Every failure, not only the two typed ones: an unanticipated shape in the
@@ -269,7 +270,7 @@ def run(stream: Any) -> int:
     # decision, which is the same outcome reached without the reasoning.
     except Exception as error:  # noqa: BLE001
         read_failed = True
-        _log(f"could not read this tick's syncs: {error!r}")
+        _LOG.error(f"could not read this tick's syncs: {error!r}")
 
     # INVARIANT: the seal is what dates the page — the read surface reports the
     # newest sealed tick as "when the mover was last read". A tick that never
@@ -277,19 +278,23 @@ def run(stream: Any) -> int:
     # keeps reporting that it was just checked, and the page can never say
     # recording has stopped.
     if read_failed:
-        _log("the mover was not read; leaving this tick unsealed")
+        _LOG.error("the mover was not read; leaving this tick unsealed")
         return 1
 
     try:
         written += ledger.insert(plan.plan_snapshot(configured, tick_id))
         written += ledger.insert([plan.plan_seal(tick_id)])
     except LedgerError as error:
-        _log(f"cannot seal this tick: {error}")
+        _LOG.error(f"cannot seal this tick: {error}")
         return 1
 
-    _log(f"tick {tick_id}: {written} rows across {len(configured)} connector instances")
+    _LOG.info(
+        f"tick {tick_id}: {written} rows across {len(configured)} connector instances"
+    )
     return 1 if incomplete else 0
 
 
 if __name__ == "__main__":
+    run_id = os.environ.get("RECONCILE_RUN_ID", "").strip()
+    insight_logging.configure("sweep", **({"run_id": run_id} if run_id else {}))
     sys.exit(run(sys.stdin))

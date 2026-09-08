@@ -290,11 +290,11 @@ unattributed_line_measures AS (
         metric_date,
         line_measure.1 AS measure_key,
         line_measure.2 AS value,
-        -- Written out rather than spliced into source_dimensions: this must
-        -- equal category_source_dimensions key for key, and a literal says so
-        -- at the one place a reader compares them. A different order would not
-        -- fail — it would split one logical dimension set into two breakdown
-        -- rows under `GROUP BY … dimensions`.
+        -- INVARIANT: the same KEYS as category_source_dimensions, which the
+        -- file-derived rows of these same measures carry. A breakdown groups
+        -- by a hidden source-id key as well as the visible ones, so a key
+        -- missing here splits one repository into two rows — a reader
+        -- comparing the two literals is what keeps them in step.
         CAST(
             [
                 tuple('branch_scope', branch_scope_value, branch_scope_label),
@@ -303,6 +303,7 @@ unattributed_line_measures AS (
                 tuple('change_type', '__unknown__', 'Unknown'),
                 tuple('repository', repository_value, repository_label),
                 tuple('project', project_value, project_label),
+                tuple('source_id', coalesce(toString(source_id), ''), coalesce(toString(source_id), '')),
                 tuple('source', source_value, source_label)
             ] AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS dimensions
@@ -332,41 +333,6 @@ unattributed_line_measures AS (
         )
     ) AS Array(Tuple(measure_key String, value Float64))) AS line_measure
     WHERE has_no_file_changes
-),
-pr_commit_emails AS (
-    SELECT
-        tenant_id,
-        source_id,
-        project_key,
-        repo_slug,
-        pr_id,
-        if(uniqExact(email) = 1, any(email), CAST(NULL AS Nullable(String))) AS email
-    FROM (
-        SELECT
-            links.tenant_id AS tenant_id,
-            links.source_id AS source_id,
-            links.project_key AS project_key,
-            links.repo_slug AS repo_slug,
-            links.pr_id AS pr_id,
-            lower(trimBoth(commits.author_email)) AS email,
-            uniqExact(commits.commit_hash) AS email_count,
-            max(uniqExact(commits.commit_hash)) OVER (
-                PARTITION BY links.tenant_id, links.source_id,
-                             links.project_key, links.repo_slug, links.pr_id
-            ) AS max_count
-        FROM {{ ref('class_git_pull_requests_commits') }} AS links
-        INNER JOIN {{ ref('class_git_commits') }} AS commits
-            ON commits.tenant_id = links.tenant_id
-            AND commits.source_id = links.source_id
-            AND commits.project_key = links.project_key
-            AND commits.repo_slug = links.repo_slug
-            AND commits.commit_hash = links.commit_hash
-        WHERE trimBoth(commits.author_email) != ''
-          AND commits.is_merge_commit = 0
-        GROUP BY tenant_id, source_id, project_key, repo_slug, pr_id, email
-    )
-    WHERE email_count = max_count
-    GROUP BY tenant_id, source_id, project_key, repo_slug, pr_id
 ),
 -- uniqExact, not count(): the link table is append-only per sync, so the same
 -- link row can arrive more than once and the count must not inflate.
@@ -406,9 +372,14 @@ pull_requests_source AS (
         prs.pr_number AS pr_number,
         prs.title AS title,
         prs.author_name AS author_name,
-        multiIf(
-            trimBoth(prs.author_email) != '', lower(trimBoth(prs.author_email)),
-            pr_commit_emails.email IS NOT NULL AND pr_commit_emails.email != '', pr_commit_emails.email,
+        -- INVARIANT: only what the source says about the AUTHOR may land here.
+        -- The author of a request and the author of a commit it carries are
+        -- different identities, so an address read off the commits would credit
+        -- the request to whoever wrote them — and a request the source names no
+        -- author for is one this metric has no answer for, not one to guess at.
+        if(
+            trimBoth(prs.author_email) != '',
+            lower(trimBoth(prs.author_email)),
             CAST(NULL AS Nullable(String))
         ) AS entity_id,
         -- identity's source_type vocabulary, not data_source's: the binding
@@ -500,12 +471,6 @@ pull_requests_source AS (
         AND pr_commit_counts.project_key = prs.project_key
         AND pr_commit_counts.repo_slug = prs.repo_slug
         AND pr_commit_counts.pr_id = prs.pr_id
-    LEFT JOIN pr_commit_emails
-        ON pr_commit_emails.tenant_id = prs.tenant_id
-        AND pr_commit_emails.source_id = prs.source_id
-        AND pr_commit_emails.project_key = prs.project_key
-        AND pr_commit_emails.repo_slug = prs.repo_slug
-        AND pr_commit_emails.pr_id = prs.pr_id
     LEFT JOIN pull_request_review_summary AS review_summary
         ON review_summary.tenant_id = prs.tenant_id
         AND review_summary.source_id = prs.source_id
@@ -656,10 +621,11 @@ pull_request_measures AS (
             []
         )
     ) AS Array(Tuple(measure_key String, contribution Float64, observed_at DateTime64(3)))) AS pr_measure
-    -- A row survives on EITHER key: the email (today's path) or the account
-    -- id, which the outer join resolves account-first. Only a pull request
-    -- with neither — no profile email, no attributable commit email, no
-    -- account id — drops here, exactly as before.
+    -- A row survives on EITHER key the source states about the author: the
+    -- address or the account id, which the outer join resolves account-first.
+    -- A request the source names neither for drops here — unattributable is
+    -- the answer, and a request that survives on an account nothing has bound
+    -- stays unresolved at read time rather than reaching some other person.
     WHERE (pull_request.entity_id IS NOT NULL AND pull_request.entity_id != '')
        OR pull_request.account_id != ''
 ),

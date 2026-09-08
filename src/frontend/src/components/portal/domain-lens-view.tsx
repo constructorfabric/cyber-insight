@@ -597,7 +597,8 @@ export function DomainLensView({
             {scoped ? (scopedLabel ?? scoped) : config.title}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {orgScope.count} {orgScope.count === 1 ? "person" : "people"} ·{" "}
+            {orgScope.rosterCount}{" "}
+            {orgScope.rosterCount === 1 ? "person" : "people"} ·{" "}
             {config.tagline ?? "trend & balance"}
           </p>
         </div>

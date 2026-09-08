@@ -35,6 +35,8 @@ from typing import Any, ClassVar, Self
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+# sweep.__main__ imports insight_logging from the ingestion scripts package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 CH_URL = os.environ.get("SWEEP_TEST_CH_URL")
 CH_USER = os.environ.get("SWEEP_TEST_CH_USER", "default")  # RULE-DEFAULTS-OK: local throwaway server's own default user
@@ -104,9 +106,7 @@ def _placed(entry: dict) -> datetime:
 
 #: Every parameter the sweep is allowed to send. A name outside it is a filter
 #: the real listing would silently ignore.
-_LISTING_PARAMETERS = frozenset(
-    {"jobType", "orderBy", "limit", "offset", "updatedAtStart"}
-)
+_LISTING_PARAMETERS = frozenset({"jobType", "orderBy", "limit", "offset", "updatedAtStart"})
 
 
 def _parse_iso(stamp: str) -> datetime:
@@ -291,9 +291,7 @@ class TestSweptRowsLandAndResolve:
             {
                 "AIRBYTE_URL": f"http://127.0.0.1:{STUB_PORT}",
                 "AIRBYTE_TOKEN": TOKEN,
-                "RECONCILE_DEST_CLICKHOUSE_PROTOCOL": (
-                    "https" if CH_URL.startswith("https") else "http"
-                ),
+                "RECONCILE_DEST_CLICKHOUSE_PROTOCOL": ("https" if CH_URL.startswith("https") else "http"),
                 "RECONCILE_DEST_CLICKHOUSE_HOST": CH_URL.split("//", 1)[1].split(":")[0],
                 "RECONCILE_DEST_CLICKHOUSE_PORT": CH_URL.rsplit(":", 1)[1],
                 "RECONCILE_DEST_CLICKHOUSE_USERNAME": CH_USER,
@@ -326,13 +324,9 @@ class TestSweptRowsLandAndResolve:
     def test_a_first_sweep_lands_the_whole_retained_history(self) -> None:
         with _StubMover() as mover:
             assert self._tick("tick-a") == 0
-            assert mover.requests[0].get("updatedAtStart") is None, (
-                "an empty ledger reads everything, unfiltered"
-            )
+            assert mover.requests[0].get("updatedAtStart") is None, "an empty ledger reads everything, unfiltered"
 
-        syncs = _rows(
-            f"SELECT job_id FROM {TABLE} WHERE event = 'sync.completed' ORDER BY job_id"
-        )
+        syncs = _rows(f"SELECT job_id FROM {TABLE} WHERE event = 'sync.completed' ORDER BY job_id")
         assert len(syncs) == 8, "seven closed jobs plus the running one"
 
     def test_a_later_tick_reads_from_the_watermark_not_from_the_start(self) -> None:
@@ -361,22 +355,14 @@ class TestSweptRowsLandAndResolve:
             self._tick("tick-b")
 
         since = mover.requests[0]["updatedAtStart"]
-        assert _parse_iso(since) <= _parse_iso(_stamp(8)), (
-            "the still-running job must stay at or above the watermark"
-        )
+        assert _parse_iso(since) <= _parse_iso(_stamp(8)), "the still-running job must stay at or above the watermark"
 
     def test_the_tick_seals_after_its_snapshot(self) -> None:
         with _StubMover():
             self._tick("tick-a")
 
-        seal = _rows(
-            f"SELECT tick_id, toString(ts) AS ts FROM {TABLE} "
-            "WHERE event = 'sweep.completed'"
-        )
-        snapshot = _rows(
-            f"SELECT toString(max(ts)) AS ts FROM {TABLE} "
-            "WHERE event = 'connector.configured'"
-        )
+        seal = _rows(f"SELECT tick_id, toString(ts) AS ts FROM {TABLE} WHERE event = 'sweep.completed'")
+        snapshot = _rows(f"SELECT toString(max(ts)) AS ts FROM {TABLE} WHERE event = 'connector.configured'")
         assert len(seal) == 1
         assert seal[0]["ts"] >= snapshot[0]["ts"], "the seal must be written last"
 
@@ -405,9 +391,7 @@ class TestSweptRowsLandAndResolve:
             "ORDER BY ts DESC LIMIT 1"
         )
         assert resolved[0]["status"] == "failed"
-        assert int(resolved[0]["records_reported"]) == 0, (
-            "a reported zero is not an absence"
-        )
+        assert int(resolved[0]["records_reported"]) == 0, "a reported zero is not an absence"
 
     def test_the_summary_resolves_to_the_newest_row_of_the_newest_job(self) -> None:
         with _StubMover() as mover:
@@ -448,9 +432,7 @@ class TestSweptRowsLandAndResolve:
     def test_no_connectors_records_nothing_at_all(self) -> None:
         """An empty configured set is indistinguishable from "all removed"."""
         with _StubMover():
-            code = self.entry.run(
-                io.StringIO(json.dumps({"tick_id": "tick-z", "connectors": []}))
-            )
+            code = self.entry.run(io.StringIO(json.dumps({"tick_id": "tick-z", "connectors": []})))
         assert code == 1
         assert _count(f"SELECT count() AS n FROM {TABLE}") == 0
 
@@ -465,9 +447,9 @@ class TestSweptRowsLandAndResolve:
         code = self._tick("tick-y")
         assert code == 1, "the caller learns the tick was incomplete"
         for event in ("sync.completed", "connector.configured", "sweep.completed"):
-            assert _count(
-                    f"SELECT count() AS n FROM {TABLE} WHERE event = '{event}'"
-                ) == 0, f"an unread tick must write no {event} row"
+            assert _count(f"SELECT count() AS n FROM {TABLE} WHERE event = '{event}'") == 0, (
+                f"an unread tick must write no {event} row"
+            )
 
     def test_a_listing_that_ignores_the_watermark_records_nothing(self) -> None:
         """An unapplied filter is a failed read, not a noisy one.
@@ -482,9 +464,7 @@ class TestSweptRowsLandAndResolve:
         with _StubMover():
             self._tick("tick-a")
         before = _count(f"SELECT count() AS n FROM {TABLE}")
-        seals = _count(
-            f"SELECT count() AS n FROM {TABLE} WHERE event = 'sweep.completed'"
-        )
+        seals = _count(f"SELECT count() AS n FROM {TABLE} WHERE event = 'sweep.completed'")
 
         with _StubMover(honours_filter=False):
             code = self._tick("tick-b")
@@ -493,9 +473,9 @@ class TestSweptRowsLandAndResolve:
         assert _count(f"SELECT count() AS n FROM {TABLE}") == before, (
             "an unfiltered listing must not re-record the history it served"
         )
-        assert _count(
-                f"SELECT count() AS n FROM {TABLE} WHERE event = 'sweep.completed'"
-            ) == seals, "and must not seal, or the page reports itself freshly checked"
+        assert _count(f"SELECT count() AS n FROM {TABLE} WHERE event = 'sweep.completed'") == seals, (
+            "and must not seal, or the page reports itself freshly checked"
+        )
 
     def test_a_connector_awaiting_its_first_connection_is_still_configured(self) -> None:
         """Configured is the first thing the page answers, and it does not
@@ -522,10 +502,7 @@ class TestSweptRowsLandAndResolve:
             assert self.entry.run(io.StringIO(work)) == 0
 
         configured = {
-            row["connector"]
-            for row in _rows(
-                f"SELECT connector FROM {TABLE} WHERE event = 'connector.configured'"
-            )
+            row["connector"] for row in _rows(f"SELECT connector FROM {TABLE} WHERE event = 'connector.configured'")
         }
         assert configured == {CONNECTOR, "awaiting-connection"}
 
@@ -839,9 +816,7 @@ class TestSweptRowsLandAndResolve:
             f"SELECT status FROM {TABLE} WHERE event = 'sync.completed' "
             "AND job_id = 'stranded' ORDER BY ts DESC LIMIT 1"
         )
-        assert resolved[0]["status"] == "unknown", (
-            "a job the sweep can no longer see must not keep reading as running"
-        )
+        assert resolved[0]["status"] == "unknown", "a job the sweep can no longer see must not keep reading as running"
 
     def test_a_stranded_job_is_marked_once_and_not_every_tick(self) -> None:
         """`unknown` is what stops the job being named again.
@@ -864,10 +839,7 @@ class TestSweptRowsLandAndResolve:
             self._tick("tick-b")
             self._tick("tick-c")
 
-        markers = _count(
-            f"SELECT count() AS n FROM {TABLE} WHERE job_id = 'stranded' "
-            "AND status = 'unknown'"
-        )
+        markers = _count(f"SELECT count() AS n FROM {TABLE} WHERE job_id = 'stranded' AND status = 'unknown'")
         assert markers == 1, "the marker must settle, not repeat"
 
     def test_a_stuck_open_job_does_not_pin_the_watermark_for_ever(self) -> None:
@@ -887,6 +859,4 @@ class TestSweptRowsLandAndResolve:
             self._tick("tick-b")
 
         since = _parse_iso(mover.requests[0]["updatedAtStart"])
-        assert since > _parse_iso(stale), (
-            "the stuck job must not hold the read start at its own creation time"
-        )
+        assert since > _parse_iso(stale), "the stuck job must not hold the read start at its own creation time"

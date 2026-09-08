@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 from urllib.parse import unquote_plus
 
 import freezegun
 import pytest
-from airbyte_cdk.models import AirbyteMessage
+from airbyte_cdk.models import AirbyteMessage, SyncMode
 from config import BB_URL, PROXY_URL, BitbucketCloudConfigBuilder
 
 from connector_tests import (
@@ -35,6 +36,10 @@ from connector_tests import (
 _CONNECTOR = "git/bitbucket-cloud"
 _REPOS_URL = f"{BB_URL}/repositories/acme"
 _FROZEN = "2026-07-01T00:00:00Z"
+
+
+def _instant(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _no_literal_none(records: Iterable[AirbyteMessage]) -> None:
@@ -741,8 +746,10 @@ def test_pr_detail_state_advances_so_a_later_sync_resumes(http_mocker: HttpMocke
     assert stored.startswith("2026-06-20T10:00:00"), (
         f"the stamped parent date is what the cursor stores: {state}"
     )
-    # The parent's own state is what a later sync resumes from.
-    assert state["parent_state"]["pull_requests_for_diffstat"]["state"]["updated_on"] == updated
+    # The parent's own state is what a later sync resumes from. The CDK writes
+    # it in its own datetime format, so the instant is what must match.
+    resumed = state["parent_state"]["pull_requests_for_diffstat"]["state"]["updated_on"]
+    assert _instant(resumed) == _instant(updated), f"parent state must carry the listed PR's date: {state}"
 
 
 @freezegun.freeze_time(_FROZEN)
@@ -889,3 +896,67 @@ def test_an_excluded_repository_is_never_asked_of_the_proxy(
     assert walked, "the kept repository was never walked"
     assert all("acme/app.git" in u for u in walked), walked
     assert not any("rospecs" in u for u in walked), walked
+
+
+def _commit_row(sha: str, committed: str) -> dict[str, Any]:
+    return {
+        "sha": sha,
+        "message": "feat: x",
+        "authored_date": committed,
+        "committed_date": committed,
+        "author_name": "Dev",
+        "author_email": "dev@example.com",
+        "committer_name": "Dev",
+        "committer_email": "dev@example.com",
+        "parent_hashes": [],
+        "is_merge": False,
+        "additions": 1,
+        "deletions": 0,
+        "changed_files": 1,
+        "is_in_default_branch": True,
+        "patch_id": None,
+    }
+
+
+def _commits_page(*rows: dict[str, Any], next_page_token: str | None) -> HttpResponse:
+    return HttpResponse(
+        body=json.dumps({"items": list(rows), "next_page_token": next_page_token}), status_code=200
+    )
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_superseded_snapshot_restarts_the_walk_from_the_last_commit_seen(
+    http_mocker: HttpMocker,
+) -> None:
+    """Mid-walk the proxy answers 409: the snapshot the page token points into
+    is gone. The partition must not die on it — the walk restarts from the
+    first page, narrowed to the last committed_date already seen, so nothing
+    before it is fetched twice and nothing after it is lost."""
+    config = BitbucketCloudConfigBuilder().build()
+    http_mocker.get(
+        HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+    )
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS),
+        [
+            _commits_page(
+                _commit_row("a" * 40, "2026-06-10T10:00:00+0000"),
+                _commit_row("b" * 40, "2026-06-11T10:00:00+0000"),
+                next_page_token="gen1-page2",
+            ),
+            HttpResponse(body=json.dumps({"error": "snapshot changed"}), status_code=409),
+            _commits_page(_commit_row("c" * 40, "2026-06-12T10:00:00+0000"), next_page_token=None),
+        ],
+    )
+
+    output = read_stream(_CONNECTOR, "commits", config, sync_mode=SyncMode.incremental)
+
+    assert not output.errors
+    assert [r.record.data["sha"] for r in output.records] == ["a" * 40, "b" * 40, "c" * 40]
+    calls = [unquote_plus(r.url) for r in http_mocker._mocker.request_history if "/v1/commits" in r.url]
+    assert len(calls) == 3, calls
+    assert "page_token=gen1-page2" in calls[1], calls[1]
+    assert "page_token" not in calls[2], f"the restart must begin from the first page: {calls[2]}"
+    assert "since=2026-06-11T10:00:00" in calls[2], f"narrowed to the last committed_date seen: {calls[2]}"
+    assert_records_conform(output.records, _CONNECTOR, "commits", strict=True)

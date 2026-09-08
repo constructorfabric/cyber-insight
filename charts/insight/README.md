@@ -2,6 +2,9 @@
 
 Single canonical unit of delivery for the Insight platform.
 
+See [MCP authentication](../../deploy/MCP_AUTHENTICATION.md) for connection lifetime,
+revocation, and upgrade behavior.
+
 For token-authenticated, read-only SQL execution, see the
 [SQL query API guide](../../deploy/SQL_QUERY_API.md).
 

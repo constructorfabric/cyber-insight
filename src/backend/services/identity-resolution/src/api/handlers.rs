@@ -598,7 +598,7 @@ fn no_person_states(asked: &login_bootstrap::RosterEmail<'_>) -> CanonicalError 
 /// line that makes it auditable rather than silent. The seed refuses to
 /// auto-link the same shape, and an operator may have split the two people
 /// deliberately.
-fn audit_contested_roster_email(
+pub(super) fn audit_contested_roster_email(
     asked: &login_bootstrap::RosterEmail<'_>,
     resolved: &login_bootstrap::RosterEmailMatch,
 ) {
@@ -619,7 +619,7 @@ fn audit_contested_roster_email(
 /// Map a roster-email refusal to its wire shape, and log the two that mean an
 /// install is misconfigured rather than a caller mistaken — each would
 /// otherwise surface only as an unexplained refusal for every person.
-fn refused_roster_email(refusal: login_bootstrap::RosterEmailRefusal) -> CanonicalError {
+pub(super) fn refused_roster_email(refusal: login_bootstrap::RosterEmailRefusal) -> CanonicalError {
     use login_bootstrap::RosterEmailRefusal as R;
     match refusal {
         R::AddressMissing => {
