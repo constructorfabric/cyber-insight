@@ -44,11 +44,16 @@ in DESIGN and FEATURE; a PRD need not prescribe a test harness.
 | No cross-tenant disclosure. | Clarify responses, nested relationships and diagnostic surfaces, including identifier collisions. |
 | Operation should be economical. | Identify the relevant compute, storage or operator-effort cost and the unit of useful work. |
 
-Keep one authoritative FR/NFR definition and ID. Any local requirement can carry
-`**Vector**`, and an NFR also `**Threshold**` and `**Rationale**`; the threshold may
-be an absolute invariant rather than a number. A vector qualifies a claim, not a
-section: correctness and access-control obligations are usually functional, so most
-vector-bearing requirements are FRs. Preserve agreed targets and clearly label
+Keep one authoritative FR/NFR definition and ID. An NFR carries `**Threshold**` and
+`**Rationale**`; the threshold may be an absolute invariant rather than a number.
+
+A vector qualifies a **claim**, not a requirement and not a section. The same
+requirement is often verified under different vectors depending on what a scenario
+asserts about it — that a resolver returns the right person is Reliability, that it
+covers every source is Versatility. So a requirement carries `**Vector**` only where
+one vector is intrinsic to it, such as a latency budget or an isolation property.
+Where scenarios span vectors, the requirement carries none and each scenario names
+its own. Preserve agreed targets and clearly label
 proposed targets and open decisions with an owner or source of input. Missing
 conditions invite clarification, not a fabricated metric or an exclusion.
 
