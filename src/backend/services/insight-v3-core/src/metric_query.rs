@@ -16,6 +16,8 @@ const MAX_RESULT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct MetricQuery {
+    #[serde(default)]
+    database: Option<String>,
     table: String,
     fields: Vec<Field>,
     #[serde(default)]
@@ -57,7 +59,10 @@ impl Direction {
 
 #[derive(Debug, Deserialize)]
 struct Field {
-    json: String,
+    #[serde(default)]
+    json: Option<String>,
+    #[serde(default)]
+    column: Option<String>,
     r#type: FieldType,
     #[serde(default)]
     agg: Option<Agg>,
@@ -66,20 +71,69 @@ struct Field {
 
 #[derive(Debug, Deserialize)]
 struct Filter {
-    json: String,
+    #[serde(default)]
+    json: Option<String>,
+    #[serde(default)]
+    column: Option<String>,
     r#type: FieldType,
     op: FilterOp,
     value: serde_json::Value,
 }
 
 impl Filter {
-    fn bind(&self) -> Result<FilterBind, MetricQueryError> {
+    fn source(&self) -> Result<Source<'_>, MetricQueryError> {
+        Source::resolve(self.json.as_deref(), self.column.as_deref())
+            .ok_or_else(|| MetricQueryError::FieldSource("a filter".to_owned()))
+    }
+
+    fn bind(&self, source: Source<'_>) -> Result<FilterBind, MetricQueryError> {
         match self.r#type {
             FieldType::String => self.value.as_str().map(|v| FilterBind::Str(v.to_owned())),
             FieldType::Int => self.value.as_i64().map(FilterBind::Int),
             FieldType::Float => self.value.as_f64().map(FilterBind::Float),
         }
-        .ok_or_else(|| MetricQueryError::FilterValue(self.json.clone()))
+        .ok_or_else(|| MetricQueryError::FilterValue(source.name().to_owned()))
+    }
+}
+
+impl Field {
+    fn source(&self) -> Result<Source<'_>, MetricQueryError> {
+        Source::resolve(self.json.as_deref(), self.column.as_deref())
+            .ok_or_else(|| MetricQueryError::FieldSource(format!("field `{}`", self.as_name)))
+    }
+}
+
+/// Where a value is read from: a key inside the `raw_data` payload, or a
+/// typed column of the table itself.
+#[derive(Debug, Clone, Copy)]
+enum Source<'a> {
+    Json(&'a str),
+    Column(&'a str),
+}
+
+impl<'a> Source<'a> {
+    fn resolve(json: Option<&'a str>, column: Option<&'a str>) -> Option<Self> {
+        match (json, column) {
+            (Some(json), None) => Some(Self::Json(json)),
+            (None, Some(column)) => Some(Self::Column(column)),
+            (None, None) | (Some(_), Some(_)) => None,
+        }
+    }
+
+    fn name(self) -> &'a str {
+        match self {
+            Self::Json(name) | Self::Column(name) => name,
+        }
+    }
+
+    fn sql(self, field_type: FieldType) -> Result<String, MetricQueryError> {
+        if !is_identifier(self.name()) {
+            return Err(MetricQueryError::Identifier(self.name().to_owned()));
+        }
+        Ok(match self {
+            Self::Json(json) => field_type.extract(json),
+            Self::Column(column) => format!("`{column}`"),
+        })
     }
 }
 
@@ -207,11 +261,17 @@ pub(crate) enum MetricQueryError {
     NoFields,
     #[error("filter value for `{0}` does not match its declared type")]
     FilterValue(String),
+    #[error("{0} must name exactly one of `json` or `column`")]
+    FieldSource(String),
 }
 
 impl MetricQuery {
     pub(crate) fn table(&self) -> &str {
         &self.table
+    }
+
+    pub(crate) fn database(&self) -> Option<&str> {
+        self.database.as_deref()
     }
 
     /// The columns a result carries, in order — each field's `as_name`. What
@@ -227,6 +287,11 @@ impl MetricQuery {
         if !is_identifier(&self.table) {
             return Err(MetricQueryError::Identifier(self.table.clone()));
         }
+        if let Some(database) = self.database()
+            && !is_identifier(database)
+        {
+            return Err(MetricQueryError::Identifier(database.to_owned()));
+        }
         if self.fields.is_empty() {
             return Err(MetricQueryError::NoFields);
         }
@@ -235,19 +300,16 @@ impl MetricQuery {
         let mut as_names = HashSet::with_capacity(self.fields.len());
         let mut column_types = HashMap::with_capacity(self.fields.len());
         for field in &self.fields {
-            if !is_identifier(&field.json) {
-                return Err(MetricQueryError::Identifier(field.json.clone()));
-            }
+            let read = field.source()?.sql(field.r#type)?;
             if !is_identifier(&field.as_name) {
                 return Err(MetricQueryError::Identifier(field.as_name.clone()));
             }
             as_names.insert(field.as_name.as_str());
             column_types.insert(field.as_name.clone(), field.r#type);
 
-            let extraction = field.r#type.extract(&field.json);
             let expression = match field.agg {
-                Some(agg) => format!("{}({extraction})", agg.sql()),
-                None => extraction,
+                Some(agg) => format!("{}({read})", agg.sql()),
+                None => read,
             };
             select_parts.push(format!("{expression} AS `{}`", field.as_name));
         }
@@ -264,15 +326,17 @@ impl MetricQuery {
         let mut where_parts = Vec::with_capacity(self.filters.len());
         let mut binds = Vec::with_capacity(self.filters.len());
         for filter in &self.filters {
-            if !is_identifier(&filter.json) {
-                return Err(MetricQueryError::Identifier(filter.json.clone()));
-            }
-            let extraction = filter.r#type.extract(&filter.json);
-            where_parts.push(format!("{extraction} {} ?", filter.op.sql()));
-            binds.push(filter.bind()?);
+            let source = filter.source()?;
+            let read = source.sql(filter.r#type)?;
+            where_parts.push(format!("{read} {} ?", filter.op.sql()));
+            binds.push(filter.bind(source)?);
         }
 
-        let mut sql = format!("SELECT {} FROM `{}`", select_parts.join(", "), self.table);
+        let from = match self.database() {
+            Some(database) => format!("`{database}`.`{}`", self.table),
+            None => format!("`{}`", self.table),
+        };
+        let mut sql = format!("SELECT {} FROM {from}", select_parts.join(", "));
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));
@@ -662,6 +726,163 @@ mod tests {
         assert!(matches!(
             metric.compile(),
             Err(MetricQueryError::GroupBy(_))
+        ));
+    }
+
+    #[test]
+    fn a_database_qualifies_the_table() {
+        let metric = query(json!({
+            "database": "silver",
+            "table": "git_commits",
+            "fields": [{ "column": "author", "type": "string", "as_name": "author" }]
+        }));
+
+        assert_eq!(metric.database(), Some("silver"));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("FROM `silver`.`git_commits`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_query_without_a_database_still_reads_the_bare_table() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "json": "day", "type": "string", "as_name": "day" }]
+        }));
+
+        assert_eq!(metric.database(), None);
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(compiled.sql.contains("FROM `events`"), "{}", compiled.sql);
+    }
+
+    #[test]
+    fn a_field_naming_a_column_reads_it_without_json_extraction() {
+        let metric = query(json!({
+            "database": "silver",
+            "table": "git_commits",
+            "fields": [{ "column": "lines_changed", "type": "int", "as_name": "lines" }]
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("`lines_changed` AS `lines`"),
+            "{}",
+            compiled.sql
+        );
+        assert!(!compiled.sql.contains("JSONExtract"), "{}", compiled.sql);
+    }
+
+    #[test]
+    fn an_aggregate_wraps_a_column_as_it_wraps_an_extraction() {
+        let metric = query(json!({
+            "database": "silver",
+            "table": "git_commits",
+            "fields": [
+                { "column": "lines_changed", "type": "int", "agg": "sum", "as_name": "total" }
+            ]
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("sum(`lines_changed`) AS `total`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_filter_on_a_column_compares_it_and_still_binds_the_value() {
+        let metric = query(json!({
+            "database": "silver",
+            "table": "git_commits",
+            "fields": [{ "column": "author", "type": "string", "as_name": "author" }],
+            "filters": [
+                { "column": "event", "type": "string", "op": "eq", "value": "commit" }
+            ]
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("WHERE `event` = ?"),
+            "{}",
+            compiled.sql
+        );
+        assert_eq!(compiled.binds, vec!["commit".to_owned()]);
+    }
+
+    #[test]
+    fn a_field_naming_both_a_json_key_and_a_column_is_refused() {
+        let metric = query(json!({
+            "table": "git_commits",
+            "fields": [
+                { "json": "lines", "column": "lines_changed", "type": "int", "as_name": "lines" }
+            ]
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::FieldSource(_))
+        ));
+    }
+
+    #[test]
+    fn a_field_naming_neither_a_json_key_nor_a_column_is_refused() {
+        let metric = query(json!({
+            "table": "git_commits",
+            "fields": [{ "type": "int", "as_name": "lines" }]
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::FieldSource(_))
+        ));
+    }
+
+    #[test]
+    fn a_filter_naming_neither_a_json_key_nor_a_column_is_refused() {
+        let metric = query(json!({
+            "table": "git_commits",
+            "fields": [{ "column": "author", "type": "string", "as_name": "author" }],
+            "filters": [{ "type": "string", "op": "eq", "value": "commit" }]
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::FieldSource(_))
+        ));
+    }
+
+    #[test]
+    fn a_database_outside_the_identifier_charset_is_refused() {
+        let metric = query(json!({
+            "database": "silver`; DROP TABLE git_commits; --",
+            "table": "git_commits",
+            "fields": [{ "json": "author", "type": "string", "as_name": "author" }]
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::Identifier(_))
         ));
     }
 }
