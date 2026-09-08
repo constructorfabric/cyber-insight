@@ -77,6 +77,13 @@ only part of that evidence. For performance, state the measurement boundary and
 any derived component budget; retain end-to-end verification of the original
 target. Percentiles from separate components do not simply add up.
 
+Verification is not always a test run. Where operational telemetry already
+measures the property on real traffic — latency percentiles, error rates,
+resource use against what was reserved — observing it is the stronger evidence,
+and a synthetic run at an invented scale is the weaker one. Say which was used,
+over what window and in which environment; observation validates after the fact
+and cannot gate a change.
+
 FEATURE section 1.2 references applicable FR/NFR IDs. Flows, algorithms and DoDs
 describe its contribution. Preserve canonical section 6 Acceptance Criteria as
 the feature's readable completion checklist. Insight's section 7 Testing maps

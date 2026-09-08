@@ -42,8 +42,9 @@ IDs may remain for compatibility; they are not this skill's traceability key.
 Each scenario belongs to the FEATURE identified once by `**Feature**` in Testing.
 Its `**Requirements**` field cites the relevant upstream FR/NFR subset already
 listed in section 1.2. This makes a precise path through the feature without
-inserting an AC layer. An applicable NFR needs a scenario, shared-test link, or
-an explicit deferred entry naming the owner and reason.
+inserting an AC layer. An applicable NFR needs a scenario or a shared-test link;
+where neither is possible yet, the blocking decision belongs in feature context
+with its owner, not as a placeholder scenario.
 
 An issue is a planning surface. If a FEATURE exists, keep Testing there and link
 the issue to it when issue editing is authorized. If no FEATURE exists, use the
@@ -64,8 +65,8 @@ differences `exact`, `known-diff(direction)`, or `merge` where appropriate.
 New specs may precede code; say so.
 
 Keep unresolved product decisions in feature context, with owners and resolution
-points. A test with no agreed upstream requirement is deferred and identifies
-that missing link. Missing infrastructure is also a gap, never a reason to mark
+points. A claim with no agreed upstream requirement is one of those decisions,
+not a scenario; record the missing link there. Missing infrastructure is also a gap, never a reason to mark
 an applicable vector n/a. Do not manufacture targets, fixtures, supported-source
 counts, or degraded behaviour.
 
@@ -87,14 +88,31 @@ Choose the cheapest existing suite capable of falsifying the claim:
 | Identity | `rust-unit` → `identity-e2e` (`tests/datapath/identity`) → `stand-api` |
 | Ingestion | `connector-tests` (`src/ingestion/connectors/*/*/tests`) → `dbt-tests` (`src/ingestion/dbt/tests`) → `metric-spec` |
 | Cross-cutting | `ci-static` (scans and gates in `.github/`) or `manual` |
+| Already in operation | `observed` — read from operational telemetry rather than run |
 
 Verify tools before naming them: inspect the relevant test directory, package
 scripts or CI workflows. `scripts/counts.sh` takes repo-wide denominators
 and reports MOVED rather than a misleading zero when a source has shifted; take a
 count from it rather than quoting one. A browser scenario must need browser-observable
-behaviour. Performance and Efficiency may use `manual` when no suitable load or
-soak lane exists, but must identify the missing procedure and conditions.
-Measure them on the same approved reference fixture at each NFR's own load.
+behaviour.
+
+`observed` covers a claim that operational telemetry already measures on real
+traffic, so no test is run: per-endpoint latency percentiles, request and error
+rates, and per-service reserved-versus-used CPU and memory are all recorded
+continuously. Prefer it to `manual` for Performance and Efficiency — a synthetic
+run at an invented scale is weaker evidence than a percentile from real use, and
+inventing that scale is usually what blocks the scenario.
+
+An `observed` line states the panel or query, the window, and the environment it
+was read from. Without those it is an assertion, not evidence. Two limits are
+part of using it honestly: it is lagging, so it validates after the fact and
+cannot gate a merge; and it describes the environment measured, so a lightly
+loaded stand says little about a production-scale organisation. Where traffic
+from load runs shares the same logs or metric store, say whether it was excluded.
+
+Keep `manual` for a claim that needs a procedure someone performs. If a claim
+needs a lane that does not exist, it is not a scenario yet — record the decision
+in feature context with its owner.
 
 ## 4. Write Testing
 
@@ -111,9 +129,6 @@ targets instead of defining new ones here.}
 - [ ] 1. **Scenario name** — Security · identity-e2e — perform an action → observe the required outcome.
   **Requirements**: `cpt-{system}-nfr-{slug}`.
   **Test**: Not implemented.
-- **deferred** 2. **Scenario name** — Performance · manual — perform the defined measurement → satisfy the upstream target.
-  **Requirements**: `cpt-{system}-nfr-{other-slug}`.
-  **Blocked by**: {owner, reason and resolution point}.
 
 **Versatility** — n/a: {why no local or inherited obligation applies to this feature}.
 ```
@@ -141,10 +156,10 @@ another requirement namespace.
 - `**Test**` links to the exact file and function or case when implemented.
   Otherwise distinguish `Not implemented` from `Not yet mapped to the complete
   scenario`; a directory is not implementation evidence.
-- Replace the checkbox with `**deferred**` when a scenario cannot yet be defined
-  or executed. Preserve its number, vector, requirement reference and owner.
-  If the requirement itself is missing, say so and link the decision that must
-  establish it; do not cite an unrelated NFR.
+- Write a scenario only where its claim, requirement and oracle are settled. A
+  scenario that cannot yet be defined is an unresolved decision, not a test:
+  record it in feature context with its owner and resolution point, and add the
+  scenario once the decision lands.
 - Consider all five vectors and suggest missing scenarios for applicable obligations.
   Explain exclusions when useful; missing categories alone do not add a requirement
   or readiness gate. An inherited obligation still needs its applicable evidence.
@@ -199,7 +214,7 @@ Use the guide for advisory improvement suggestions after canonical validation.
 Review the chain in both directions: PRD IDs resolve; DESIGN allocates responsibility;
 the FEATURE declares its requirements; scenarios reference the right subset;
 implemented test links resolve and tests cite their owner. Explain missing or
-deferred evidence without certifying an unmet requirement. This review adds no
+pending evidence without certifying an unmet requirement. This review adds no
 QV pass/fail gate. CFS validates canonical artifact references; nothing here
 certifies coverage or results.
 
