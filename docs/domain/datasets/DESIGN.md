@@ -1,10 +1,10 @@
 ---
-version: 1.0
+version: 1.1
 status: proposed
 date: 2026-09-08
 ---
 
-# Technical Design — Data Sets
+# Technical Design — Datasets
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-design-datasets`
 
@@ -27,15 +27,10 @@ date: 2026-09-08
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
   - [3.8 Deployment Topology](#38-deployment-topology)
 - [4. Additional context](#4-additional-context)
-  - [The declaration](#the-declaration)
-  - [Rules a declaration must satisfy](#rules-a-declaration-must-satisfy)
-  - [Anatomy of a dataset folder](#anatomy-of-a-dataset-folder)
-  - [Adding a dataset](#adding-a-dataset)
-  - [Lifecycle](#lifecycle)
-  - [Kinds of dataset](#kinds-of-dataset)
-  - [Tenant-defined datasets](#tenant-defined-datasets)
-  - [Access rules](#access-rules)
-  - [Not a dataset](#not-a-dataset)
+  - [Dataset authoring and lifecycle](#dataset-authoring-and-lifecycle)
+  - [Tenant-defined datasets (planned)](#tenant-defined-datasets-planned)
+  - [Access policies (planned)](#access-policies-planned)
+  - [Validation limits and open semantics](#validation-limits-and-open-semantics)
 - [5. Traceability](#5-traceability)
 
 <!-- /toc -->
@@ -44,25 +39,24 @@ date: 2026-09-08
 
 ### 1.1 Architectural Vision
 
-A dataset is a declaration bound to one prepared relation. The declaration says what the
-relation is for: its grain, the columns that may be grouped or filtered, the columns that may
-be folded, the columns that carry event time, the labels that travel with values, and how the
-relation must be read to be duplicate-free. Everything downstream — discovery, planning,
-compilation, access rules — reads that declaration and nothing else about storage.
+A dataset declaration binds one prepared relation to its queryable fields and row identity.
+The analytics service embeds shipped declarations, validates them against a column snapshot,
+and exposes their query metadata through an in-memory registry and discovery API.
 
-The declaration lives beside the model that materializes it, one folder per dataset, so a
-dataset is reviewed, shipped and reasoned about as one unit. The service embeds the shipped
-declarations at build time and merges them with tenant-defined ones into a single in-memory
-registry. One loader, one validator, one list.
+Dataset models apply deduplication, attribution, and exclusion rules before queries run.
+The [query engine](https://github.com/constructorfabric/insight/blob/d912c610da33259475d817fc009d34de35b8fe10/docs/domain/query-engine/DESIGN.md) consumes declarations for query execution;
+this module owns definitions and discovery.
 
-Correctness is a property of the relation, not of the question: dedup, attribution and
-exclusion are applied once by the model. The declaration then states the grain that results,
-and a data test enforces it. Realises [PRD.md](PRD.md); the consumer is the
-[query engine](../query-engine/DESIGN.md).
+**Implemented**: shipped declarations, offline schema validation, registry lookup, admin-only
+discovery, and the commits and file changes relations.
+
+**Planned**: tenant-defined datasets, approval and versioning, live-catalog validation, richer
+field metadata, value suggestions, and access policies. Proposed extensions appear in
+Section 4; they are not part of the current runtime.
 
 ### 1.2 Architecture Drivers
 
-**ADRs**: none yet; the first is expected with tenant-defined datasets.
+**ADRs**: none. Tenant-defined dataset storage and composition remain design proposals.
 
 #### Functional Drivers
 
@@ -73,147 +67,162 @@ and a data test enforces it. Realises [PRD.md](PRD.md); the consumer is the
 | `cpt-insightspec-ds-fr-fields` | dimensions with `label_field`, measurables, time fields with one default; every stable column declared |
 | `cpt-insightspec-ds-fr-absent-values` | `absent_value` required on a nullable dimension, refused on a non-nullable one |
 | `cpt-insightspec-ds-fr-correctness-baked` | dedup, attribution and supersede rules live in the model; the shared dedup is its own relation |
-| `cpt-insightspec-ds-fr-registry` | one in-memory registry: shipped from the binary, tenant-defined from the service store |
-| `cpt-insightspec-ds-fr-validated` | one validator against the field catalog: the embedded snapshot in CI, the live catalog at load |
+| `cpt-insightspec-ds-fr-registry` | embedded shipped declarations; tenant-store integration planned |
+| `cpt-insightspec-ds-fr-validated` | validation against the embedded snapshot; live-catalog validation planned |
 | `cpt-insightspec-ds-fr-discovery` | `GET /v1/datasets` and `GET /v1/datasets/{key}` describe declarations, never storage |
-| `cpt-insightspec-ds-fr-field-metadata` | declaration gains label, description and unit; a values endpoint reads distinct values |
+| `cpt-insightspec-ds-fr-field-metadata` | planned: field labels, descriptions, units, and value suggestions |
 | `cpt-insightspec-ds-fr-first-two` | `git_commits` and `git_file_changes`, over the shared authored-change relation |
-| `cpt-insightspec-ds-fr-own-datasets` | three runtime forms over the same declaration shape |
-| `cpt-insightspec-ds-fr-own-validated` | runtime declarations take the same validator and the same violations |
-| `cpt-insightspec-ds-fr-approval` | state on the stored declaration; the registry exposes drafts to their author alone |
-| `cpt-insightspec-ds-fr-versioning` | a new row per edit, keyed by dataset and version, with author and approver |
-| `cpt-insightspec-ds-fr-access-rules` | policies declared beside the fields they bind; the engine enforces them at plan time |
+| `cpt-insightspec-ds-fr-own-datasets` | planned: derived, saved-query, and imported datasets |
+| `cpt-insightspec-ds-fr-own-validated` | planned: shared validation rules and errors |
+| `cpt-insightspec-ds-fr-approval` | planned: author-only drafts and administrator approval |
+| `cpt-insightspec-ds-fr-versioning` | proposed: version records with author and approver |
+| `cpt-insightspec-ds-fr-access-rules` | planned: declared policies, enforced by the query engine |
 
 #### NFR Allocation
 
 | NFR ID | NFR Summary | Allocated To | Design Response | Verification Approach |
 |--------|-------------|--------------|-----------------|----------------------|
-| `cpt-insightspec-ds-nfr-additive` | a new dataset costs no engine change | declaration format | the engine reads declarations; adding one is a folder plus a build-script pickup | a dataset added with no diff under the engine modules |
-| `cpt-insightspec-ds-nfr-fail-early` | broken definitions never reach people | validator | shipped declarations validated in unit tests against the embedded snapshot; runtime ones validated on save | tests over deliberately broken declarations |
-| `cpt-insightspec-ds-nfr-cheap-discovery` | discovery costs no warehouse read | registry | declarations are resident; describe reads memory | discovery handler holds no ClickHouse call |
+| `cpt-insightspec-ds-nfr-additive` | dataset extensibility | declaration format | the engine reads declarations; adding one is a folder plus a build-script pickup | a dataset added with no diff under the engine modules |
+| `cpt-insightspec-ds-nfr-fail-early` | validation before use | validator | shipped declarations validated in unit tests against the embedded snapshot; runtime validation on save is planned | tests over deliberately broken declarations |
+| `cpt-insightspec-ds-nfr-cheap-discovery` | discovery makes no warehouse queries | registry | declarations are resident; describe reads memory | discovery handler holds no ClickHouse call |
 
 ### 1.3 Architecture Layers
 
 ```text
-src/ingestion/datasets/<key>/          dbt model · properties · declaration · README
-        │ dbt build                            │ build script (named build context)
-        ▼                                      ▼
-ClickHouse relation  ◀── validated against ── analytics service
-                                               ├─ domain::datasets   registry · validator · describe
-                                               └─ api::datasets      GET /v1/datasets[/{key}]
-                                                       │
-                                                 query engine, constructor
+dataset folder
+  model + schema.yml -- dbt build --> prepared relation
+  dataset.yaml ------ build.rs ---> embedded declarations
+                                         |
+column snapshot --------------------> validator
+                                         |
+                                      registry
+                                         |
+                                  discovery API
 ```
 
 - [ ] `p3` - **ID**: `cpt-insightspec-ds-tech-layers`
 
 | Layer | Responsibility | Technology |
-|-------|---------------|------------|
-| Presentation | lists what can be asked about | React constructor page |
-| Application | admin gate, describe, respond | Rust, axum |
-| Domain | declaration model, validation, registry, describe | Rust, serde_yaml |
-| Data definition | model, dbt properties, declaration, README per dataset | dbt, YAML |
-| Infrastructure | prepared relations | ClickHouse MergeTree |
+|---|---|---|
+| Consumer | Dataset selection and query construction | Constructor page, query engine |
+| API | Administrator check and discovery responses | Rust, axum |
+| Domain | Declaration types, validation, registry, descriptions | Rust, serde_yaml |
+| Data preparation | Dataset relations and grain tests | dbt, ClickHouse |
 
 ## 2. Principles & Constraints
 
 ### 2.1 Design Principles
 
-#### A dataset is a declaration, not a table
+#### Declared query surface
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-principle-declaration`
 
-The relation is an implementation detail of the dataset. Consumers see the declaration:
-grain, fields, labels, time, policies. Nothing downstream may reach past it to a column the
-declaration does not name.
+Consumers may reference only declared fields. Storage metadata remains internal to the
+query engine and registry.
 
-#### Everything about one dataset in one folder
+#### Dataset colocation
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-principle-colocation`
 
-Model, properties, declaration and README live together, outside the medallion layout, so a
-dataset is added, reviewed and deleted as one unit and its parts cannot drift.
+Keep the model, dbt properties, declaration, and README together so changes can be reviewed
+as one unit. Shared preparation models remain outside individual dataset folders.
 
-#### Correctness belongs to the relation
+#### Prepared-data correctness
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-principle-correct-relation`
 
-Dedup, attribution and exclusion are applied once where the data is built. A dataset's grain
-is then a fact a test can enforce, not a rule each question must remember.
+Apply counting and attribution rules in data preparation. Verify the resulting row identity
+with dbt uniqueness tests.
 
-#### One registry, whoever wrote the declaration
+#### Shared registry contract
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-principle-one-registry`
 
-Shipped and tenant-defined declarations share one shape, one validator and one list. The only
-differences are where the declaration is stored and who may see it.
+The planned tenant-defined extension uses the same declaration contract and validator as
+shipped datasets, with additional persistence and visibility controls.
 
 ### 2.2 Constraints
 
-#### Shipped declarations ship with the binary
+#### Embedded shipped declarations
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-constraint-embedded`
 
-The datasets folder is outside the service's build context, so it arrives as a named
-additional build context and the build script embeds every `dataset.yaml`. A shipped
-declaration is never written to any database and never edited in a running installation.
+Shipped declarations are embedded at build time and change only with a product release.
+They are not stored in a runtime database.
 
-#### dbt must not read declarations
+#### dbt declaration exclusion
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-constraint-dbt-ignores-declarations`
 
-The datasets folder is a dbt model path, so dbt would otherwise try to parse `dataset.yaml`
-as its own properties. `.dbtignore` excludes it by name.
+The datasets directory is a dbt model path. `.dbtignore` excludes `dataset.yaml` so dbt does
+not parse declarations as model properties.
 
-#### Every named column must exist
+#### Catalog validation
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-constraint-catalog-checked`
 
-A declaration is only admissible if the catalog carries every column it names with a
-compatible type, its read discipline matches the relation's engine family, and it declares
-exactly one default time field and a non-empty row identity.
+Declarations must satisfy the validator's field, type, read-discipline, time-field, and
+row-identity checks against the supplied catalog.
 
-#### Prepared relations only
+#### Prepared relations
 
 - [ ] `p1` - **ID**: `cpt-insightspec-ds-constraint-prepared-only`
 
-A dataset binds one relation in the serving database. No raw or intermediate layer, no
-query-time joins beyond a declared lookup, no writes.
+A dataset binds one prepared serving relation. Raw and intermediate relations, writes, and
+query-time joins beyond declared lookups are outside this contract.
 
 ## 3. Technical Architecture
 
 ### 3.1 Domain Model
 
-**Technology**: YAML declarations, Rust types, a JSON snapshot of the warehouse columns.
+**Technology**: YAML declarations, Rust domain types, JSON column snapshot.
 
-**Location**: `src/ingestion/datasets/`, `src/backend/services/analytics/src/domain/datasets/`
+**Location**: `src/ingestion/datasets/` and
+`src/backend/services/analytics/src/domain/datasets/`.
 
-**Core Entities**:
+| Entity | Responsibility | Source |
+|---|---|---|
+| Dataset | Relation binding, queryable fields, and row identity | `datasets/declaration.rs` |
+| Dimension | Grouping/filtering field, optional label field, null representation | `datasets/declaration.rs` |
+| Measurable | Numeric field available for aggregation | `datasets/declaration.rs` |
+| TimeField | Query time field with a default marker | `datasets/declaration.rs` |
+| FieldCatalog | Relations, engine families, and typed columns | `field_catalog/columns.snapshot.json` |
+| DeclarationError | Validation failure with dataset and field context | `datasets/validate.rs` |
+| DatasetDescription | Public query metadata | `datasets/describe.rs` |
 
-| Entity | Description | Schema |
-|--------|-------------|--------|
-| Dataset | key, database, relation, read discipline, tenant field, time fields, dimensions, measurables, row identity | `datasets/declaration.rs` |
-| Dimension | field, optional label field, absent value when nullable | `datasets/declaration.rs` |
-| Measurable | a numeric column an aggregate may fold | `datasets/declaration.rs` |
-| TimeField | an event-time column; exactly one is the default | `datasets/declaration.rs` |
-| FieldCatalog | the relations, engines and columns declarations are checked against | `field_catalog/columns.snapshot.json` |
-| DeclarationError | why a declaration is inadmissible, naming the dataset and field | `datasets/validate.rs` |
-| DatasetDescription | the queryable surface, without storage | `datasets/describe.rs` |
+#### Declaration fields
 
-**Relationships**:
-- Dataset → FieldCatalog: every named column is checked; a mismatch is a `DeclarationError`.
-- Dataset → relation: one dataset binds exactly one prepared relation.
-- Dataset → DatasetDescription: describe drops database, relation, read discipline, tenant
-  field and row identity.
+| Field | Meaning |
+|---|---|
+| `key` | Unique dataset identifier |
+| `database`, `relation` | Prepared relation backing the dataset |
+| `read_discipline` | `plain` or `final`, compatible with the relation's engine family |
+| `tenant_field` | Column used for tenant scoping by the query engine |
+| `time_fields` | Event-time fields, exactly one marked as default |
+| `dimensions` | Grouping/filtering fields, optional `label_field` and `absent_value` |
+| `measurables` | Numeric fields available for aggregation |
+| `row_identity` | Non-empty list of fields defining row uniqueness |
+
+For a complete example, see
+[the file changes declaration](../../../src/ingestion/datasets/git_file_changes/dataset.yaml).
+It binds `git_file_changes`, defaults to `authored_at`, associates `author_email` with
+`author_name`, and declares `__unknown__` for null `source_id` values.
+
+`row_identity` declares grain; it does not enforce database uniqueness. The dataset's dbt
+test verifies uniqueness against materialized rows.
+
+A `DatasetDescription` exposes query metadata and omits the database, relation, read
+discipline, tenant field, and row identity. A dimension's public `label` names its result
+column, such as `author_email_label`, rather than the backing label field `author_name`.
 
 ### 3.2 Component Model
 
 ```text
-datasets folder ──build script──▶ registry ──▶ describe ──▶ discovery API
-                                     ▲
-                    tenant store ────┘ (later)
-                                     │
-                                validator ──▶ field catalog
+embedded declarations + column snapshot
+                   |
+                validator
+                   |
+                registry --> describe --> discovery API
 ```
 
 #### Dataset declarations
@@ -222,22 +231,29 @@ datasets folder ──build script──▶ registry ──▶ describe ──�
 
 ##### Why this component exists
 
-Something must state what a relation is for, in a form both a person and the engine can read.
+Defines a relation's query contract independently of query execution.
 
 ##### Responsibility scope
 
-The declaration format and its parsed types; one folder per dataset holding model, dbt
-properties, `dataset.yaml` and README; the build script that gathers shipped declarations
-through the `DATASETS_DIR` path.
+Owns declaration types and build-time collection through `DATASETS_DIR`. The analytics image
+receives the datasets directory as a named additional build context. Each directory
+under `src/ingestion/datasets/<key>/` contains:
+
+| File | Purpose |
+|---|---|
+| `<key>.sql` | dbt model |
+| `schema.yml` | Column documentation and row-identity test |
+| `dataset.yaml` | Query declaration |
+| `README.md` | Grain, provenance, and semantic caveats |
 
 ##### Responsibility boundaries
 
-Knows nothing about questions, HTTP or tenants. Does not build the relation; dbt does.
+dbt builds the relation. The declaration does not execute queries or handle HTTP requests.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-validator` — checked by
-- `cpt-insightspec-ds-component-registry` — held by
+- `cpt-insightspec-ds-component-validator` — validates declarations
+- `cpt-insightspec-ds-component-registry` — loads declarations
 
 #### Validator
 
@@ -245,25 +261,32 @@ Knows nothing about questions, HTTP or tenants. Does not build the relation; dbt
 
 ##### Why this component exists
 
-A declaration that outgrew its relation must fail loudly and early, in the same words
-wherever it came from.
+Rejects declarations incompatible with their schema catalog.
 
 ##### Responsibility scope
 
-Checks key shape, relation presence, column presence and type class per role, nullability
-against `absent_value`, label fields, read discipline against the engine family, exactly one
-default time field, a non-empty row identity, no duplicate keys, and that a declared sentinel
-carries no parameter placeholder.
+- Require a lowercase snake_case key and an existing relation.
+- Check every referenced column and its role-compatible type: text, UUID, boolean, or
+  numeric dimensions; numeric measurables; date or datetime time fields.
+- Require `absent_value` for nullable dimensions and reject it for non-nullable dimensions.
+- Require a text or UUID tenant field; label fields must exist and have printable types.
+- Reject duplicate fields within the time-field, dimension, and measurable lists.
+- Match `read_discipline` to the engine family; merge-dependent engines require `final`.
+- Require exactly one default time field and a non-empty row identity.
+- Reject sentinels containing parameter placeholders.
+
+The registry additionally rejects duplicate dataset keys. Null representation does not
+define normalization of empty strings or source-specific missing-value sentinels.
 
 ##### Responsibility boundaries
 
-One implementation for shipped and tenant-defined declarations. Does not read the warehouse
-itself; it is given a catalog.
+Receives a catalog; performs no warehouse reads. It checks schema compatibility, not row
+uniqueness or the correctness of deduplication and attribution.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-field-catalog` — reads
-- `cpt-insightspec-ds-component-registry` — used by
+- `cpt-insightspec-ds-component-field-catalog` — supplies schema metadata
+- `cpt-insightspec-ds-component-registry` — invokes validation
 
 #### Field catalog
 
@@ -271,21 +294,21 @@ itself; it is given a catalog.
 
 ##### Why this component exists
 
-Validation needs to know what the warehouse actually holds.
+Provides schema metadata for offline validation.
 
 ##### Responsibility scope
 
-The relations, engine families and typed columns available; loaded from the snapshot
-committed in the repository, which the DDL dump regenerates.
+Loads the committed column snapshot regenerated by the bootstrap DDL dump. The snapshot
+contains relation names, engine families, and column types.
 
 ##### Responsibility boundaries
 
-A snapshot, not a live connection; the live-catalog read that tenant-defined datasets need
-arrives with them.
+The snapshot describes the generated schema, not a running warehouse. Live-catalog loading
+and invalidation for tenant-defined datasets remain planned.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-validator` — read by
+- `cpt-insightspec-ds-component-validator` — consumes the catalog
 
 #### Registry
 
@@ -293,23 +316,23 @@ arrives with them.
 
 ##### Why this component exists
 
-Every consumer must see one list, whoever wrote each entry.
+Provides shared declaration lookup and enumeration.
 
 ##### Responsibility scope
 
-Parses and validates the embedded declarations once, exposes lookup by key and the list in
-declaration order, and will merge tenant-defined declarations from the service store under
-the same types.
+Parses and validates embedded declarations on first use, caching the result in memory.
+Exposes key lookup and enumeration in declaration order. Unit tests invoke the same loading
+path, so invalid shipped declarations fail that test run.
 
 ##### Responsibility boundaries
 
-Serves declarations; never answers a question about the data. Unusable declarations make
-every read a server error, never a refusal of the caller's request.
+No query execution or tenant-defined loading. Test-time validation checks the snapshot,
+not a running warehouse. API error behavior is specified in Section 3.3.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-validator` — depends on
-- `cpt-insightspec-ds-component-discovery-api` — read by
+- `cpt-insightspec-ds-component-validator` — validates loaded declarations
+- `cpt-insightspec-ds-component-discovery-api` — consumes the registry
 
 #### Discovery API
 
@@ -317,46 +340,44 @@ every read a server error, never a refusal of the caller's request.
 
 ##### Why this component exists
 
-Pages and people need the list without reading the repository.
+Makes query metadata available to clients without repository or warehouse access.
 
 ##### Responsibility scope
 
-`GET /v1/datasets` and `GET /v1/datasets/{key}`, admin-gated; describe maps a declaration to
-its queryable surface; an unknown key is a not-found naming it.
+Checks administrator permission and returns dataset descriptions. Unknown keys produce a
+not-found response identifying the requested key.
 
 ##### Responsibility boundaries
 
-No storage detail leaves: database, relation, read discipline, tenant field and row identity
-are dropped. Reads no warehouse.
+Returns no storage metadata and performs no warehouse queries. Broader visibility depends
+on the planned access-policy design.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-registry` — reads
-- `cpt-insightspec-ds-component-tenant-registry` — will read
+- `cpt-insightspec-ds-component-registry` — supplies declarations
+- `cpt-insightspec-ds-component-tenant-registry` — planned source of tenant-defined declarations
 
-#### Tenant registry
+#### Tenant registry (planned)
 
 - [ ] `p2` - **ID**: `cpt-insightspec-ds-component-tenant-registry`
 
 ##### Why this component exists
 
-Datasets people add are mutable, versioned and approved — none of which a shipped
-declaration is.
+Tenant-defined datasets need persistence, versioning, and approval controls.
 
 ##### Responsibility scope
 
-Stores tenant-defined declarations in the service's own relational store with tenant, version,
-author, approver and state; serves drafts to their author and approved ones to the tenant;
-re-validates on read. *Needs design* below.
+Proposed storage for dataset versions and approval state, exposing author-only drafts and
+approved tenant datasets through the shared registry. Section 4 records unresolved design.
 
 ##### Responsibility boundaries
 
-Never holds shipped declarations; never edits one.
+Does not store or modify shipped declarations. Not implemented.
 
 ##### Related components (by ID)
 
-- `cpt-insightspec-ds-component-registry` — merges into
-- `cpt-insightspec-ds-component-validator` — uses
+- `cpt-insightspec-ds-component-registry` — planned integration
+- `cpt-insightspec-ds-component-validator` — shared validation contract
 
 ### 3.3 API Contracts
 
@@ -371,27 +392,24 @@ Never holds shipped declarations; never edits one.
 
 | Method | Path | Description | Stability |
 |--------|------|-------------|-----------|
-| `GET` | `/v1/datasets` | describe every available dataset | unstable (admin-only) |
-| `GET` | `/v1/datasets/{key}` | describe one dataset | unstable (admin-only) |
+| `GET` | `/v1/datasets` | List dataset descriptions | unstable (admin-only) |
+| `GET` | `/v1/datasets/{key}` | Describe a dataset | unstable (admin-only) |
 
-A description carries the key, the time fields with their default, the dimensions with their
-absent value and label column, and the measurables. The request bounds a question must stay
-inside belong to the query engine and are added by it.
+Descriptions contain the dataset key, time fields and default, dimensions with optional
+null representation and result-label column, and measurables. Query limits belong to the
+query engine.
+
+Discovery reads the registry after the administrator check. Listing returns a server error
+if registry validation fails. Detail lookup returns not-found for an unknown key; its current
+lookup also maps registry validation failure to not-found.
 
 ### 3.4 Internal Dependencies
 
 | Dependency Module | Interface Used | Purpose |
 |-------------------|----------------|----------|
-| identity client | admin check over the forwarded session | gates discovery until access rules land |
+| identity client | admin check over the forwarded session | restricts discovery to administrators |
 | toolkit canonical errors | resource-scoped builders | not-found and permission envelopes |
 | dbt project | model paths and `.dbtignore` | builds the relations, ignores declarations |
-
-**Dependency Rules** (per project conventions):
-- No circular dependencies
-- Always use SDK modules for inter-module communication
-- No cross-category sideways deps except through contracts
-- Only integration/adapter modules talk to external systems
-- `SecurityContext` must be propagated across all in-process calls
 
 ### 3.5 External Dependencies
 
@@ -402,16 +420,9 @@ inside belong to the query engine and are added by it.
 | dbt | model materialization | builds each dataset's relation |
 | field catalog | column snapshot dumped from a bootstrap warehouse | validates declarations offline |
 
-**Dependency Rules** (per project conventions):
-- No circular dependencies
-- Always use SDK modules for inter-module communication
-- No cross-category sideways deps except through contracts
-- Only integration/adapter modules talk to external systems
-- `SecurityContext` must be propagated across all in-process calls
-
 ### 3.6 Interactions & Sequences
 
-#### Ship a dataset
+#### Validate shipped datasets
 
 **ID**: `cpt-insightspec-ds-seq-ship`
 
@@ -421,17 +432,19 @@ inside belong to the query engine and are added by it.
 
 ```mermaid
 sequenceDiagram
-    Engineer ->> Repository: dataset folder (model, properties, declaration, README)
-    Repository ->> dbt: build the relation
-    Repository ->> BuildScript: gather dataset.yaml files
-    BuildScript ->> Service: embed declarations
-    Service ->> Validator: check against the column snapshot
-    Validator -->> Service: admissible | DeclarationError
+    Engineer ->> Repository: Dataset model, properties, declaration, README
+    Repository ->> dbt: Build relation and test row identity
+    Repository ->> BuildScript: Collect dataset.yaml files
+    BuildScript ->> Service: Embed declarations
+    Tests ->> Service: Load registry
+    Service ->> Validator: Validate against embedded column snapshot
+    Validator -->> Service: Valid declarations or DeclarationError
 ```
 
-**Description**: a mismatch fails the test run; nothing reaches a caller.
+**Description**: dbt verifies row uniqueness; registry tests verify declaration compatibility
+with the snapshot. Neither is a live-schema check.
 
-#### Describe what is available
+#### Discover datasets
 
 **ID**: `cpt-insightspec-ds-seq-describe`
 
@@ -449,16 +462,18 @@ sequenceDiagram
     API -->> Constructor: descriptions without storage detail
 ```
 
-**Description**: served from memory; no warehouse read.
+**Description**: authorized requests return metadata from memory without warehouse queries.
 
 ### 3.7 Database schemas & tables
 
 - [ ] `p2` - **ID**: `cpt-insightspec-ds-db-relations`
 
-One relation per dataset, plus the shared authored-change relation both git datasets stand
-on. Column documentation lives with each dataset's dbt properties.
+One relation per dataset plus shared `git_authored_file_changes` preparation. Full column
+definitions live in each model's `schema.yml`; the tables below summarize their roles.
 
-#### Table: git_commits
+#### Table: commits
+
+Relation: `git_commits`.
 
 - [ ] `p2` - **ID**: `cpt-insightspec-ds-dbtable-git-commits`
 
@@ -470,17 +485,19 @@ on. Column documentation lives with each dataset's dbt properties.
 | commit_hash | String | the commit |
 | author_email, author_name | String | author and label |
 | authored_at, authored_date | DateTime, Date | event time and its day |
-| branch_scope, repository, project, source (+ `_label`) | String | inherited dimensions |
+| branch_scope, repository, project, source (+ `_label`) | String | dimensions inherited from the commit |
 | message | String | commit message |
-| lines_added, lines_removed | Nullable(Int64) | own contribution after the content dedup |
+| lines_added, lines_removed | Nullable(Int64) | attributed line counts after content deduplication |
 
-**PK**: (tenant_id, author_email, authored_at)
+**Sort key**: (tenant_id, author_email, authored_at)
 
-**Constraints**: one row per (tenant, source, commit_hash), dbt-tested
+**Constraints**: one row per (tenant_id, source, commit_hash), dbt-tested
 
 **Additional info**: partitioned by month of authored_date
 
-#### Table: git_file_changes
+#### Table: file changes
+
+Relation: `git_file_changes`.
 
 - [ ] `p2` - **ID**: `cpt-insightspec-ds-dbtable-git-file-changes`
 
@@ -491,16 +508,18 @@ on. Column documentation lives with each dataset's dbt properties.
 | tenant_id, commit_hash, file_path | Nullable(String), String, String | identity with change_type |
 | author_email, author_name, authored_at, authored_date | String, String, DateTime, Date | inherited from the commit |
 | category, file_extension, change_type (+ `_label`) | String | file dimensions |
-| branch_scope, repository, project, source (+ `_label`) | String | inherited dimensions |
-| lines_added, lines_removed | Nullable(Int64) | summed over folded content identities |
+| branch_scope, repository, project, source (+ `_label`) | String | dimensions inherited from the commit |
+| lines_added, lines_removed | Nullable(Int64) | sum over retained content identities |
 
-**PK**: (tenant_id, author_email, authored_at)
+**Sort key**: (tenant_id, author_email, authored_at)
 
-**Constraints**: one row per (tenant, source, commit_hash, file_path, change_type), dbt-tested
+**Constraints**: one row per (tenant_id, source, commit_hash, file_path, change_type), dbt-tested
 
 **Additional info**: built from the authored-change relation below
 
-#### Table: git_authored_file_changes
+#### Table: authored file changes
+
+Relation: `git_authored_file_changes`.
 
 - [ ] `p2` - **ID**: `cpt-insightspec-ds-dbtable-git-authored-file-changes`
 
@@ -509,16 +528,16 @@ on. Column documentation lives with each dataset's dbt properties.
 | Column | Type | Description |
 |--------|------|-------------|
 | tenant_id, data_source, commit_hash, file_path | Nullable(String), String, String, String | attach key and path |
-| source_id, project_key, repo_slug | Nullable(String), String, String | surviving commit's coordinates |
+| source_id, project_key, repo_slug | Nullable(String), String, String | retained commit's source, project, and repository |
 | file_extension, change_type | String | as collected |
 | lines_added, lines_removed | Nullable(Int64) | as collected |
 
-**PK**: (tenant_id, data_source, commit_hash)
+**Sort key**: (tenant_id, data_source, commit_hash)
 
 **Constraints**: one row per change content, earliest commit wins; superseded changes excluded
 
-**Additional info**: not a dataset — the shared dedup the file-change dataset and the metric
-evidence both read, so its sort runs once per build
+**Additional info**: shared deduplicated input for the git datasets and metric evidence;
+not registered as a dataset.
 
 ### 3.8 Deployment Topology
 
@@ -527,119 +546,56 @@ declarations travel inside the analytics image.
 
 ## 4. Additional context
 
-### The declaration
+### Dataset authoring and lifecycle
 
-```yaml
-key: git_file_changes          # how a question names it
-database: insight              # where the relation lives — never described to callers
-relation: git_file_changes
-read_discipline: plain         # plain | final, matched against the engine family
+A shipped dataset addition includes its model, column documentation, row-identity test,
+declaration, README, and regenerated column snapshot. The registry discovers embedded
+declarations automatically; no query-engine changes are required.
 
-tenant_field: tenant_id        # the column every scan is scoped by
+Shipped definitions evolve with product releases. Removing a declaration removes it from
+discovery; deletion and compatibility with saved queries must be considered together.
 
-time_fields:                   # exactly one default
-  - field: authored_at
-    default: true
+### Tenant-defined datasets (planned)
 
-dimensions:                    # what may be grouped and filtered
-  - field: author_email
-    label_field: author_name   # the readable name travelling beside the value
-  - field: source_id
-    absent_value: __unknown__  # required when the column is nullable
+| Kind | Definition |
+|---|---|
+| Derived | Filtered or relabelled parent dataset with custom categories |
+| Saved query | Query result exposed as a reusable dataset |
+| Imported | Uploaded data or a referenced tenant relation |
 
-measurables:                   # what may be folded
-  - field: lines_added
+The proposed design stores tenant-defined metadata in the analytics service's relational
+store: dataset key, tenant, version, declaration, state, author, approver, and timestamps.
+Edits create new versions. Drafts are author-only; approved versions are available within
+the tenant according to access policies. Validation occurs on save and read, with
+revalidation after schema changes.
 
-row_identity:                  # what makes one row one fact
-  - tenant_id
-  - source
-  - commit_hash
-  - file_path
-  - change_type
-```
+This storage design is not implemented. Open decisions:
 
-### Rules a declaration must satisfy
+- Composition with parent datasets and permitted nesting depth.
+- Whether saved queries retain their requests or freeze their results.
+- Tenant quotas and administrator review workflow.
+- Live-catalog loading, schema-change detection, and cache invalidation.
 
-- Every named column exists in the catalog with a type its role admits: text, uuid, boolean
-  or number for a dimension; number for a measurable; date or datetime for a time field.
-- A nullable dimension declares `absent_value`; a non-nullable one must not.
-- A label field exists and is printable.
-- `read_discipline` matches the relation's engine family: a folding engine (Replacing,
-  Collapsing, Summing, Aggregating, replicated or versioned) must be read collapsed.
-- Exactly one time field is the default; the row identity is non-empty; the key is lowercase
-  snake_case; no two datasets share a key.
-- No declared sentinel contains a parameter placeholder.
+### Access policies (planned)
 
-### Anatomy of a dataset folder
+Declarations would carry dataset access, row visibility, column visibility or masking, and
+personal-data classification. The query engine would enforce these policies during planning.
+Policy representation and enforcement integration remain undesigned; current discovery is
+administrator-only.
 
-```text
-src/ingestion/datasets/git_file_changes/
-  git_file_changes.sql   the model that materializes the relation
-  schema.yml             dbt column docs and the grain test
-  dataset.yaml           the declaration
-  README.md              what one row is, where it comes from, what to watch for
-```
+### Validation limits and open semantics
 
-The folder is a dbt model path, so `dbt build` finds the model and its properties;
-`.dbtignore` keeps `dataset.yaml` out of dbt's hands. The analytics build script reads the
-same folder through a named build context and embeds every declaration.
-
-### Adding a dataset
-
-1. Create the folder and the model; apply the counting rules in the model, not downstream.
-2. Write `schema.yml`: a description per column, and a test that the row identity is unique.
-3. Write `dataset.yaml`: grain, dimensions with labels, measurables, time fields.
-4. Regenerate the column snapshot from a bootstrap warehouse so validation sees the new
-   relation.
-5. Write the README: what one row is, provenance, caveats.
-
-No engine change is required at any step.
-
-### Lifecycle
-
-A shipped dataset is declared, validated at build, served and described, evolved by shipping
-a new version of the product, and retired by deleting its folder. A tenant-defined one is
-drafted, validated on save, usable by its author, approved by an administrator with its
-access rules set, versioned on every edit, and retired by its owner.
-
-### Kinds of dataset
-
-| Kind | Where its declaration lives | Who may add one |
-|---|---|---|
-| Shipped | the product's repository, embedded in the image | product engineers |
-| Derived | the tenant store, over a shipped or approved parent | anyone who may add datasets |
-| Promoted saved question | the tenant store, over a saved question | anyone who may add datasets |
-| Bring-your-own | the tenant store, over an uploaded or pointed-at relation | anyone who may add datasets |
-
-### Tenant-defined datasets
-
-*Needs design.* Stored in the analytics service's relational store — small, mutable,
-versioned, approval-gated metadata, which the warehouse is the wrong shape for. One row per
-dataset version: key, tenant, body, state, author, approver, timestamps. Editing writes a new
-version; approval flips state; the registry merges approved rows for the tenant plus the
-author's own drafts.
-
-Open: how a derived dataset's plan composes with its parent's; whether a promoted saved
-question is stored as its request or frozen; how deep composition may nest; per-tenant
-quotas; the live-catalog read and its invalidation, since the embedded snapshot only covers
-shipped datasets.
-
-### Access rules
-
-*Needs design.* Declared beside the fields they bind, enforced by the query engine at plan
-time: dataset access (who may ask at all), row policy (a dimension bound to a caller
-attribute), column policy (dropped or masked). The declaration also marks which columns
-describe named people. See the engine's design for enforcement.
-
-### Not a dataset
-
-- **A metric.** A metric is one question with one answer; a dataset is what many questions
-  are asked of.
-- **A raw table.** Tables carry storage detail, no grain statement and no labels.
-- **A chart.** Charts are what a question's answer is drawn as.
+- Catalog validation checks field references and types, not deployed-schema compatibility.
+- Row-identity tests check uniqueness, not attribution or deduplication correctness.
+- Null dimensions require `absent_value`. Empty-string and source-sentinel normalization
+  are not established by this contract.
+- The PRD requires stable dimensions to be exposed, but field-selection criteria remain open.
 
 ## 5. Traceability
 
 - **PRD**: [PRD.md](PRD.md)
-- **Consumer**: [query engine design](../query-engine/DESIGN.md)
+- **Consumer**: [query engine design](https://github.com/constructorfabric/insight/blob/d912c610da33259475d817fc009d34de35b8fe10/docs/domain/query-engine/DESIGN.md)
 - **Contract**: [openapi.json](../../components/backend/analytics/openapi.json)
+
+**Revision 1.1**: consolidated declaration and validation contracts, clarified runtime and
+snapshot boundaries, and separated implemented behavior from proposed extensions.
