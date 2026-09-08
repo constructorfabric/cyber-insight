@@ -121,25 +121,33 @@ def _spec_schema() -> dict:
 
 
 @pytest.mark.parametrize(
-    ("gitlab_url", "groups", "projects", "accepted"),
+    ("gitlab_url", "groups", "projects", "directory", "accepted"),
     [
-        ("https://gitlab.com", [], [], False),
-        ("https://gitlab.com/", [], [], False),
-        ("https://gitlab.com", ["acme"], [], True),
-        ("https://gitlab.com", [], ["acme/app"], True),
-        ("https://gitlab.example.com", [], [], True),
+        ("https://gitlab.com", [], [], "false", False),
+        ("https://gitlab.com/", [], [], "false", False),
+        ("https://gitlab.com", ["acme"], [], "false", True),
+        ("https://gitlab.com", [], ["acme/app"], "false", True),
+        ("https://gitlab.com", ["acme"], [], "true", False),
+        ("https://gitlab.com", ["acme"], [], None, False),
+        ("https://gitlab.example.com", [], [], None, True),
+        ("https://gitlab.example.com", [], [], "true", True),
     ],
 )
-def test_instance_wide_mode_is_refused_on_gitlab_com(
-    gitlab_url: str, groups: list[str], projects: list[str], accepted: bool
+def test_instance_wide_reads_are_refused_on_gitlab_com(
+    gitlab_url: str, groups: list[str], projects: list[str], directory: str | None, accepted: bool
 ) -> None:
-    config = (
+    """Every project the token can see, and every account on the instance, are
+    the whole platform on gitlab.com; the spec refuses both there, the directory
+    by demanding an explicit "false" since an absent value means on."""
+    builder = (
         GitlabConfigBuilder()
         .with_field("gitlab_url", gitlab_url)
         .with_field("gitlab_groups", groups)
         .with_field("gitlab_projects", projects)
-        .build()
     )
+    if directory is not None:
+        builder = builder.with_field("gitlab_instance_users", directory)
+    config = builder.build()
     errors = list(jsonschema.Draft7Validator(_spec_schema()).iter_errors(config))
     assert (not errors) == accepted, f"should {'accept' if accepted else 'reject'}: {config}"
 

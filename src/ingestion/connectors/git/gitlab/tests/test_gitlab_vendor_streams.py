@@ -814,12 +814,29 @@ def test_members_are_read_per_configured_group_and_project(http_mocker: HttpMock
 
 
 @freezegun.freeze_time(_FROZEN)
-def test_users_stay_silent_unless_opted_in(http_mocker: HttpMocker) -> None:
-    output = read_stream(_CONNECTOR, "users", GitlabConfigBuilder().build())
+def test_users_stay_silent_when_the_operator_opts_out(http_mocker: HttpMocker) -> None:
+    config = GitlabConfigBuilder().with_field("gitlab_instance_users", "false").build()
+
+    output = read_stream(_CONNECTOR, "users", config)
 
     assert not output.errors
     assert output.records == []
     assert not _urls(http_mocker, "/users")
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_directory_the_token_cannot_read_is_skipped_not_fatal(http_mocker: HttpMocker) -> None:
+    """The directory is on by default and is enrichment, not a data path: a
+    token without the right leaves it empty and the sync green."""
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/users", query_params=ANY_QUERY_PARAMS), HttpResponse(body="", status_code=403)
+    )
+
+    output = read_stream(_CONNECTOR, "users", GitlabConfigBuilder().build())
+
+    assert not output.errors
+    assert output.records == []
+    assert len(_urls(http_mocker, "/users")) == 1, "the default is to ask"
 
 
 @freezegun.freeze_time(_FROZEN)

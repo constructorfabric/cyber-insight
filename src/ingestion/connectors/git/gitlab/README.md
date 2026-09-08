@@ -55,7 +55,7 @@ project nobody has touched since it is never cloned.
 | `gitlab_projects` | No | JSON array of project full paths for projects outside the groups |
 | `gitlab_include_forks` | No | `"true"` to sync forked projects. Off by default: a fork's history is its upstream's, and counting it doubles the upstream's commits |
 | `gitlab_exclude_projects` | No | JSON array of regular expressions matched (`search`) against `path_with_namespace`; a match is never listed, cloned or walked. Archived projects are always skipped |
-| `gitlab_instance_users` | No | `"true"` to also sync the instance user directory (`/users`). Needs a personal token; `email` is returned only to an administrator. Leave off on gitlab.com and shared instances |
+| `gitlab_instance_users` | No | On by default: syncs the instance user directory (`/users`) for identity resolution. A token that may not read it leaves the directory empty without failing the sync; `email` is returned only to an administrator. Must be `"false"` on gitlab.com |
 | `gitlab_concurrency` | No | Worker threads against the GitLab API, default `"8"`, capped at 32. A self-hosted instance without a request limit can take more; the clone-backed streams stay paced by the proxy's own clone and page-serve caps |
 | `gitlab_start_date` | Yes | Earliest date fetched, by every stream (YYYY-MM-DD); bounds the first-sync cost |
 
@@ -102,9 +102,6 @@ bash src/ingestion/reconcile-connectors/tools/migrate-orphan-definition.sh gitla
 Before that reconcile, update the Secret:
 
 - `gitlab_start_date` is now required; the Secret validation fails without it.
-- Instance-wide installations that relied on `/users` being always on set
-  `gitlab_instance_users: "true"`, or the identity feed from the directory
-  stops.
 - Archived projects, forks (unless `gitlab_include_forks: "true"`) and
   projects shared into the group are no longer synced; their history is gone
   after the `DROP`.
@@ -134,7 +131,7 @@ survive it. Gold needs nothing.
 | `pipelines` | GraphQL `project.pipelines` | incremental, per project | `updatedAt` |
 | `deployments` | `/projects/{id}/deployments` | incremental, per project | `updated_at` |
 | `group_members` | `/groups/{g}/members/all`, `/projects/{p}/members/all` | full refresh, per configured scope | — |
-| `users` | `/users` (keyset) | full refresh, opt-in | — |
+| `users` | `/users` (keyset) | full refresh, on by default | — |
 
 ### Scopes
 
@@ -199,6 +196,9 @@ Three handlers, by what a status means at that endpoint:
 - **per-project and per-merge-request endpoints**: a `402`/`403`/`404` is
   about one project (a feature not licensed, a restricted project, a deleted
   merge request) and skips it, never the stream.
+- **the user directory** (`/users`): a `403`/`404` leaves the directory
+  empty and the sync green — it is enrichment, not a data path. A `401` is
+  still the token and fails loudly.
 - **proxy**: `429` + `Retry-After` while a clone runs is waited out (up to
   the CDK's ceiling), `404`/`413` skip the project, `409` (superseded
   snapshot) fails the attempt so the next one starts fresh.
