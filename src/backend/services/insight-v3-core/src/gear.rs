@@ -55,7 +55,7 @@ impl Gear for InsightV3CoreGear {
                 crate::raw_data::RawDataStore::new(config.clickhouse_client()),
                 crate::tables::TableStore::new(config.clickhouse_client()),
                 definitions,
-                crate::metric_query::MetricRunner::new(config.clickhouse_client()),
+                crate::metric_query::MetricRunner::new(config.clickhouse_query_client()),
                 chat,
                 crate::identity::IdentityClient::new(config.identity_url())?,
             )),

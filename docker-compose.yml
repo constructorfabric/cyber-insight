@@ -422,6 +422,8 @@ services:
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      APP__gears__insight_v3_core__config__clickhouse_query_user: "${CLICKHOUSE_V3_READER_USER:-insight_v3_reader}"
+      APP__gears__insight_v3_core__config__clickhouse_query_password: "${CLICKHOUSE_V3_READER_PASSWORD:-insight-v3-reader-local}"
       # The metric, widget and dashboard definitions live here.
       APP__gears__insight_v3_core__config__database_url: "mysql://${MARIADB_USER:-insight}:${MARIADB_PASSWORD:-insight-local}@${MARIADB_HOST:-mariadb}:${MARIADB_INTERNAL_PORT:-3306}/insight_v3"
       APP__gears__insight_v3_core__config__identity_url: "http://${IDENTITY_RESOLUTION_HOST:-identity-resolution}:${IDENTITY_RESOLUTION_INTERNAL_PORT:-8082}"
@@ -457,6 +459,10 @@ services:
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
+      # deploy/compose/clickhouse-init.sql provisions this user on a fresh
+      # volume only - an older stand needs it created by hand.
+      APP__gears__insight_v3_core__config__clickhouse_query_user: "${CLICKHOUSE_V3_READER_USER:-insight_v3_reader}"
+      APP__gears__insight_v3_core__config__clickhouse_query_password: "${CLICKHOUSE_V3_READER_PASSWORD:-insight-v3-reader-local}"
       APP__gears__insight_v3_core__config__database_url: "mysql://${MARIADB_USER:-insight}:${MARIADB_PASSWORD:-insight-local}@${MARIADB_HOST:-mariadb}:${MARIADB_INTERNAL_PORT:-3306}/insight_v3"
       APP__gears__insight_v3_core__config__identity_url: "http://${IDENTITY_RESOLUTION_HOST:-identity-resolution}:${IDENTITY_RESOLUTION_INTERNAL_PORT:-8082}"
       # Dev-only value — see .env.compose.example.

@@ -25,6 +25,10 @@ pub(crate) struct GearConfig {
     pub(crate) clickhouse_database: String,
     pub(crate) clickhouse_user: Option<String>,
     pub(crate) clickhouse_password: Option<SecretString>,
+    /// The read-only principal the assistant's query path connects as. Blank
+    /// on a stand without one, and the query path then uses the pair above.
+    pub(crate) clickhouse_query_user: Option<String>,
+    pub(crate) clickhouse_query_password: Option<SecretString>,
     pub(crate) ingest_token: SecretString,
     pub(crate) anthropic_token: SecretString,
     pub(crate) chat_mode: ChatMode,
@@ -40,6 +44,8 @@ impl Default for GearConfig {
             clickhouse_database: DEFAULT_CLICKHOUSE_DATABASE.to_owned(),
             clickhouse_user: None,
             clickhouse_password: None,
+            clickhouse_query_user: None,
+            clickhouse_query_password: None,
             ingest_token: SecretString::from(String::new()),
             anthropic_token: SecretString::from(String::new()),
             chat_mode: ChatMode::Live,
@@ -56,6 +62,8 @@ pub(crate) struct ValidatedConfig {
     clickhouse_database: String,
     clickhouse_user: Option<String>,
     clickhouse_password: Option<SecretString>,
+    clickhouse_query_user: Option<String>,
+    clickhouse_query_password: Option<SecretString>,
     ingest_token: IngestToken,
     anthropic_token: SecretString,
     chat_mode: ChatMode,
@@ -79,12 +87,30 @@ impl ValidatedConfig {
     }
 
     pub(crate) fn clickhouse_client(&self) -> insight_clickhouse::Client {
-        let mut config =
-            insight_clickhouse::Config::new(&self.clickhouse_url, &self.clickhouse_database);
-        if let (Some(user), Some(password)) = (
+        self.client_as(
             self.clickhouse_user.as_deref(),
             self.clickhouse_password.as_ref(),
+        )
+    }
+
+    pub(crate) fn clickhouse_query_client(&self) -> insight_clickhouse::Client {
+        match (
+            self.clickhouse_query_user.as_deref(),
+            self.clickhouse_query_password.as_ref(),
         ) {
+            (Some(user), Some(password)) => self.client_as(Some(user), Some(password)),
+            _ => self.clickhouse_client(),
+        }
+    }
+
+    fn client_as(
+        &self,
+        user: Option<&str>,
+        password: Option<&SecretString>,
+    ) -> insight_clickhouse::Client {
+        let mut config =
+            insight_clickhouse::Config::new(&self.clickhouse_url, &self.clickhouse_database);
+        if let (Some(user), Some(password)) = (user, password) {
             config = config.with_auth(user, password.expose_secret());
         }
 
@@ -131,12 +157,23 @@ impl GearConfig {
             self.clickhouse_user.as_deref(),
             self.clickhouse_password.as_ref(),
         )?;
+        let clickhouse_query_user = self
+            .clickhouse_query_user
+            .filter(|user| !user.trim().is_empty());
+        let clickhouse_query_password = self
+            .clickhouse_query_password
+            .filter(|password| !password.expose_secret().trim().is_empty());
+        if clickhouse_query_user.is_some() != clickhouse_query_password.is_some() {
+            return Err(ConfigError::IncompleteQueryCredentials);
+        }
 
         Ok(ValidatedConfig {
             clickhouse_url: self.clickhouse_url,
             clickhouse_database: self.clickhouse_database,
             clickhouse_user: self.clickhouse_user,
             clickhouse_password: self.clickhouse_password,
+            clickhouse_query_user,
+            clickhouse_query_password,
             ingest_token,
             anthropic_token: self.anthropic_token,
             chat_mode: self.chat_mode,
@@ -204,6 +241,8 @@ pub(crate) enum ConfigError {
     IncompleteCredentials,
     #[error("ClickHouse credentials must not be empty")]
     EmptyCredentials,
+    #[error("clickhouse_query_user and clickhouse_query_password must both be set or both empty")]
+    IncompleteQueryCredentials,
     #[error("ingest_token must be at least {MIN_INGEST_TOKEN_BYTES} bytes")]
     IngestTokenTooShort,
     #[error("ingest_token must be at most {MAX_INGEST_TOKEN_BYTES} bytes")]
@@ -234,6 +273,8 @@ mod tests {
             clickhouse_database: "insight".to_owned(),
             clickhouse_user: None,
             clickhouse_password: None,
+            clickhouse_query_user: None,
+            clickhouse_query_password: None,
             ingest_token: SecretString::from("test-ingest-token-0123456789abcdef"),
             anthropic_token: SecretString::from("test-anthropic-token"),
             chat_mode: ChatMode::Live,
@@ -346,5 +387,64 @@ mod tests {
         config.ingest_token = SecretString::from("x".repeat(32));
 
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn the_query_client_falls_back_to_the_ordinary_credentials_when_no_reader_is_configured() {
+        let mut config = valid_config();
+        config.clickhouse_user = Some("writer".to_owned());
+        config.clickhouse_password = Some(SecretString::from("writer-secret"));
+
+        let validated = config
+            .validate()
+            .unwrap_or_else(|error| panic!("config must be valid: {error}"));
+        let client = validated.clickhouse_query_client();
+
+        assert_eq!(client.config().user.as_deref(), Some("writer"));
+        assert_eq!(client.config().password.as_deref(), Some("writer-secret"));
+    }
+
+    #[test]
+    fn the_query_client_uses_the_reader_when_it_is_configured() {
+        let mut config = valid_config();
+        config.clickhouse_user = Some("writer".to_owned());
+        config.clickhouse_password = Some(SecretString::from("writer-secret"));
+        config.clickhouse_query_user = Some("reader".to_owned());
+        config.clickhouse_query_password = Some(SecretString::from("reader-secret"));
+
+        let validated = config
+            .validate()
+            .unwrap_or_else(|error| panic!("config must be valid: {error}"));
+        let client = validated.clickhouse_query_client();
+
+        assert_eq!(client.config().user.as_deref(), Some("reader"));
+        assert_eq!(client.config().password.as_deref(), Some("reader-secret"));
+    }
+
+    #[test]
+    fn a_blank_reader_setting_reads_as_unset_rather_than_as_a_credential() {
+        let mut config = valid_config();
+        config.clickhouse_user = Some("writer".to_owned());
+        config.clickhouse_password = Some(SecretString::from("writer-secret"));
+        config.clickhouse_query_user = Some(String::new());
+        config.clickhouse_query_password = Some(SecretString::from(String::new()));
+
+        let validated = config
+            .validate()
+            .unwrap_or_else(|error| panic!("config must be valid: {error}"));
+        let client = validated.clickhouse_query_client();
+
+        assert_eq!(client.config().user.as_deref(), Some("writer"));
+    }
+
+    #[test]
+    fn half_a_reader_credential_is_refused_instead_of_falling_back() {
+        let mut config = valid_config();
+        config.clickhouse_query_user = Some("reader".to_owned());
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::IncompleteQueryCredentials)
+        ));
     }
 }
