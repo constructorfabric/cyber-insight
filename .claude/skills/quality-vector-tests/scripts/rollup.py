@@ -10,7 +10,7 @@ from pathlib import Path
 VECTORS = ("Efficiency", "Reliability", "Performance", "Security", "Versatility")
 NFR_ID = r"cpt-[a-z0-9-]+-nfr-[a-z0-9-]+"
 SCENARIO = re.compile(
-    r"^- \[[ xX]\] \d+\. \*\*.+?\*\* — ([A-Za-z]+) · "
+    r"^- (?:\[[ xX]\]|(\*\*deferred\*\*)) \d+\. \*\*.+?\*\* — ([A-Za-z]+) · "
     r"[a-z][a-z0-9-]* · .+? — .+$"
 )
 
@@ -97,6 +97,7 @@ def excluded_vector(line: str, *, prd: bool) -> str | None:
 def rollup(text: str) -> dict[str, str]:
     local: Counter[str] = Counter()
     inherited: Counter[str] = Counter()
+    deferred: Counter[str] = Counter()
     excluded: set[str] = set()
     for kind, lines in artifact_blocks(text):
         if kind == "nfr":
@@ -111,8 +112,8 @@ def rollup(text: str) -> dict[str, str]:
 
         for line in lines:
             scenario = SCENARIO.fullmatch(line) if kind == "testing" else None
-            if scenario and scenario[1] in VECTORS:
-                local[scenario[1]] += 1
+            if scenario and scenario[2] in VECTORS:
+                (deferred if scenario[1] else local)[scenario[2]] += 1
             vector = excluded_vector(line, prd=kind == "exclusions")
             if vector:
                 excluded.add(vector)
@@ -124,6 +125,8 @@ def rollup(text: str) -> dict[str, str]:
             counts.append(str(local[vector]))
         if inherited[vector]:
             counts.append(f"inherited ({inherited[vector]})")
+        if deferred[vector]:
+            counts.append(f"deferred ({deferred[vector]})")
         if counts and vector in excluded:
             raise ValueError(f"{vector} is both applicable and excluded")
         result[vector] = " + ".join(counts) if counts else "n/a (declared)" if vector in excluded else "MISSING"

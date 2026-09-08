@@ -70,7 +70,9 @@ for either target by grouping the tags. It reports `MISSING` for a vector that i
 claimed nor explicitly `n/a`. It reads only scenario lines in `## Testing` / `## 7. Testing`
 and NFR entries in `### 6.1 NFR Inclusions`, ignoring fenced examples and comments. An inherited
 NFR entry has `**Vector**`, `**Inherits**` with the upstream NFR ID, and `**Verification**`
-naming shared evidence and its owner; the report labels inherited counts separately. Only a
+naming shared evidence and its owner; the report labels inherited counts separately, and labels
+`deferred` scenarios separately too — a vector whose only scenario is deferred reads
+`deferred (1)`, never `MISSING`, so a declared deferral is not reported as an omission. Only a
 vector declaration in `### 6.2 NFR Exclusions` is an explicit n/a. The counts describe planned
 or implemented declarations, not successful tests. Resolve upstream references and apply the
 artifact's semantic checklist after inspecting the report. Existing PRDs are deliberately not
