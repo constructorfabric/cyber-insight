@@ -71,7 +71,9 @@ async fn run_metric(
 
     let metric: MetricQuery =
         serde_json::from_value(body).map_err(|error| invalid_metric_body(&error))?;
-    let compiled = metric.compile().map_err(|error| compile_error(&error))?;
+    let compiled = metric
+        .compile(state.metrics().people())
+        .map_err(|error| compile_error(&error))?;
 
     let result = state.metrics().run(&compiled).await.map_err(run_error)?;
 

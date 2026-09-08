@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::metric_query::{MetricQuery, MetricQueryError};
+use crate::metric_query::{MetricQuery, MetricQueryError, People};
 
 const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -83,6 +83,8 @@ pub(crate) struct Ask<'a> {
     /// Every table a query may name, qualified as it must be named.
     pub(crate) allowed: &'a [String],
     pub(crate) schemas: &'a dyn Schemas,
+    /// Where a person's name is resolved from.
+    pub(crate) people: &'a People,
 }
 
 /// What the columns of a table are, asked for by name.
@@ -134,8 +136,12 @@ impl Proposal {
     /// back through the repair round, so the model gets the real table list.
     /// With no known tables at all the check stands aside — refusing
     /// everything would be worse than the guess.
-    pub(crate) fn checked(reply: &str, allowed: &[String]) -> Result<Self, ChatError> {
-        let proposal = Self::parse(reply)?;
+    pub(crate) fn checked(
+        reply: &str,
+        allowed: &[String],
+        people: &People,
+    ) -> Result<Self, ChatError> {
+        let proposal = Self::parse(reply, people)?;
 
         if allowed.is_empty() {
             return Ok(proposal);
@@ -188,13 +194,13 @@ impl Proposal {
     /// `intent`, and compiles every query and every proposed metric with
     /// [`MetricQuery::compile`] — a refusal is [`ChatError::Metric`], and
     /// nothing runs or is stored.
-    pub(crate) fn parse(reply: &str) -> Result<Self, ChatError> {
+    pub(crate) fn parse(reply: &str, people: &People) -> Result<Self, ChatError> {
         let wire: ProposalWire = serde_json::from_str(extract_json_object(reply))?;
 
         Ok(match wire {
             ProposalWire::Answer { reply, query } => {
                 if let Some(query) = query.as_ref() {
-                    query.compile()?;
+                    query.compile(people)?;
                 }
                 Self::Answer {
                     reply: as_prose(reply),
@@ -213,7 +219,9 @@ impl Proposal {
 
                 Self::Create {
                     reply: as_prose(reply),
-                    metric: metric.map(compile_named_metric).transpose()?,
+                    metric: metric
+                        .map(|named| compile_named_metric(named, people))
+                        .transpose()?,
                     widgets: widgets.into_iter().map(NamedBody::into_pair).collect(),
                     dashboard: dashboard.map(NamedBody::into_pair),
                 }
@@ -222,9 +230,9 @@ impl Proposal {
     }
 }
 
-fn compile_named_metric(named: NamedBody) -> Result<(String, Value), ChatError> {
+fn compile_named_metric(named: NamedBody, people: &People) -> Result<(String, Value), ChatError> {
     let metric: MetricQuery = serde_json::from_value(named.body.clone())?;
-    metric.compile()?;
+    metric.compile(people)?;
     Ok(named.into_pair())
 }
 
@@ -406,6 +414,7 @@ impl ChatClient {
                     &system_prompt(ask.tables, ask.catalogue, ask.map),
                     thread(ask.turns, ask.message),
                     ask.allowed,
+                    ask.people,
                 )
                 .await
             }
@@ -426,6 +435,7 @@ async fn converse(
     system: &str,
     mut messages: Vec<Message>,
     allowed: &[String],
+    people: &People,
 ) -> Result<Proposal, ChatError> {
     for _ in 0..=MAX_LOOKUPS {
         let response = transport.send(system, &messages).await?;
@@ -439,7 +449,7 @@ async fn converse(
         }
 
         let proposed = response.proposal_json();
-        return match Proposal::checked(&proposed, allowed) {
+        return match Proposal::checked(&proposed, allowed, people) {
             Ok(proposal) => Ok(proposal),
             // One repair round: hand the model its own rejection and let it
             // correct itself. The schema stops malformed arguments; this
@@ -457,7 +467,7 @@ async fn converse(
                 messages.push(Message::assistant(response.blocks()));
                 messages.push(answer);
                 let second = transport.send(system, &messages).await?;
-                Proposal::checked(&second.proposal_json(), allowed)
+                Proposal::checked(&second.proposal_json(), allowed, people)
             }
         };
     }
@@ -563,6 +573,7 @@ fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue, map: &str) -> Str
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"order_by\":{\"field\":<as_name>,\"direction\":\"asc\"|\"desc\"}|null,\"limit\":<int>|null}.\n\
          A question about the most, the largest or the top of something needs order_by on the aggregated field with direction desc, and a limit. Without it the rows come back in the grouping's order and the first row is not the largest.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
+         A column holding a person carries `person`: \"email\" for an address, \"id\" for a person id. The rows then read the name that person is known by rather than the handle a source system wrote, so group by people that way in preference to any name column on the table itself.\n\
          A widget draws its metric's columns by their as_name, never by the raw json field: a metric whose as_name is total_lines is drawn as y total_lines.\n\
          A table widget is {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}. A line widget is {\"type\":\"line\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}. A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
     );
@@ -712,6 +723,10 @@ fn metric_query_schema() -> Value {
                         "type": field_type,
                         "agg": { "enum": ["count", "sum", "avg", "min", "max"] },
                         "as_name": plain,
+                        "person": {
+                            "enum": ["email", "id"],
+                            "description": "Set when this column holds a person: email for an address, id for a person id. The rows then carry the name they are known by.",
+                        },
                     },
                 },
             },
@@ -1014,18 +1029,22 @@ mod tests {
 
     use super::*;
 
+    fn people() -> People {
+        People::new("identity")
+    }
+
     #[test]
     fn an_answer_intent_carries_a_query_and_stores_nothing() {
         let reply = r#"{"intent":"answer","reply":"About 59 lines on the first day","query":{"table":"events","fields":[{"json":"day","type":"string","as_name":"day"},{"json":"lines","type":"int","agg":"sum","as_name":"lines"}],"group_by":["day"],"filters":[]}}"#;
 
-        match Proposal::parse(reply).unwrap_or_else(|error| panic!("parses: {error}")) {
+        match Proposal::parse(reply, &people()).unwrap_or_else(|error| panic!("parses: {error}")) {
             Proposal::Answer { reply, query } => {
                 assert_eq!(reply, "About 59 lines on the first day");
                 let Some(query) = query else {
                     panic!("this answer carries a query");
                 };
                 query
-                    .compile()
+                    .compile(&people())
                     .unwrap_or_else(|error| panic!("the query compiles: {error}"));
             }
             Proposal::Create { .. } => panic!("expected an answer"),
@@ -1036,7 +1055,7 @@ mod tests {
     fn a_create_intent_is_read_out_of_the_model_reply() {
         let reply = r#"{"intent":"create","reply":"Here you go","metric":{"name":"commits_per_day","body":{"table":"events","fields":[{"json":"day","type":"string","as_name":"day"}],"group_by":["day"],"filters":[]}},"widgets":[{"name":"commits_table","body":{"type":"table","metric":"commits_per_day","columns":["day"]}}],"dashboard":{"name":"engineering","body":{"title":"Engineering","widgets":["commits_table"]}}}"#;
 
-        match Proposal::parse(reply).unwrap_or_else(|error| panic!("parses: {error}")) {
+        match Proposal::parse(reply, &people()).unwrap_or_else(|error| panic!("parses: {error}")) {
             Proposal::Create { reply, widgets, .. } => {
                 assert_eq!(reply, "Here you go");
                 assert_eq!(widgets.len(), 1);
@@ -1049,7 +1068,10 @@ mod tests {
     fn a_metric_the_compiler_refuses_is_not_stored() {
         let reply = r#"{"intent":"create","reply":"x","metric":{"name":"bad","body":{"table":"events`--","fields":[],"group_by":[],"filters":[]}},"widgets":[],"dashboard":null}"#;
 
-        assert!(matches!(Proposal::parse(reply), Err(ChatError::Metric(_))));
+        assert!(matches!(
+            Proposal::parse(reply, &people()),
+            Err(ChatError::Metric(_))
+        ));
     }
 
     #[test]
@@ -1063,7 +1085,7 @@ mod tests {
         })
         .to_string();
 
-        let proposal = Proposal::parse(&reply)
+        let proposal = Proposal::parse(&reply, &people())
             .unwrap_or_else(|error| panic!("an answer needs no query: {error}"));
 
         assert!(matches!(proposal, Proposal::Answer { query: None, .. }));
@@ -1108,8 +1130,8 @@ mod tests {
         })
         .to_string();
 
-        let proposal =
-            Proposal::parse(&reply).unwrap_or_else(|error| panic!("the fixture parses: {error}"));
+        let proposal = Proposal::parse(&reply, &people())
+            .unwrap_or_else(|error| panic!("the fixture parses: {error}"));
 
         let Proposal::Answer { reply, .. } = proposal else {
             panic!("expected an answer");
@@ -1125,8 +1147,8 @@ mod tests {
         })
         .to_string();
 
-        let proposal =
-            Proposal::parse(&reply).unwrap_or_else(|error| panic!("the fixture parses: {error}"));
+        let proposal = Proposal::parse(&reply, &people())
+            .unwrap_or_else(|error| panic!("the fixture parses: {error}"));
 
         let Proposal::Answer { reply, .. } = proposal else {
             panic!("expected an answer");
@@ -1277,6 +1299,7 @@ mod tests {
             "system",
             vec![Message::user("how many commits?")],
             &[],
+            &people(),
         )
         .await
         .unwrap_or_else(|error| panic!("the turn completes: {error}"));
@@ -1322,6 +1345,7 @@ mod tests {
             "system",
             vec![Message::user("ask something")],
             &[],
+            &people(),
         )
         .await
         .unwrap_or_else(|error| panic!("the repair round completes: {error}"));
@@ -1359,6 +1383,7 @@ mod tests {
             "system",
             vec![Message::user("go round in circles")],
             &[],
+            &people(),
         )
         .await;
 
@@ -1375,6 +1400,7 @@ mod tests {
             "system",
             vec![Message::user("what data is there?")],
             &[],
+            &people(),
         )
         .await
         .unwrap_or_else(|error| panic!("the turn completes: {error}"));
@@ -1414,6 +1440,7 @@ mod tests {
 
         assert_eq!(query["database"]["type"], json!("string"));
         let field = &query["fields"]["items"]["properties"];
+        assert_eq!(field["person"]["enum"], json!(["email", "id"]));
         assert_eq!(field["column"]["type"], json!("string"));
         // Neither is required: exactly one of them is, which no JSON schema
         // this API accepts can express, so the compiler refuses it instead.
@@ -1467,7 +1494,7 @@ mod tests {
         })
         .to_string();
 
-        let Err(rejection) = Proposal::checked(&reply, &known) else {
+        let Err(rejection) = Proposal::checked(&reply, &known, &people()) else {
             panic!("a table that does not exist must not reach the database");
         };
 
@@ -1494,7 +1521,7 @@ mod tests {
         .to_string();
 
         assert!(matches!(
-            Proposal::checked(&reply, &known),
+            Proposal::checked(&reply, &known, &people()),
             Ok(Proposal::Answer { .. })
         ));
     }
@@ -1516,7 +1543,7 @@ mod tests {
         .to_string();
 
         assert!(matches!(
-            Proposal::checked(&reply, &known),
+            Proposal::checked(&reply, &known, &people()),
             Ok(Proposal::Answer { .. })
         ));
     }
@@ -1540,7 +1567,7 @@ mod tests {
         .to_string();
 
         assert!(matches!(
-            Proposal::checked(&reply, &known),
+            Proposal::checked(&reply, &known, &people()),
             Err(ChatError::UnknownTable { .. })
         ));
     }
@@ -1562,7 +1589,7 @@ mod tests {
         .to_string();
 
         assert!(matches!(
-            Proposal::checked(&reply, &[]),
+            Proposal::checked(&reply, &[], &people()),
             Ok(Proposal::Answer { .. })
         ));
     }
@@ -1631,7 +1658,7 @@ mod tests {
         let reply = "Sure!\n```json\n{\"intent\":\"create\",\"reply\":\"ok\",\"widgets\":[],\"dashboard\":{\"name\":\"lines\",\"body\":{\"title\":\"Lines\",\"widgets\":[]}}}\n```";
 
         assert!(matches!(
-            Proposal::parse(reply),
+            Proposal::parse(reply, &people()),
             Ok(Proposal::Create { .. })
         ));
     }
@@ -1641,7 +1668,7 @@ mod tests {
         let reply = json!({ "intent": "create", "reply": "done", "widgets": [] }).to_string();
 
         assert!(matches!(
-            Proposal::parse(&reply),
+            Proposal::parse(&reply, &people()),
             Err(ChatError::EmptyCreate)
         ));
     }
@@ -1661,7 +1688,7 @@ mod tests {
         .to_string();
 
         assert!(matches!(
-            Proposal::parse(&reply),
+            Proposal::parse(&reply, &people()),
             Err(ChatError::Metric(MetricQueryError::GroupBy(_)))
         ));
     }
@@ -1679,6 +1706,7 @@ mod tests {
                 map: "",
                 allowed: &[],
                 schemas: &FixedSchemas("unused"),
+                people: &people(),
             })
             .await
             .unwrap_or_else(|error| panic!("canned mode never fails: {error}"));

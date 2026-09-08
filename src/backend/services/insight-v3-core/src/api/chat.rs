@@ -17,7 +17,7 @@ use super::AppState;
 use crate::catalog::{Catalog, Layer, TableSchema};
 use crate::chat::{Ask, Catalogue, ChatError, KnownTable, Proposal, Schemas, Turn};
 use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
-use crate::metric_query::{MetricQueryError, RunResult};
+use crate::metric_query::{MetricQuery, MetricQueryError, RunResult};
 use crate::tables::TableName;
 
 #[resource_error("gts.cf.insight.insight_v3_core.chat.v1~")]
@@ -107,21 +107,14 @@ async fn handle_chat(
             map: &map,
             allowed: &allowed,
             schemas: &schemas,
+            people: state.metrics().people(),
         })
         .await
         .map_err(chat_error)?;
 
     match proposal {
         Proposal::Answer { reply, query } => {
-            // No query means the reply stands on its own - a question about
-            // what data exists is answered by the table list in the prompt.
-            let result = match query {
-                Some(query) => {
-                    let compiled = query.compile().map_err(|error| compile_error(&error))?;
-                    Some(state.metrics().run(&compiled).await.map_err(run_error)?)
-                }
-                None => None,
-            };
+            let result = answered_with(&state, query).await?;
 
             Ok(Json(ChatAnswerResponse { reply, result }).into_response())
         }
@@ -407,6 +400,27 @@ async fn known_tables(state: &AppState) -> Vec<KnownTable> {
     }
 
     described
+}
+
+/// The rows behind an answer.
+///
+/// No query means the reply stands on its own - a question about what data
+/// exists is answered by the table list in the prompt.
+async fn answered_with(
+    state: &AppState,
+    query: Option<MetricQuery>,
+) -> Result<Option<RunResult>, CanonicalError> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+
+    let compiled = query
+        .compile(state.metrics().people())
+        .map_err(|error| compile_error(&error))?;
+
+    Ok(Some(
+        state.metrics().run(&compiled).await.map_err(run_error)?,
+    ))
 }
 
 fn chat_error(error: ChatError) -> CanonicalError {

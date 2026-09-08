@@ -3,6 +3,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 const DEFAULT_CLICKHOUSE_DATABASE: &str = "insight";
+const DEFAULT_IDENTITY_DATABASE: &str = "identity";
 pub(crate) const MIN_INGEST_TOKEN_BYTES: usize = 32;
 pub(crate) const MAX_INGEST_TOKEN_BYTES: usize = 1024;
 const DEFAULT_CHAT_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -23,6 +24,8 @@ pub(crate) enum ChatMode {
 pub(crate) struct GearConfig {
     pub(crate) clickhouse_url: String,
     pub(crate) clickhouse_database: String,
+    /// The database identity materialises into.
+    pub(crate) identity_database: String,
     pub(crate) clickhouse_user: Option<String>,
     pub(crate) clickhouse_password: Option<SecretString>,
     /// The read-only principal the assistant's query path connects as. Blank
@@ -42,6 +45,7 @@ impl Default for GearConfig {
         Self {
             clickhouse_url: String::new(),
             clickhouse_database: DEFAULT_CLICKHOUSE_DATABASE.to_owned(),
+            identity_database: DEFAULT_IDENTITY_DATABASE.to_owned(),
             clickhouse_user: None,
             clickhouse_password: None,
             clickhouse_query_user: None,
@@ -60,6 +64,7 @@ impl Default for GearConfig {
 pub(crate) struct ValidatedConfig {
     clickhouse_url: String,
     clickhouse_database: String,
+    identity_database: String,
     clickhouse_user: Option<String>,
     clickhouse_password: Option<SecretString>,
     clickhouse_query_user: Option<String>,
@@ -146,12 +151,18 @@ impl ValidatedConfig {
     pub(crate) fn clickhouse_database(&self) -> String {
         self.clickhouse_database.clone()
     }
+
+    /// The database holding the names people are known by.
+    pub(crate) fn identity_database(&self) -> &str {
+        &self.identity_database
+    }
 }
 
 impl GearConfig {
     pub(crate) fn validate(self) -> Result<ValidatedConfig, ConfigError> {
         require_non_empty("clickhouse_url", &self.clickhouse_url)?;
         require_non_empty("clickhouse_database", &self.clickhouse_database)?;
+        require_non_empty("identity_database", &self.identity_database)?;
         require_non_empty("chat_model", &self.chat_model)?;
         require_non_empty("database_url", &self.database_url)?;
         require_non_empty("identity_url", &self.identity_url)?;
@@ -176,6 +187,7 @@ impl GearConfig {
         Ok(ValidatedConfig {
             clickhouse_url: self.clickhouse_url,
             clickhouse_database: self.clickhouse_database,
+            identity_database: self.identity_database,
             clickhouse_user: self.clickhouse_user,
             clickhouse_password: self.clickhouse_password,
             clickhouse_query_user,
@@ -277,6 +289,7 @@ mod tests {
         GearConfig {
             clickhouse_url: "http://clickhouse.example.test:8123".to_owned(),
             clickhouse_database: "insight".to_owned(),
+            identity_database: "identity".to_owned(),
             clickhouse_user: None,
             clickhouse_password: None,
             clickhouse_query_user: None,

@@ -30,9 +30,10 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
             insight_clickhouse::Config::new(url, "insight"),
         )),
         definitions.clone(),
-        MetricRunner::new(insight_clickhouse::Client::new(
-            insight_clickhouse::Config::new(url, "insight"),
-        )),
+        MetricRunner::new(
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(url, "insight")),
+            crate::metric_query::People::new("identity"),
+        ),
         ChatClient::canned(),
         crate::identity::IdentityClient::fixed(true),
         crate::catalog::Catalog::new(

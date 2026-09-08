@@ -420,6 +420,7 @@ services:
     environment:
       APP__gears__insight_v3_core__config__clickhouse_url: "http://${CLICKHOUSE_HOST:-clickhouse}:${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
+      APP__gears__insight_v3_core__config__identity_database: "${CLICKHOUSE_IDENTITY_DATABASE:-identity}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
       APP__gears__insight_v3_core__config__clickhouse_query_user: "${CLICKHOUSE_V3_READER_USER:-insight_v3_reader}"
@@ -457,6 +458,7 @@ services:
       !!merge <<: *backend-env
       APP__gears__insight_v3_core__config__clickhouse_url: "http://${CLICKHOUSE_HOST:-clickhouse}:${CLICKHOUSE_INTERNAL_HTTP_PORT:-8123}"
       APP__gears__insight_v3_core__config__clickhouse_database: "${CLICKHOUSE_DATABASE:-insight}"
+      APP__gears__insight_v3_core__config__identity_database: "${CLICKHOUSE_IDENTITY_DATABASE:-identity}"
       APP__gears__insight_v3_core__config__clickhouse_user: "${CLICKHOUSE_USER:-insight}"
       APP__gears__insight_v3_core__config__clickhouse_password: "${CLICKHOUSE_PASSWORD:-insight-local}"
       # deploy/compose/clickhouse-init.sql provisions this user on a fresh

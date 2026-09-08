@@ -12,6 +12,11 @@ const MAX_IDENTIFIER_CHARS: usize = 128;
 const DEFAULT_LIMIT: u32 = 1000;
 const MAX_LIMIT: u32 = 10000;
 const FETCH_TIMEOUT_SECS: u64 = 30;
+const FACT_ALIAS: &str = "__f";
+const NAME_CTE: &str = "__person_name";
+const EMAIL_CTE: &str = "__people_by_email";
+const ID_CTE: &str = "__people_by_id";
+const IDENTITY_TABLE: &str = "identity_persons";
 const MAX_RESULT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +72,86 @@ struct Field {
     #[serde(default)]
     agg: Option<Agg>,
     as_name: String,
+    /// What this column holds a person by, when it holds one.
+    #[serde(default)]
+    person: Option<PersonHandle>,
+}
+
+/// Which handle a person column carries.
+///
+/// A fact table names a person the way its source system did - the address
+/// they committed under, the id an API returned. Neither is the name anyone
+/// would recognise them by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PersonHandle {
+    Email,
+    Id,
+}
+
+impl PersonHandle {
+    fn cte(self) -> &'static str {
+        match self {
+            Self::Email => EMAIL_CTE,
+            Self::Id => ID_CTE,
+        }
+    }
+
+    /// The handle as the identity side spells it: ids are compared as text,
+    /// because the fact table stores one as a UUID, a String, or neither.
+    fn key(self, read: &str) -> String {
+        match self {
+            Self::Email => read.to_owned(),
+            Self::Id => format!("toString({read})"),
+        }
+    }
+}
+
+/// Where a person's name is resolved from.
+///
+/// The identity database on this stand. Only the database is configurable:
+/// the table and the `value_type` rows inside it are identity's own schema,
+/// not something a stand chooses.
+#[derive(Debug, Clone)]
+pub(crate) struct People {
+    database: String,
+}
+
+impl People {
+    pub(crate) fn new(database: impl Into<String>) -> Self {
+        Self {
+            database: database.into(),
+        }
+    }
+
+    /// The `WITH` clauses the joins read from.
+    ///
+    /// A person accumulates a row per name they have ever had, so the latest
+    /// one wins by `argMax` before anything joins to it. Joining the rows
+    /// directly multiplies every fact by that history - it turned 752 merged
+    /// pull requests into 18,800.
+    fn prelude(&self, handles: &[PersonHandle]) -> Result<String, MetricQueryError> {
+        if !is_identifier(&self.database) {
+            return Err(MetricQueryError::Identifier(self.database.clone()));
+        }
+        let persons = format!("`{}`.`{IDENTITY_TABLE}`", self.database);
+
+        let mut ctes = vec![format!(
+            "{NAME_CTE} AS (SELECT `person_id`, argMax(`value_effective`, `created_at`) AS `display_name` FROM {persons} WHERE `value_type` = 'display_name' GROUP BY `person_id`)"
+        )];
+        for handle in handles {
+            ctes.push(match handle {
+                PersonHandle::Email => format!(
+                    "{EMAIL_CTE} AS (SELECT `h`.`handle` AS `handle`, `n`.`display_name` AS `display_name` FROM (SELECT `value_effective` AS `handle`, argMax(`person_id`, `created_at`) AS `person_id` FROM {persons} WHERE `value_type` = 'email' GROUP BY `value_effective`) AS `h` INNER JOIN {NAME_CTE} AS `n` ON `n`.`person_id` = `h`.`person_id`)"
+                ),
+                PersonHandle::Id => format!(
+                    "{ID_CTE} AS (SELECT toString(`person_id`) AS `handle`, `display_name` FROM {NAME_CTE})"
+                ),
+            });
+        }
+
+        Ok(format!("WITH {} ", ctes.join(", ")))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,17 +193,19 @@ impl Field {
     /// the most natural aggregate there is, and one the language could not
     /// express while every field had to name a source. Every other
     /// aggregate, and every plain field, still reads exactly one.
-    fn expression(&self) -> Result<String, MetricQueryError> {
+    fn expression(&self, qualifier: Option<&str>) -> Result<String, MetricQueryError> {
         if self.agg == Some(Agg::Count) && self.json.is_none() && self.column.is_none() {
             return Ok("count()".to_owned());
         }
 
-        let read = self.source()?.sql(self.r#type)?;
+        Ok(self.aggregated(self.source()?.sql(self.r#type, qualifier)?))
+    }
 
-        Ok(match self.agg {
+    fn aggregated(&self, read: String) -> String {
+        match self.agg {
             Some(agg) => format!("{}({read})", agg.sql()),
             None => read,
-        })
+        }
     }
 }
 
@@ -145,13 +232,20 @@ impl<'a> Source<'a> {
         }
     }
 
-    fn sql(self, field_type: FieldType) -> Result<String, MetricQueryError> {
+    fn sql(
+        self,
+        field_type: FieldType,
+        qualifier: Option<&str>,
+    ) -> Result<String, MetricQueryError> {
         if !is_identifier(self.name()) {
             return Err(MetricQueryError::Identifier(self.name().to_owned()));
         }
         Ok(match self {
-            Self::Json(json) => field_type.extract(json),
-            Self::Column(column) => format!("`{column}`"),
+            Self::Json(json) => field_type.extract(json, qualifier),
+            Self::Column(column) => match qualifier {
+                Some(alias) => format!("`{alias}`.`{column}`"),
+                None => format!("`{column}`"),
+            },
         })
     }
 }
@@ -165,13 +259,17 @@ pub(crate) enum FieldType {
 }
 
 impl FieldType {
-    fn extract(self, json: &str) -> String {
+    fn extract(self, json: &str, qualifier: Option<&str>) -> String {
         let function = match self {
             Self::String => "JSONExtractString",
             Self::Int => "JSONExtractInt",
             Self::Float => "JSONExtractFloat",
         };
-        format!("{function}(raw_data, '{json}')")
+        let payload = match qualifier {
+            Some(alias) => format!("`{alias}`.raw_data"),
+            None => "raw_data".to_owned(),
+        };
+        format!("{function}({payload}, '{json}')")
     }
 }
 
@@ -261,6 +359,16 @@ impl PartialEq<String> for FilterBind {
     }
 }
 
+/// What the field list compiled to.
+struct Selection<'a> {
+    parts: Vec<String>,
+    as_names: HashSet<&'a str>,
+    column_types: HashMap<String, FieldType>,
+    /// The joins a person's name needs, if any field asked for one.
+    joins: String,
+    handles: Vec<PersonHandle>,
+}
+
 #[derive(Debug)]
 pub(crate) struct CompiledQuery {
     pub(crate) sql: String,
@@ -325,7 +433,56 @@ impl MetricQuery {
             .collect()
     }
 
-    pub(crate) fn compile(&self) -> Result<CompiledQuery, MetricQueryError> {
+    /// Each field as it is selected, with whatever joining in a person's
+    /// name takes with it.
+    fn selection(&self, qualifier: Option<&str>) -> Result<Selection<'_>, MetricQueryError> {
+        let mut selection = Selection {
+            parts: Vec::with_capacity(self.fields.len()),
+            as_names: HashSet::with_capacity(self.fields.len()),
+            column_types: HashMap::with_capacity(self.fields.len()),
+            joins: String::new(),
+            handles: Vec::new(),
+        };
+
+        for (index, field) in self.fields.iter().enumerate() {
+            if !is_identifier(&field.as_name) {
+                return Err(MetricQueryError::Identifier(field.as_name.clone()));
+            }
+            selection.as_names.insert(field.as_name.as_str());
+            selection
+                .column_types
+                .insert(field.as_name.clone(), field.r#type);
+
+            let expression = match field.person {
+                Some(handle) => {
+                    if !selection.handles.contains(&handle) {
+                        selection.handles.push(handle);
+                    }
+                    let read = field.source()?.sql(field.r#type, qualifier)?;
+                    let alias = format!("__p{index}");
+                    let _ = write!(
+                        selection.joins,
+                        " LEFT JOIN {} AS `{alias}` ON `{alias}`.`handle` = {}",
+                        handle.cte(),
+                        handle.key(&read)
+                    );
+                    // Identity knows nobody by this handle: show what the
+                    // table itself says, never a blank.
+                    field.aggregated(format!(
+                        "coalesce(nullIf(`{alias}`.`display_name`, ''), {read})"
+                    ))
+                }
+                None => field.expression(qualifier)?,
+            };
+            selection
+                .parts
+                .push(format!("{expression} AS `{}`", field.as_name));
+        }
+
+        Ok(selection)
+    }
+
+    pub(crate) fn compile(&self, people: &People) -> Result<CompiledQuery, MetricQueryError> {
         let (database, table) = self.split();
         if !is_identifier(table) {
             return Err(MetricQueryError::Identifier(self.table.clone()));
@@ -339,18 +496,21 @@ impl MetricQuery {
             return Err(MetricQueryError::NoFields);
         }
 
-        let mut select_parts = Vec::with_capacity(self.fields.len());
-        let mut as_names = HashSet::with_capacity(self.fields.len());
-        let mut column_types = HashMap::with_capacity(self.fields.len());
-        for field in &self.fields {
-            if !is_identifier(&field.as_name) {
-                return Err(MetricQueryError::Identifier(field.as_name.clone()));
-            }
-            as_names.insert(field.as_name.as_str());
-            column_types.insert(field.as_name.clone(), field.r#type);
-
-            select_parts.push(format!("{} AS `{}`", field.expression()?, field.as_name));
-        }
+        // Resolving a name joins another table in, and then a bare column
+        // could mean either side - so every read carries the fact table's
+        // alias exactly when there is something to be ambiguous with.
+        let qualifier = self
+            .fields
+            .iter()
+            .any(|field| field.person.is_some())
+            .then_some(FACT_ALIAS);
+        let Selection {
+            parts: select_parts,
+            as_names,
+            column_types,
+            joins,
+            handles,
+        } = self.selection(qualifier)?;
 
         for group in &self.group_by {
             if !is_identifier(group) {
@@ -365,16 +525,27 @@ impl MetricQuery {
         let mut binds = Vec::with_capacity(self.filters.len());
         for filter in &self.filters {
             let source = filter.source()?;
-            let read = source.sql(filter.r#type)?;
+            let read = source.sql(filter.r#type, qualifier)?;
             where_parts.push(format!("{read} {} ?", filter.op.sql()));
             binds.push(filter.bind(source)?);
         }
 
-        let from = match database {
+        let mut from = match database {
             Some(database) => format!("`{database}`.`{table}`"),
             None => format!("`{table}`"),
         };
-        let mut sql = format!("SELECT {} FROM {from}", select_parts.join(", "));
+        if let Some(alias) = qualifier {
+            let _ = write!(from, " AS `{alias}`");
+        }
+        let prelude = if handles.is_empty() {
+            String::new()
+        } else {
+            people.prelude(&handles)?
+        };
+        let mut sql = format!(
+            "{prelude}SELECT {} FROM {from}{joins}",
+            select_parts.join(", ")
+        );
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));
@@ -465,14 +636,21 @@ struct ClickHouseJsonResult {
 pub(crate) struct MetricRunner {
     client: insight_clickhouse::Client,
     fetch_timeout: Duration,
+    people: People,
 }
 
 impl MetricRunner {
-    pub(crate) fn new(client: insight_clickhouse::Client) -> Self {
+    pub(crate) fn new(client: insight_clickhouse::Client, people: People) -> Self {
         Self {
             client,
             fetch_timeout: Duration::from_secs(FETCH_TIMEOUT_SECS),
+            people,
         }
+    }
+
+    /// Where the queries this runs resolve a person's name from.
+    pub(crate) fn people(&self) -> &People {
+        &self.people
     }
 
     pub(crate) async fn run(&self, compiled: &CompiledQuery) -> Result<RunResult, MetricRunError> {
@@ -561,6 +739,204 @@ mod tests {
         serde_json::from_value(value).unwrap_or_else(|error| panic!("valid metric: {error}"))
     }
 
+    fn people() -> People {
+        People::new("identity")
+    }
+
+    fn merged_by_author(person: &str) -> MetricQuery {
+        query(json!({
+            "table": "silver.class_git_pull_requests",
+            "fields": [
+                { "column": "author_email", "type": "string", "as_name": "author", "person": person },
+                { "agg": "count", "column": "pr_id", "type": "int", "as_name": "merged" }
+            ],
+            "group_by": ["author"],
+            "filters": [{ "column": "state", "type": "string", "op": "eq", "value": "MERGED" }],
+            "order_by": { "field": "merged", "direction": "desc" }
+        }))
+    }
+
+    #[test]
+    fn a_person_column_selects_the_name_identity_knows() {
+        let compiled = merged_by_author("email")
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains(
+                "coalesce(nullIf(`__p0`.`display_name`, ''), `__f`.`author_email`) AS `author`"
+            ),
+            "{}",
+            compiled.sql
+        );
+        assert!(
+            compiled.sql.contains(
+                "LEFT JOIN __people_by_email AS `__p0` ON `__p0`.`handle` = `__f`.`author_email`"
+            ),
+            "{}",
+            compiled.sql
+        );
+        assert!(
+            compiled
+                .sql
+                .contains("FROM `silver`.`class_git_pull_requests` AS `__f`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn the_latest_name_wins_before_anything_joins_to_it() {
+        // A person carries a row per name they have ever had. Joining those
+        // rows directly multiplies every fact by that history.
+        let compiled = merged_by_author("email")
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.starts_with(
+                "WITH __person_name AS (SELECT `person_id`, argMax(`value_effective`, `created_at`) AS `display_name` FROM `identity`.`identity_persons` WHERE `value_type` = 'display_name' GROUP BY `person_id`)"
+            ),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn resolving_a_name_qualifies_every_other_read() {
+        let compiled = merged_by_author("email")
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("count(`__f`.`pr_id`) AS `merged`"),
+            "{}",
+            compiled.sql
+        );
+        assert!(
+            compiled.sql.contains("WHERE `__f`.`state` = ?"),
+            "{}",
+            compiled.sql
+        );
+        assert_eq!(compiled.binds, vec!["MERGED".to_owned()]);
+    }
+
+    #[test]
+    fn a_query_that_names_no_person_joins_nothing() {
+        let compiled = query(json!({
+            "table": "silver.class_git_pull_requests",
+            "fields": [{ "column": "author_email", "type": "string", "as_name": "author" }],
+            "group_by": ["author"],
+            "filters": []
+        }))
+        .compile(&people())
+        .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(!compiled.sql.contains("WITH "), "{}", compiled.sql);
+        assert!(!compiled.sql.contains("JOIN"), "{}", compiled.sql);
+        assert!(!compiled.sql.contains("__f"), "{}", compiled.sql);
+    }
+
+    #[test]
+    fn a_person_id_is_compared_as_text() {
+        // The same column is a UUID in one table and a String in the next.
+        let compiled = query(json!({
+            "table": "silver.class_git_pull_requests",
+            "fields": [
+                { "column": "author_person_id", "type": "string", "as_name": "author", "person": "id" },
+                { "agg": "count", "type": "int", "as_name": "prs" }
+            ],
+            "group_by": ["author"],
+            "filters": []
+        }))
+        .compile(&people())
+        .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains(
+                "LEFT JOIN __people_by_id AS `__p0` ON `__p0`.`handle` = toString(`__f`.`author_person_id`)"
+            ),
+            "{}",
+            compiled.sql
+        );
+        assert!(
+            compiled
+                .sql
+                .contains("__people_by_id AS (SELECT toString(`person_id`) AS `handle`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn two_person_columns_resolve_one_each() {
+        let compiled = query(json!({
+            "table": "silver.class_git_pr_review_events",
+            "fields": [
+                { "column": "author_email", "type": "string", "as_name": "author", "person": "email" },
+                { "column": "actor_person_id", "type": "string", "as_name": "reviewer", "person": "id" },
+                { "agg": "count", "type": "int", "as_name": "reviews" }
+            ],
+            "group_by": ["author", "reviewer"],
+            "filters": []
+        }))
+        .compile(&people())
+        .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(compiled.sql.contains("AS `__p0`"), "{}", compiled.sql);
+        assert!(compiled.sql.contains("AS `__p1`"), "{}", compiled.sql);
+        assert_eq!(
+            compiled.sql.matches("LEFT JOIN").count(),
+            2,
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_person_inside_the_payload_resolves_the_same_way() {
+        let compiled = query(json!({
+            "table": "events",
+            "fields": [
+                { "json": "author", "type": "string", "as_name": "author", "person": "email" },
+                { "agg": "sum", "json": "lines", "type": "int", "as_name": "lines" }
+            ],
+            "group_by": ["author"],
+            "filters": []
+        }))
+        .compile(&people())
+        .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled
+                .sql
+                .contains("ON `__p0`.`handle` = JSONExtractString(`__f`.raw_data, 'author')"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn the_identity_database_is_whatever_the_stand_configured() {
+        let compiled = merged_by_author("email")
+            .compile(&People::new("identity_two"))
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("`identity_two`.`identity_persons`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn an_identity_database_outside_the_charset_is_refused() {
+        assert!(matches!(
+            merged_by_author("email").compile(&People::new("identity`; DROP TABLE x; --")),
+            Err(MetricQueryError::Identifier(_))
+        ));
+    }
+
     #[test]
     fn a_grouped_count_compiles_to_json_extraction_over_the_payload() {
         let metric = query(json!({
@@ -575,7 +951,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert_eq!(
@@ -599,7 +975,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(
@@ -620,7 +996,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::Identifier(_))
         ));
     }
@@ -643,7 +1019,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("the query compiles: {error}"));
 
         assert!(
@@ -672,7 +1048,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("the query compiles: {error}"));
 
         assert!(
@@ -693,7 +1069,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::OrderBy(_))
         ));
     }
@@ -710,7 +1086,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("the query compiles: {error}"));
 
         assert!(
@@ -730,7 +1106,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("the query compiles: {error}"));
 
         assert!(
@@ -751,7 +1127,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::FieldSource(_))
         ));
     }
@@ -768,7 +1144,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("the query compiles: {error}"));
 
         assert!(
@@ -806,7 +1182,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::Identifier(_))
         ));
     }
@@ -817,7 +1193,10 @@ mod tests {
             "table": "events", "fields": [], "group_by": [], "filters": []
         }));
 
-        assert!(matches!(metric.compile(), Err(MetricQueryError::NoFields)));
+        assert!(matches!(
+            metric.compile(&people()),
+            Err(MetricQueryError::NoFields)
+        ));
     }
 
     #[test]
@@ -832,7 +1211,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert_eq!(compiled.binds, vec!["5".to_owned()]);
@@ -850,7 +1229,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::FilterValue(_))
         ));
     }
@@ -875,7 +1254,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::GroupBy(_))
         ));
     }
@@ -891,7 +1270,7 @@ mod tests {
         assert_eq!(metric.database(), Some("silver"));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(
@@ -911,7 +1290,7 @@ mod tests {
         assert_eq!(metric.database(), None);
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(compiled.sql.contains("FROM `events`"), "{}", compiled.sql);
@@ -926,7 +1305,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(
@@ -948,7 +1327,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(
@@ -970,7 +1349,7 @@ mod tests {
         }));
 
         let compiled = metric
-            .compile()
+            .compile(&people())
             .unwrap_or_else(|error| panic!("compiles: {error}"));
 
         assert!(
@@ -991,7 +1370,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::FieldSource(_))
         ));
     }
@@ -1004,7 +1383,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::FieldSource(_))
         ));
     }
@@ -1018,7 +1397,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::FieldSource(_))
         ));
     }
@@ -1032,7 +1411,7 @@ mod tests {
         }));
 
         assert!(matches!(
-            metric.compile(),
+            metric.compile(&people()),
             Err(MetricQueryError::Identifier(_))
         ));
     }
