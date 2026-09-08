@@ -120,6 +120,8 @@ jobs:
               - '.github/workflows/e2e-stand.yml'
               - 'src/backend/services/analytics/**'
               - 'src/backend/libs/insight-clickhouse/**'
+              # Shipped dataset declarations are embedded into the image.
+              - 'src/ingestion/datasets/**/dataset.yaml'
               # The shared entrypoint is baked into the image.
               - 'src/backend/docker-entrypoint.sh'
               - 'src/backend/Cargo.toml'
@@ -363,6 +365,8 @@ jobs:
         with:
           context: src/backend
           file: src/backend/services/analytics/Dockerfile
+          build-contexts: |
+            datasets=src/ingestion/datasets
           platforms: linux/${{ matrix.arch }}
           # PR and merge-group amd64 legs write a loadable tarball instead of
           # discarding the result. Other legs keep the push-by-digest output.

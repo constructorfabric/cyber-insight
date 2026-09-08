@@ -2,6 +2,7 @@
 
 pub(crate) mod ai;
 mod connector_health;
+mod datasets;
 pub(crate) mod error;
 mod feedback;
 mod ingestion;
@@ -40,6 +41,7 @@ use tokio::sync::Semaphore;
 use crate::config::GearConfig;
 use crate::domain::ai::dto as ai_dto;
 use crate::domain::connector_health as connector_health_domain;
+use crate::domain::datasets::describe as dataset_describe;
 use crate::domain::external_links::ExternalSourceRegistry;
 use crate::domain::metric_crud;
 use crate::domain::metric_definitions::listing as metric_definitions_listing;
@@ -486,6 +488,43 @@ pub(crate) fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) ->
         )
         .standard_errors(openapi)
         .handler(ai::explain::explain_metric)
+        .register(router, openapi);
+
+    // What a query may be built over. Read-only over the declarations loaded at
+    // boot, so both operations answer the same object and neither touches the
+    // warehouse. Gated with the query surface they describe.
+    router = OperationBuilder::get("/v1/datasets")
+        .operation_id("analytics_api.datasets.list")
+        .summary("List the datasets a query may be built over")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<dataset_describe::DatasetListDescription>(
+            openapi,
+            StatusCode::OK,
+            "The declared datasets",
+        )
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .handler(datasets::list_datasets)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/v1/datasets/{key}")
+        .operation_id("analytics_api.datasets.get")
+        .summary("Describe one dataset a query may be built over")
+        .path_param("key", "The dataset key, as a query names it")
+        .authenticated()
+        .no_license_required()
+        .json_response_with_schema::<dataset_describe::DatasetDescription>(
+            openapi,
+            StatusCode::OK,
+            "The declared dataset",
+        )
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .handler(datasets::get_dataset)
         .register(router, openapi);
 
     router = OperationBuilder::post("/v1/metric-results")

@@ -1,8 +1,10 @@
 pub mod ai;
 pub(crate) mod connector_health;
 pub mod contract_version;
+pub mod datasets;
 pub(crate) mod date_window;
 pub mod external_links;
+pub mod field_catalog;
 pub(crate) mod metric_access;
 pub mod metric_crud;
 pub mod metric_definitions;

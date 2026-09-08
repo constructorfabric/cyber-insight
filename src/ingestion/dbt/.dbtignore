@@ -3,3 +3,5 @@
 **/.venv/**
 **/node_modules/**
 **/__pycache__/**
+# Dataset declarations are read by the analytics service, not by dbt
+**/dataset.yaml

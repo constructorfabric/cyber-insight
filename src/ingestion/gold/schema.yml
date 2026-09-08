@@ -102,6 +102,44 @@ models:
         tests:
           - not_null
 
+  - name: git_authored_file_changes
+    description: >
+      One row per authored change CONTENT: the file changes attached to the
+      surviving commits, less the ones an earlier commit already carried (same
+      content identity) and the ones a partly collected squash superseded.
+      Earliest commit wins. Materialized so the sort behind the dedup runs once
+      per build; the metric evidence and the query datasets both read it.
+    columns:
+      - name: tenant_id
+        description: >
+          Tenant isolation field. Nullable on the git class relations and
+          preserved as such here, so no not_null test.
+      - name: source_id
+        description: "Connector instance the surviving commit was collected from"
+      - name: project_key
+        description: "Project of the surviving commit"
+      - name: repo_slug
+        description: "Repository of the surviving commit"
+      - name: commit_hash
+        description: "Commit that first authored the content"
+        tests:
+          - not_null
+      - name: data_source
+        description: "Git source discriminator (insight_github, insight_gitlab, ...)"
+        tests:
+          - not_null
+      - name: file_path
+        description: "Path of the changed file within the repository"
+        tests:
+          - not_null
+      - name: file_extension
+        description: "File extension as collected, empty when the path has none"
+      - name: change_type
+        description: "Change type as collected (added, modified, renamed, deleted)"
+      - name: lines_added
+        description: "Lines added by this change, NULL when the source reports none"
+      - name: lines_removed
+        description: "Lines removed by this change, NULL when the source reports none"
   - name: git_commit_file_changes
     description: >
       File changes attached to the commit row that survived the hash collapse,
