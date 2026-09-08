@@ -7,8 +7,8 @@ date: 2026-09-08
 # Feature: Profile Resolution
 
 **Revision 1.1:** Attach vector tests directly to this feature and its PRD
-requirements. Restore the canonical acceptance checklist; retain open decisions
-as deferred scenarios rather than an AC coverage scheme.
+requirements. Restore the canonical acceptance checklist; keep open decisions in
+the decisions table rather than as placeholder scenarios.
 
 
 <!-- toc -->
@@ -110,11 +110,11 @@ acceptance baseline. Role owners below are proposed responsibilities for review.
 
 | Decision | Finding and proposed disposition | Owner / resolution point |
 |----------|----------------------------------|--------------------------|
-| D-1: Ambiguity contract | PRD section 5.2 and ADR-0009 require 422 and structured ambiguity members; the committed contract exposes 409 and `Problem`. Scenario 4 covers refusal without selecting an arbitrary person; scenario 18 defers the exact wire oracle. Reconcile PRD, DESIGN, ADR and contract together before enabling that gate. | Identity service API owner, before approval of this FEATURE. |
-| D-2: Legacy latency | The local NFR names the old GET lookup, which is absent from the current route table. Do not transfer its 50 ms p95 target or unreferenced 200 ms fallback to POST. The inherited profile target remains applicable independently. | Identity service maintainer and product owner, before approval of a replacement or retirement of scenario 17. |
-| D-3: Measurement conditions | Memory specifies 50 000 observation rows, 100 RPS and 24 hours; domain latency specifies p99 < 50 ms at 1000 requests/s without a fixture. No identity load/soak lane was found in `tests/`, `scripts/` or `.github/`. Define one synthetic fixture, hardware, tree shape, request distribution, warm-up and latency duration; reuse it at each requirement's own load. | Identity service maintainer and QA, before running scenarios 12–13 or claiming either NFR. |
-| D-4: Source coverage | The new PRD NFR formalises the existing multi-source goal. Inventory supported identity-emitting sources and pin representative fixtures, including two instances of a source. A unit fixture alone does not prove every connector's output. | Identity service and connector maintainers with QA, before claiming scenario 15. |
-| D-5: Canonical ID and visibility | OpenAPI includes `person_id` lookup, absent from PRD section 5.2. Code inspection also exposes a same-tenant visibility filter before ambiguity selection; tenant isolation alone does not specify that policy. Scenario 16's canonical-ID requirement link and scenario 19's visibility requirement are deferred until the product/API owner reconciles the upstream scope. | Product/API owner, reconcile the upstream requirements before FEATURE approval. |
+| D-1: Ambiguity contract | PRD section 5.2 and ADR-0009 require 422 and structured ambiguity members; the committed contract exposes 409 and `Problem`. Scenario 4 covers refusal without selecting an arbitrary person; no scenario asserts the exact wire oracle until this is reconciled across PRD, DESIGN, ADR and contract. | Identity service API owner, before approval of this FEATURE. |
+| D-2: Legacy latency | The local NFR names the old GET lookup, which is absent from the current route table. Do not transfer its 50 ms p95 target or unreferenced 200 ms fallback to POST. The inherited profile target remains applicable independently. | Identity service maintainer and product owner, before a replacement or retirement is specified; no scenario asserts the legacy operation. |
+| D-3: Measurement conditions | Memory specifies 50 000 observation rows, 100 RPS and 24 hours; domain latency specifies p99 < 50 ms at 1000 requests/s without a fixture. Both are now read from operational telemetry rather than run, so no synthetic fixture or load harness is required. What remains to agree is the window and environment each reading is taken over, and whether traffic from load runs is excluded from it. | Identity service maintainer and QA, before either reading is cited as evidence. |
+| D-4: Source coverage | The new PRD NFR formalises the existing multi-source goal. Inventory supported identity-emitting sources and pin representative fixtures, including two instances of a source. A unit fixture alone does not prove every connector's output. | Identity service and connector maintainers with QA, before source coverage is claimed. |
+| D-5: Canonical ID and visibility | OpenAPI includes `person_id` lookup, absent from PRD section 5.2. Code inspection also exposes a same-tenant visibility filter before ambiguity selection; tenant isolation alone does not specify that policy. The canonical-ID lookup and the caller-visibility policy have no agreed upstream requirement, so no scenario asserts either until the product/API owner reconciles the upstream scope. | Product/API owner, reconcile the upstream requirements before FEATURE approval. |
 
 The wider service PRD/DESIGN audit remains open; this profile slice does not
 certify other endpoints or inherited domain-wide mirror behaviour.
@@ -234,8 +234,8 @@ leaking raw email lookup values or database credentials.
 - [ ] `p1` - **ID**: `cpt-identity-svc-dod-profile-resolution-evidence`
 
 The feature **MUST** link its PRD requirements to vector-attributed scenarios and exact tests and attach passing
-evidence identifying revision, fixtures and run conditions. D-1 through D-5 and
-deferred scenarios must be resolved before declaring the feature accepted.
+evidence identifying revision, fixtures and run conditions. D-1 through D-5 must
+be resolved before declaring the feature accepted.
 Tests must cite this FEATURE path, its feature ID and stable scenario number;
 native test vector markers must match. Inherited domain obligations remain shared gates.
 
@@ -255,8 +255,7 @@ native test vector markers must match. Inherited domain obligations remain share
 - [ ] The feature satisfies its applicable local and inherited quality requirements under approved fixture and measurement conditions.
 
 The checklist states feature completion conditions. D-1 through D-5 must be
-resolved before acceptance; test cases, requirement links and deferred work live
-in Testing.
+resolved before acceptance; test cases and requirement links live in Testing.
 
 ## 7. Testing
 
@@ -282,7 +281,7 @@ test when mapped. All implementation mappings and passing evidence remain open.
   **Requirements**: `cpt-insightspec-fr-identity-lookup-404`.
   **Test**: Not yet mapped to this complete scenario.
 
-- [ ] 4. **Ambiguity refusal** — Reliability · identity-e2e — give one lookup two permitted candidate persons → resolution refuses without choosing either profile; exact status and diagnostic fields remain deferred under scenario 18.
+- [ ] 4. **Ambiguity refusal** — Reliability · identity-e2e — give one lookup two permitted candidate persons → resolution refuses without choosing either profile; the exact status and diagnostic fields await D-1.
   **Requirements**: `cpt-insightspec-fr-identity-profile-ambiguous-422`.
   **Test**: Not yet mapped to this complete scenario.
 
@@ -314,49 +313,26 @@ test when mapped. All implementation mappings and passing evidence remain open.
   **Requirements**: `cpt-insightspec-nfr-identity-logging-pii`.
   **Test**: Not yet mapped to this complete scenario.
 
-- **deferred** 12. **Bounded memory** — Efficiency · manual — after D-3 approval, sustain the specified hot/cold lookup mix at 100 RPS for 24 hours over 50 000 synthetic observation rows → service RSS never exceeds 384 MiB; no load/soak lane is wired, so procedure and evidence remain required.
+- [ ] 12. **Bounded memory** — Efficiency · observed — read the identity service's memory used against what it reserved, over a stated window on a named environment → peak stays within the reserved 384 MiB, and the share of its request is reported with it.
   **Requirements**: `cpt-insightspec-nfr-identity-memory`.
-  **Test**: Not yet mapped to this complete scenario.
-  **Blocked by**: D-3 — Identity service maintainer and QA must approve the fixture and soak procedure before execution.
+  **Test**: Not yet mapped; names the panel, window and environment when read.
 
-- **deferred** 13. **Profile lookup latency** — Performance · manual — after D-3 approval, run existing-binding profile lookups at sustained 1000 requests/s on the approved synthetic fixture and hardware → p99 stays below 50 ms, with errors reported separately rather than discarded; the load harness and run duration remain prerequisites.
+- [ ] 13. **Profile lookup latency** — Performance · observed — read the profile lookup endpoint's latency percentiles over a stated window on a named environment → p99 stays below 50 ms, with the error ratio reported beside it rather than folded in.
   **Requirements**: `cpt-ir-nfr-alias-lookup-latency`.
-  **Test**: Not yet mapped to this complete scenario.
-  **Blocked by**: D-3 — Identity service maintainer and QA must approve the shared fixture, hardware, run duration and load harness before execution.
+  **Test**: Not yet mapped; names the panel, window and environment when read.
 
 - [ ] 14. **Current source aliases** — Versatility · identity-e2e — seed several source instances and supersede a native-ID observation → the resolved profile lists exactly the current alias of each instance, without the older alias.
   **Requirements**: `cpt-insightspec-fr-identity-profile-ids-list`.
   **Test**: Not yet mapped to this complete scenario.
-
-- **deferred** 15. **Every identity source** — Versatility · identity-e2e — feed each approved manifest source through its identity data path, including two instances sharing a native ID → expected people and alias sets resolve without instance collisions; missing source fixtures remain open coverage gaps.
-  **Requirements**: `cpt-identity-svc-nfr-profile-source-coverage`.
-  **Test**: Not yet mapped to this complete scenario.
-  **Blocked by**: D-4 — Identity service and connector maintainers with QA must approve the source fixture manifest before coverage can be claimed.
-
-- **deferred** 16. **Canonical identity lookup** — Versatility · stand-api — resolve the same synthetic person by canonical ID and email, then resolve a seeded person without email by canonical ID → shared lookups return equal profiles and the email-less person's profile remains addressable.
-  **Requirements**: `cpt-insightspec-fr-identity-profile-resolve`.
-  **Test**: Not yet mapped to this complete scenario.
-  **Blocked by**: D-5 — Product/API owner must reconcile the published canonical-ID mode with the PRD profile requirement before this test's requirement link is accepted.
-
-- **deferred** 17. **Legacy lookup latency** — Performance · manual — measure the approved successor operation under the agreed scale conditions → satisfy the retained local latency obligation.
-  **Requirements**: `cpt-insightspec-nfr-identity-latency`.
-  **Blocked by**: D-2 — Identity service maintainer and product owner must replace or retire the legacy operation mapping and fix the scale conditions before a runnable test is specified.
-
-- **deferred** 18. **Error wire contract** — Reliability · stand-api — exercise ambiguous and invalid profile lookups → status and permitted diagnostic fields match the reconciled contract.
-  **Requirements**: `cpt-insightspec-fr-identity-profile-ambiguous-422`, `cpt-insightspec-fr-identity-profile-validation`.
-  **Blocked by**: D-1 — Identity service API owner must reconcile PRD, DESIGN, ADR and OpenAPI before the exact oracle is accepted.
-
-- **deferred** 19. **Caller visibility** — Security · identity-e2e — query visible and hidden same-tenant candidates through each supported lookup → success, nested profiles and ambiguity diagnostics respect the agreed caller scope.
-  **Requirements**: Missing upstream visibility requirement; tenant isolation alone does not specify same-tenant visibility.
-  **Blocked by**: D-5 — Product/API owner must establish and reference the visibility requirement in the PRD and this feature's section 1.2 before this test can be specified.
 
 ### Test boundaries and evidence
 
 Identity data-path tests use persisted synthetic observations and edges; Rust
 tests cover logging and pure assembly logic. API tests exercise the published
 wire surface with synthetic callers. A unit fixture cannot prove connector
-output or database UUID persistence. Memory and latency share the D-3 fixture
-at their distinct upstream loads; neither has an approved runnable procedure yet.
+output or database UUID persistence. Memory and latency are read from
+operational telemetry rather than run, so each names its panel, window and
+environment, and neither gates a change.
 
 Identity service maintainer and QA own requirement-to-scenario mappings, exact
 test links and revision-stamped results; connector maintainers own the source
