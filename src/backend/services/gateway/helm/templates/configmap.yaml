@@ -20,7 +20,10 @@ data:
         {{- end }}
     routes:
       {{- range .Values.gateway.routes }}
-      {{- if and (or (not (.mcpOnly | default false)) $.Values.global.mcp.enabled) (or (not (.sqlApiOnly | default false)) $.Values.global.sqlApi.enabled) }}
+      {{- $mcpOk := or (not (.mcpOnly | default false)) $.Values.global.mcp.enabled }}
+      {{- $sqlApiOk := or (not (.sqlApiOnly | default false)) $.Values.global.sqlApi.enabled }}
+      {{- $previewsOk := or (not (.previewsOnly | default false)) $.Values.global.previews.enabled }}
+      {{- if and $mcpOk $sqlApiOk $previewsOk }}
       - prefix: {{ .prefix }}
         upstream: {{ tpl .upstream $ | quote }}
         {{- with .auth }}
