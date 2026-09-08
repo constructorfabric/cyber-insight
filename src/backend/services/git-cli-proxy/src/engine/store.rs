@@ -3159,7 +3159,8 @@ pub(crate) mod tests {
 
         sh(
             &f.root.join("origin"),
-            "echo later > later.txt && git add later.txt && \
+            "dd if=/dev/urandom of=later.bin bs=1024 count=4096 status=none && \
+             git add later.bin && \
              GIT_AUTHOR_DATE='2026-08-03T10:00:00+0000' \
              GIT_COMMITTER_DATE='2026-08-03T10:00:00+0000' git commit -qm later",
         );

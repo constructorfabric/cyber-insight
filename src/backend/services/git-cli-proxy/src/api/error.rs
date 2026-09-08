@@ -75,7 +75,11 @@ impl IntoResponse for ApiError {
             Self::Store(StoreError::OriginUnavailable) | Self::Git(GitError::OriginUnavailable) => {
                 metrics::record_origin_unavailable();
             }
-            _ => {}
+            Self::BadRequest(_)
+            | Self::Store(_)
+            | Self::Git(_)
+            | Self::ProxyTokenRejected
+            | Self::Serialization(_) => {}
         }
 
         let retry_after = self.retry_after();
@@ -91,7 +95,7 @@ impl IntoResponse for ApiError {
 
         let mut problem = Problem::from(error);
         if let Some(status) = status_override {
-            problem.status = status.as_u16();
+            problem.status = Some(status.as_u16());
         }
 
         let mut response = problem.into_response();
@@ -131,7 +135,9 @@ impl ApiError {
             | Self::Git(
                 GitError::AdmissionRejected | GitError::TransientlyOverCap | GitError::Throttled,
             ) => StatusCode::TOO_MANY_REQUESTS.as_u16(),
-            _ => StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            Self::Store(_) | Self::Git(_) | Self::Serialization(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+            }
         }
     }
 
@@ -140,7 +146,12 @@ impl ApiError {
             Self::Store(StoreError::TooLarge { .. }) | Self::Git(GitError::TooLarge { .. }) => {
                 Some(REPO_TOO_LARGE)
             }
-            _ => None,
+            Self::BadRequest(_)
+            | Self::Store(_)
+            | Self::Git(_)
+            | Self::ProxyTokenRejected
+            | Self::ServeSaturated
+            | Self::Serialization(_) => None,
         }
     }
 
@@ -153,7 +164,11 @@ impl ApiError {
             Self::Store(StoreError::Throttled) | Self::Git(GitError::Throttled) => {
                 Some(THROTTLED_RETRY_AFTER_SECONDS)
             }
-            _ => None,
+            Self::BadRequest(_)
+            | Self::Store(_)
+            | Self::Git(_)
+            | Self::ProxyTokenRejected
+            | Self::Serialization(_) => None,
         }
     }
 
@@ -304,6 +319,19 @@ mod tests {
 
     use axum::body::to_bytes;
 
+    #[test]
+    fn serve_saturation_answers_429_with_a_retry_hint() {
+        use axum::response::IntoResponse;
+
+        let response = ApiError::ServeSaturated.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = match response.headers().get(header::RETRY_AFTER) {
+            Some(value) => value.to_str().unwrap_or_default().to_owned(),
+            None => panic!("saturation must tell the caller when to come back"),
+        };
+        assert_eq!(retry_after, SERVE_RETRY_AFTER_SECONDS.to_string());
+    }
+
     use super::*;
 
     async fn problem(error: ApiError) -> (StatusCode, Option<String>, serde_json::Value) {
@@ -393,12 +421,23 @@ mod tests {
                 GitError::AdmissionRejected.into(),
                 StatusCode::TOO_MANY_REQUESTS,
             ),
+            // Ours, not the entry's: every page-serve slot is taken.
+            (ApiError::ServeSaturated, StatusCode::TOO_MANY_REQUESTS),
+            (
+                ApiError::Serialization("boom".to_owned()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
         ];
         for (error, expected) in cases {
             let label = error.to_string();
+            // INVARIANT: what a request is RECORDED against and what it is
+            // ANSWERED with are the same status — the metrics middleware
+            // reads the former off the error before the latter exists.
+            let recorded = error.status_code();
             let (status, _, body) = problem(error).await;
             assert_eq!(status, expected, "for {label}");
             assert_eq!(body["status"], expected.as_u16(), "for {label}");
+            assert_eq!(recorded, expected.as_u16(), "recorded status for {label}");
         }
     }
 

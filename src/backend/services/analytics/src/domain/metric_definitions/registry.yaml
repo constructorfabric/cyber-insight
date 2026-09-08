@@ -6,7 +6,7 @@ sources:
       evidence_ref: ai_metric_evidence
       # Longest lookback_window among the connectors feeding this source:
       # claude-enterprise re-reads 3 days, claude-team and chatgpt-team 2.
-      revision_window_days: 3
+      revision: !rolling_days 3
     measures:
       - key: accepted_lines
         evidence_granularity: source_summary
@@ -14,6 +14,7 @@ sources:
         evidence_granularity: source_summary
       - key: active_day
         evidence_granularity: derived_population
+        alias_collapse: max
       - key: cost_usd
         evidence_granularity: source_summary
       - key: accepted_edit_actions
@@ -51,10 +52,12 @@ sources:
             - { key: title, label: Title }
             - { key: repository, label: Repository }
             - { key: author, label: Author }
+            - { key: branch_scope, label: Branch scope }
             - { key: lines_added, label: Lines added, type: number }
             - { key: lines_removed, label: Lines removed, type: number }
       - key: commit_day
         evidence_granularity: derived_population
+        alias_collapse: max
       - key: commit_change_size
         evidence_granularity: event
         evidence_presentation: *commit_row
@@ -77,6 +80,8 @@ sources:
             - { key: title, label: Title }
             - { key: repository, label: Repository }
             - { key: author, label: Author }
+            - { key: branch_scope, label: Branch scope }
+            - { key: destination_branch, label: Target branch }
       - key: pr_created_merged
         evidence_granularity: event
         evidence_presentation: *pull_request_counted
@@ -100,6 +105,9 @@ sources:
       - key: pr_merged_without_approval
         evidence_granularity: event
         evidence_presentation: *pull_request_counted
+      - key: pr_commit_count
+        evidence_granularity: event
+        evidence_presentation: *pull_request_measured
       - key: pr_cycle_hours
         evidence_granularity: event
         evidence_presentation: *pull_request_measured
@@ -118,6 +126,21 @@ sources:
       - key: pr_approval_to_merge_hours
         evidence_granularity: event
         evidence_presentation: *pull_request_measured
+      - key: review_submitted
+        evidence_granularity: event
+        # A review is not classified by where the request landed, so these rows
+        # carry the branch they targeted but no branch scope of their own.
+        evidence_presentation: &review_row
+          show_value: false
+          detail_columns:
+            - { key: ref, label: Ref }
+            - { key: title, label: Title }
+            - { key: repository, label: Repository }
+            - { key: author, label: Author }
+            - { key: destination_branch, label: Target branch }
+      - key: pr_comment
+        evidence_granularity: event
+        evidence_presentation: *review_row
       - key: default_commit_count
         evidence_granularity: event
         evidence_presentation: *commit_row
@@ -152,8 +175,10 @@ sources:
       - branch_scope
       - category
       - change_type
+      - comment_target
       - destination_branch
       - file_extension
+      - hour_block
       - project
       - repository
       - source
@@ -199,8 +224,10 @@ sources:
         evidence_granularity: derived_population
       - key: chat_active_day
         evidence_granularity: source_summary
+        alias_collapse: max
       - key: meeting_free_day
         evidence_granularity: derived_population
+        alias_collapse: min
       - key: focus_hours
         evidence_granularity: derived_population
       - key: working_hours
@@ -296,9 +323,10 @@ sources:
       kind: managed_observation
       source_ref: ai_cost_metric_observations
       evidence_ref: ai_cost_metric_evidence
-      # The month in progress is revisable throughout, and 31 days is the
-      # longest such month.
-      revision_window_days: 31
+      # Every correction in ai_cost_metric_evidence is partitioned by
+      # period_month, so a reading can only rewrite days of the month it
+      # reports and the whole month settles when it closes.
+      revision: billing_month
     measures:
       - key: extra_usage_usd
         evidence_granularity: source_summary
@@ -314,6 +342,18 @@ sources:
         evidence_granularity: source_summary
         evidence_presentation: *seat_month_row
       - key: daily_extra_usage_usd
+        # Describes the supplier's NORMAL revision behaviour, not a guarantee.
+        # A day's step is the difference between two readings, and the ordinary
+        # case — a later cumulative reading at or above the one before it —
+        # closes that step: it is reported as settled from then on. That is
+        # unlike the month-to-date figures above, which every reading rewrites
+        # until the month closes.
+        #
+        # The rarer case is a later reading that comes in LOWER. The suffix
+        # minimum in ai_cost_metric_evidence then corrects earlier steps of the
+        # same month after they were already reported settled. Declaring 0 says
+        # that case is rare enough to report against, not that it cannot happen.
+        revision: !rolling_days 0
         evidence_granularity: source_summary
         evidence_presentation:
           show_value: true
@@ -942,20 +982,22 @@ metrics:
         measure_key: commit_count
     dimensions:
       - branch_scope
+      - hour_block
       - project
       - repository
       - source
   - metric_key: git.default_branch_commits
     source_key: git
     subject: commits
-    label: Commits on the default branch
+    label: Commits that reached the default branch
     short_label: Commits (default)
     description: Authored commits that reached the default branch
     explanation: >-
       Authored commits reachable from the repository's default branch, or
       carried onto it by a merged pull request. A commit joins this metric when
-      its branch lands, so a past period's figure rises as work merges. Merge
-      commits excluded.
+      its branch lands, so a past period's figure rises as work merges. Dated by
+      the commit, so the request that merged it can fall in a later period.
+      Merge commits excluded.
     unit: commits
     format: integer
     direction: higher_is_better
@@ -966,21 +1008,22 @@ metrics:
       - input_role: value
         measure_key: default_commit_count
     dimensions:
+      - hour_block
       - project
       - repository
       - source
   - metric_key: git.non_default_branch_commits
     source_key: git
     subject: commits
-    label: Commits outside the default branch
+    label: Commits that have not reached the default branch
     short_label: Commits (other)
     description: Authored commits that have not reached the default branch
     explanation: >-
       Authored commits not reachable from the repository's default branch —
       work in flight, or abandoned. A commit leaves this metric when its branch
-      lands, so a past period's figure falls as work merges. A source that does
-      not report branch membership counts here rather than inventing an answer.
-      Merge commits excluded.
+      lands, so a past period's figure falls as work merges. Dated by the
+      commit, not by the merge. A source reporting no branch membership counts
+      here. Merge commits excluded.
     unit: commits
     format: integer
     direction: neutral
@@ -991,6 +1034,7 @@ metrics:
       - input_role: value
         measure_key: non_default_commit_count
     dimensions:
+      - hour_block
       - project
       - repository
       - source
@@ -1002,9 +1046,10 @@ metrics:
     description: Lines added to code files
     explanation: >-
       Lines added to files classified as code — tests, configuration, and
-      documentation excluded. Each change counts once: when the same content
-      reaches a repository in more than one commit, the lines belong to the
-      commit that introduced them first.
+      documentation excluded. A commit whose diff was never collected has no
+      classification, so its commit-level size stays out. Each change counts
+      once: when the same change content appears in more than one commit, the
+      lines belong to the first such commit.
     unit: lines
     format: integer
     direction: higher_is_better
@@ -1024,14 +1069,14 @@ metrics:
   - metric_key: git.default_branch_code_lines
     source_key: git
     subject: code_changes
-    label: Code lines added on the default branch
+    label: Code lines that reached the default branch
     short_label: Code lines (default)
     description: Lines added to code files that reached the default branch
     explanation: >-
       Code lines whose commit is reachable from the repository's default
       branch, or was carried onto it by a merged pull request. Lines follow
-      their commit, so this rises as work merges. Tests, configuration and
-      documentation excluded.
+      their commit, so this rises as work merges. Dated by the commit, not by
+      the merge. Tests, configuration and documentation excluded.
     unit: lines
     format: integer
     direction: higher_is_better
@@ -1050,13 +1095,14 @@ metrics:
   - metric_key: git.non_default_branch_code_lines
     source_key: git
     subject: code_changes
-    label: Code lines added outside the default branch
+    label: Code lines that have not reached the default branch
     short_label: Code lines (other)
     description: Lines added to code files that have not reached the default branch
     explanation: >-
       Code lines whose commit has not reached the repository's default branch —
       work in flight, or abandoned. Lines follow their commit, so this falls as
-      work merges. Tests, configuration and documentation excluded.
+      work merges. Dated by the commit, not by the merge. Tests, configuration
+      and documentation excluded.
     unit: lines
     format: integer
     direction: neutral
@@ -1079,10 +1125,11 @@ metrics:
     short_label: Lines +
     description: All lines added, by file category
     explanation: >-
-      Lines added across all files, split by file category: code, tests,
-      configuration, documentation. Each change counts once: when the same
-      content reaches a repository in more than one commit, the lines belong
-      to the commit that introduced them first.
+      Lines added, attributed by file category when file changes are
+      available; a commit whose diff was never collected contributes its
+      commit-level size as Unknown. Each change counts once: when the same
+      change content appears in more than one commit, the lines belong to the
+      first such commit.
     unit: lines
     format: integer
     direction: higher_is_better
@@ -1103,13 +1150,14 @@ metrics:
   - metric_key: git.default_branch_lines_added
     source_key: git
     subject: code_changes
-    label: Lines added on the default branch
+    label: Lines added that reached the default branch
     short_label: Lines + (default)
     description: All lines added that reached the default branch
     explanation: >-
       Lines added whose commit is reachable from the repository's default
       branch, or was carried onto it by a merged pull request. Lines follow
-      their commit, so this rises as work merges.
+      their commit, so this rises as work merges. Dated by the commit, not by
+      the merge.
     unit: lines
     format: integer
     direction: higher_is_better
@@ -1129,13 +1177,13 @@ metrics:
   - metric_key: git.non_default_branch_lines_added
     source_key: git
     subject: code_changes
-    label: Lines added outside the default branch
+    label: Lines added that have not reached the default branch
     short_label: Lines + (other)
     description: All lines added that have not reached the default branch
     explanation: >-
       Lines added whose commit has not reached the repository's default branch —
       work in flight, or abandoned. Lines follow their commit, so this falls as
-      work merges.
+      work merges. Dated by the commit, not by the merge.
     unit: lines
     format: integer
     direction: neutral
@@ -1185,10 +1233,11 @@ metrics:
     short_label: Lines −
     description: All lines removed, by file category
     explanation: >-
-      Lines removed across all reported file changes, with file-category,
-      repository, and source breakdowns available. Each change counts once:
-      when the same removal reaches a repository in more than one commit, the
-      lines belong to the commit that made it first.
+      Lines removed, attributed by file category when file changes are
+      available; a commit whose diff was never collected contributes its
+      commit-level size as Unknown. Each change counts once: when the same
+      change content appears in more than one commit, the lines belong to the
+      first such commit.
     unit: lines
     format: integer
     direction: neutral
@@ -1209,13 +1258,14 @@ metrics:
   - metric_key: git.default_branch_lines_removed
     source_key: git
     subject: code_changes
-    label: Lines removed on the default branch
+    label: Lines removed that reached the default branch
     short_label: Lines − (default)
     description: All lines removed that reached the default branch
     explanation: >-
       Lines removed whose commit is reachable from the repository's default
       branch, or was carried onto it by a merged pull request. Lines follow
-      their commit, so this rises as work merges.
+      their commit, so this rises as work merges. Dated by the commit, not by
+      the merge.
     unit: lines
     format: integer
     direction: neutral
@@ -1235,13 +1285,13 @@ metrics:
   - metric_key: git.non_default_branch_lines_removed
     source_key: git
     subject: code_changes
-    label: Lines removed outside the default branch
+    label: Lines removed that have not reached the default branch
     short_label: Lines − (other)
     description: All lines removed that have not reached the default branch
     explanation: >-
       Lines removed whose commit has not reached the repository's default
       branch — work in flight, or abandoned. Lines follow their commit, so this
-      falls as work merges.
+      falls as work merges. Dated by the commit, not by the merge.
     unit: lines
     format: integer
     direction: neutral
@@ -1313,8 +1363,8 @@ metrics:
     explanation: >-
       Pull requests opened against something other than the repository's
       default branch — a release branch, a stacked request, an integration
-      branch. A request whose destination the source does not report counts
-      here rather than inventing an answer.
+      branch. Dated by creation. A request whose destination the source does
+      not report counts here rather than inventing an answer.
     unit: PRs
     format: integer
     direction: neutral
@@ -1335,7 +1385,11 @@ metrics:
     label: Pull requests merged
     short_label: PRs merged
     description: Authored pull requests merged
-    explanation: Authored pull requests that merged, dated by the merge.
+    explanation: >-
+      Authored pull requests that merged, dated by the merge in UTC — so a request
+      counts in the period it landed and can carry commits written in earlier
+      ones. Under a branch-scope breakdown the split says where the request was
+      aimed, not where its commits sit.
     unit: PRs
     format: integer
     direction: higher_is_better
@@ -1360,7 +1414,8 @@ metrics:
     explanation: >-
       Pull requests that merged into the repository's default branch, dated by
       the merge. This is the surface that also promotes a branch's commits and
-      lines into their default-branch metrics.
+      lines into their default-branch metrics. A request counts in the period
+      it merged, so it can carry commits written in earlier ones.
     unit: PRs
     format: integer
     direction: higher_is_better
@@ -1384,7 +1439,8 @@ metrics:
     explanation: >-
       Pull requests that merged into something other than the repository's
       default branch, dated by the merge. Their commits do not count as having
-      reached the default branch on this evidence alone.
+      reached the default branch on this evidence alone. A request counts in the
+      period it merged, so it can carry commits written in earlier ones.
     unit: PRs
     format: integer
     direction: neutral
@@ -1650,6 +1706,30 @@ metrics:
       - project
       - repository
       - source
+  - metric_key: git.pr_commits
+    source_key: git
+    subject: pull_requests
+    tags:
+      - distribution
+    label: Commits per PR
+    short_label: Commits/PR
+    description: Typical number of commits per merged pull request
+    explanation: Median count of commits linked to authored pull requests, over requests merged in the period. A merged request whose commits the source does not link contributes no value.
+    unit: commits
+    format: decimal
+    direction: neutral
+    entity_type: person
+    computation: median
+    peer_cohort_key: org_unit
+    inputs:
+      - input_role: value
+        measure_key: pr_commit_count
+    dimensions:
+      - branch_scope
+      - destination_branch
+      - project
+      - repository
+      - source
   - metric_key: git.pr_cycle_time_h
     source_key: git
     subject: pull_requests
@@ -1665,6 +1745,32 @@ metrics:
     direction: lower_is_better
     entity_type: person
     computation: median
+    peer_cohort_key: org_unit
+    inputs:
+      - input_role: value
+        measure_key: pr_cycle_hours
+    dimensions:
+      - branch_scope
+      - destination_branch
+      - project
+      - repository
+      - source
+  - metric_key: git.pr_cycle_time_p75_h
+    source_key: git
+    subject: pull_requests
+    tags:
+      - duration
+      - distribution
+    label: PR cycle time (p75)
+    short_label: Cycle p75
+    description: Slow-end hours from open to merge
+    explanation: 75th percentile of hours from opening a pull request to merging it, over requests merged in the period.
+    unit: h
+    format: decimal
+    direction: lower_is_better
+    entity_type: person
+    computation: !percentile
+      q: 0.75
     peer_cohort_key: org_unit
     inputs:
       - input_role: value
@@ -1691,6 +1797,32 @@ metrics:
     direction: lower_is_better
     entity_type: person
     computation: median
+    peer_cohort_key: org_unit
+    inputs:
+      - input_role: value
+        measure_key: pr_first_review_hours
+    dimensions:
+      - destination_branch
+      - project
+      - repository
+      - source
+  - metric_key: git.first_review_time_p75_h
+    source_key: git
+    subject: pull_requests
+    tags:
+      - duration
+      - distribution
+      - review
+    label: Time to first review (p75)
+    short_label: First review p75
+    description: Slow-end hours from pull request creation to first review
+    explanation: 75th percentile of hours from opening a pull request to its first submitted review, over first reviews recorded in the period. Pull requests without a review and sources without review timestamps contribute no duration.
+    unit: h
+    format: decimal
+    direction: lower_is_better
+    entity_type: person
+    computation: !percentile
+      q: 0.75
     peer_cohort_key: org_unit
     inputs:
       - input_role: value
@@ -1771,6 +1903,51 @@ metrics:
         measure_key: pr_approval_to_merge_hours
     dimensions:
       - destination_branch
+      - project
+      - repository
+      - source
+  - metric_key: git.reviews_performed
+    source_key: git
+    subject: pull_requests
+    tags:
+      - review
+    label: Reviews performed
+    short_label: Reviews
+    description: Review verdicts submitted on pull requests
+    explanation: Review verdicts the person submitted on any pull request, dated by submission. This is the reviewer's side of review coverage — it counts the reviews a person performed, not the reviews their own requests received.
+    unit: reviews
+    format: integer
+    direction: higher_is_better
+    entity_type: person
+    computation: sum
+    peer_cohort_key: org_unit
+    inputs:
+      - input_role: value
+        measure_key: review_submitted
+    dimensions:
+      - project
+      - repository
+      - source
+  - metric_key: git.pr_comments
+    source_key: git
+    subject: pull_requests
+    tags:
+      - review
+    label: PR comments
+    short_label: PR comments
+    description: Comments written on pull requests
+    explanation: Comments the person wrote on pull requests — conversation and inline review comments alike — dated by posting. The comment target dimension splits comments on the person's own requests from comments on other people's; a comment whose request author cannot be determined counts under others, so the two halves always add up to the total.
+    unit: comments
+    format: integer
+    direction: neutral
+    entity_type: person
+    computation: sum
+    peer_cohort_key: org_unit
+    inputs:
+      - input_role: value
+        measure_key: pr_comment
+    dimensions:
+      - comment_target
       - project
       - repository
       - source

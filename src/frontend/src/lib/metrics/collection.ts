@@ -15,6 +15,7 @@ import type {
   MetricViewRequest,
   PeerView,
   PeriodView,
+  RollupView,
   TimeseriesView,
 } from "@/api/metric-results-client";
 
@@ -38,6 +39,11 @@ type MetricCollectionViewConfig =
   | {
       view: "breakdown";
       dimensions: string[];
+    }
+  | {
+      view: "rollup";
+      dimensions: string[];
+      groupLimit?: MetricGroupLimit;
     }
   | { view: "histogram" };
 
@@ -90,6 +96,37 @@ export function filterCollectionByKey(
   return kept.length === collection.metrics.length ? collection : { metrics: kept };
 }
 
+/**
+ * Drop metrics whose request narrows by a dimension they do not declare.
+ *
+ * The backend rejects the WHOLE request over one such filter — "metric
+ * tasks.closed does not support dimension repository" — so a screen that
+ * scopes a whole direction to one repository would blank itself over the
+ * metrics that have nothing to do with repositories.
+ *
+ * Dropping, not un-filtering: an unfiltered tile on a scoped screen would show
+ * a figure for the whole roster under a heading that names one repository,
+ * which is worse than an absent tile. `declared === null` means the catalog has
+ * not answered, and then nothing is dropped — the caller holds the request
+ * instead, the same rule `filterCollectionToAvailable` follows.
+ */
+export function filterCollectionToDeclaredDimensions(
+  collection: MetricCollectionConfig,
+  declared: ReadonlyMap<string, ReadonlySet<string>> | null,
+): MetricCollectionConfig {
+  if (!declared) return collection;
+  // Judged per ENTRY, not per key: two entries may name the same metric under
+  // different filters, and looking the key up would decide the second one by
+  // the first one's filters.
+  const kept = collection.metrics.filter((metric) => {
+    const asked = metric.filters ?? [];
+    if (!asked.length) return true;
+    const supported = declared.get(metric.key);
+    return asked.every((filter) => supported?.has(filter.dimension) ?? false);
+  });
+  return kept.length === collection.metrics.length ? collection : { metrics: kept };
+}
+
 export type MetricCollectionEntity =
   // The tenant variant carries no ids: the backend derives the organization
   // from the session, and a client-supplied identifier is rejected outright.
@@ -112,6 +149,7 @@ export type NormalizedMetricResult = {
   timeseries?: TimeseriesView;
   peer?: PeerView;
   breakdown?: BreakdownView;
+  rollup?: RollupView;
   histogram?: HistogramView;
   /** Set when a view's computation failed server-side (first error wins). */
   error?: Pick<MetricErrorView, "code" | "message">;
@@ -139,7 +177,8 @@ function exhaustive(value: never): never {
 export function buildMetricCollectionRequest(
   collection: MetricCollectionConfig,
   entity: MetricCollectionEntity,
-  period: DateRange
+  period: DateRange,
+  compareTo?: DateRange
 ): MetricResultsRequest {
   return {
     entity:
@@ -147,6 +186,7 @@ export function buildMetricCollectionRequest(
         ? { type: "person", ids: entity.ids }
         : { type: "tenant" },
     period,
+    ...(compareTo ? { compare_to: { ...compareTo } } : {}),
     metrics: collection.metrics.map((metric) => ({
       metric_key: metric.key,
       ...(metric.filters?.length ? { filters: metric.filters } : {}),
@@ -210,6 +250,9 @@ export function normalizeMetricResult(
       case "breakdown":
         normalized.breakdown = view;
         break;
+      case "rollup":
+        normalized.rollup = view;
+        break;
       case "histogram":
         normalized.histogram = view;
         break;
@@ -231,6 +274,88 @@ export function normalizeMetricResult(
   }
 
   return normalized;
+}
+
+/**
+ * The comparison window read as if it had been its own request: its value takes
+ * the place of `value`, and the views that never carry a window (`peer`,
+ * `timeseries`, `histogram`, `rollup`) are dropped rather than repeated —
+ * reading them here would silently answer over the primary period. This is what
+ * lets the window feed the same selectors a separate request did.
+ *
+ * A compared breakdown groups over both windows at once, so its row set is the
+ * union of them; `present` says which rows the window actually had, and a row
+ * it never had is dropped here. Presence cannot be read off the value: a ratio
+ * over a group that IS in the window is null whenever its denominator is zero,
+ * and dropping that row would lose one a standalone request returns.
+ */
+export function projectComparison(
+  results: Map<string, NormalizedMetricResult>
+): Map<string, NormalizedMetricResult> {
+  const out = new Map<string, NormalizedMetricResult>();
+  for (const [key, result] of results) {
+    const projected: NormalizedMetricResult = {
+      ...result,
+      period: undefined,
+      timeseries: undefined,
+      peer: undefined,
+      breakdown: undefined,
+      rollup: undefined,
+      histogram: undefined,
+    };
+    if (result.period) {
+      projected.period = {
+        ...result.period,
+        values: result.period.values.map((value) => ({
+          entity_id: value.entity_id,
+          value: value.compare_to ?? null,
+        })),
+      };
+    }
+    if (result.breakdown) {
+      projected.breakdown = {
+        ...result.breakdown,
+        values: result.breakdown.values.flatMap((row) => {
+          const window = row.compare_to;
+          if (!window?.present) return [];
+          return [
+            { ...row, value: window.value, present: undefined, compare_to: undefined },
+          ];
+        }),
+      };
+    }
+    out.set(key, projected);
+  }
+  return out;
+}
+
+/**
+ * The primary period of a compared response, read the same way: its breakdown
+ * row set is the union of both windows too, so the groups the primary period
+ * never had are dropped. An uncompared response is returned untouched.
+ */
+export function projectPrimary(
+  results: Map<string, NormalizedMetricResult>
+): Map<string, NormalizedMetricResult> {
+  const out = new Map<string, NormalizedMetricResult>();
+  for (const [key, result] of results) {
+    if (!result.breakdown?.values.some((row) => row.present !== undefined)) {
+      out.set(key, result);
+      continue;
+    }
+    out.set(key, {
+      ...result,
+      breakdown: {
+        ...result.breakdown,
+        values: result.breakdown.values.flatMap((row) =>
+          row.present === false
+            ? []
+            : [{ ...row, present: undefined, compare_to: undefined }]
+        ),
+      },
+    });
+  }
+  return out;
 }
 
 export function normalizeMetricResults(
@@ -282,6 +407,9 @@ export const MAX_PROJECTED_ROWS = 4500;
  * count per entity but is a drilldown-only single-entity view — all three are
  * for single-entity surfaces and roster surfaces strip them via
  * `projectViews(["period", "peer"])`, so none should ride a chunked request.
+ * Rollup is not chunkable either, and for a harder reason: its rows carry no
+ * entity grain, so per-chunk results cannot be merged (a median or a distinct
+ * person count over half the roster is not half the answer).
  */
 export function entityChunkSize(
   collection: MetricCollectionConfig
@@ -292,6 +420,7 @@ export function entityChunkSize(
       if (
         view.view === "timeseries" ||
         view.view === "breakdown" ||
+        view.view === "rollup" ||
         view.view === "histogram"
       ) {
         return null;
@@ -391,6 +520,12 @@ function toRequestView(
       };
     case "breakdown":
       return { view: "breakdown", dimensions: view.dimensions };
+    case "rollup":
+      return {
+        view: "rollup",
+        dimensions: view.dimensions,
+        group_limit: view.groupLimit,
+      };
     case "histogram":
       return { view: "histogram" };
     default:

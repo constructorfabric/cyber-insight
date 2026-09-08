@@ -78,12 +78,8 @@ run_rows AS (
                 tuple('outcome', outcome, toNullable(outcome)),
                 tuple(
                     'hour_block',
-                    leftPad(toString(intDiv(toHour(started_at), 2) * 2), 2, '0'),
-                    toNullable(concat(
-                        leftPad(toString(intDiv(toHour(started_at), 2) * 2), 2, '0'),
-                        '–',
-                        leftPad(toString(intDiv(toHour(started_at), 2) * 2 + 2), 2, '0')
-                    ))
+                    {{ hour_block_value('started_at') }},
+                    toNullable({{ hour_block_label('started_at') }})
                 )
             ] AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS run_dimensions
@@ -158,6 +154,9 @@ SELECT
     'tenant' AS entity_type,
     assumeNotNull(tenant_id) AS entity_id,
     assumeNotNull(tenant_id) AS source_entity_id,
+    '' AS account_source_type,
+    '' AS account_source_id,
+    '' AS account_id,
     assumeNotNull(metric_date) AS metric_date,
     toNullable(toDateTime64(started_at, 3)) AS observed_at,
     measure.1 AS measure_key,
@@ -204,6 +203,9 @@ SELECT
     'tenant' AS entity_type,
     assumeNotNull(tenant_id) AS entity_id,
     assumeNotNull(tenant_id) AS source_entity_id,
+    '' AS account_source_type,
+    '' AS account_source_id,
+    '' AS account_id,
     assumeNotNull(metric_date) AS metric_date,
     CAST(NULL AS Nullable(DateTime64(3))) AS observed_at,
     'deployments' AS measure_key,
@@ -235,8 +237,15 @@ SELECT
     'tenant' AS entity_type,
     assumeNotNull(tenant_id) AS entity_id,
     assumeNotNull(tenant_id) AS source_entity_id,
-    assumeNotNull(toDate(date)) AS metric_date,
-    toNullable(toDateTime64(date, 3)) AS observed_at,
+    '' AS account_source_type,
+    '' AS account_source_id,
+    '' AS account_id,
+    -- INVARIANT: dated by the COMMITTER date, unlike every other git measure.
+    -- This one is the commit side of a join-coverage figure whose other side —
+    -- CI runs — is dated by when a run actually ran. Dating it by the author
+    -- date (#3153) would file a rebased commit on a day that had no runs.
+    assumeNotNull(toDate(commit_date)) AS metric_date,
+    toNullable(toDateTime64(commit_date, 3)) AS observed_at,
     'commits_observed' AS measure_key,
     concat(coalesce(source_id, ''), ':', project_key, '/', repo_slug, ':', commit_hash, ':commits_observed') AS record_id,
     'commit' AS record_kind,
@@ -248,7 +257,16 @@ SELECT
     map(
         'repository', concat(project_key, '/', repo_slug)
     ) AS details
-FROM {{ ref('class_git_commits') }} FINAL
+FROM (
+    SELECT
+        tenant_id,
+        source_id,
+        project_key,
+        repo_slug,
+        commit_hash,
+        coalesce(committer_date, date) AS commit_date
+    FROM {{ ref('class_git_commits') }} FINAL
+)
 WHERE tenant_id IS NOT NULL
   AND commit_hash != ''
-  AND date IS NOT NULL
+  AND commit_date IS NOT NULL

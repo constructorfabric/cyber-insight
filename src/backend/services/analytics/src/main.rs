@@ -33,7 +33,9 @@ mod config;
 mod domain;
 mod gear;
 mod infra;
+mod mcp;
 mod migration;
+mod sql_explorer;
 
 // System gears — linked via inventory for the REST host + auth pipeline.
 // `oidc-authn-plugin` verifies the ES256 gateway JWT against the authenticator's
@@ -107,12 +109,22 @@ async fn main() -> Result<()> {
     config.apply_cli_overrides(cli.verbose);
 
     if cli.print_config {
-        println!("Effective configuration:\n{}", config.to_yaml()?);
+        println!(
+            "Effective configuration:\n{}",
+            config::redacted_yaml(&config)?
+        );
         return Ok(());
     }
 
     match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_server(config).await,
+        Commands::Run => {
+            let resource = &config.opentelemetry.resource;
+            insight_log_context::init_identity_from_resource(
+                &resource.service_name,
+                &resource.attributes,
+            );
+            run_server(config).await
+        }
         Commands::Migrate => {
             init_subcommand_logging();
             gear::run_migrate(&config).await

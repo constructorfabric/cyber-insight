@@ -1,3 +1,4 @@
+import { evidenceCarriers } from "@/lib/metrics/evidence-via";
 import {
   directionHidden,
   directionPlanned,
@@ -70,6 +71,47 @@ export type SectionSpec =
   // edges align (they don't on the current API — honest fallback, see design §7);
   // participation counts active people.
   | { kind: "event-histogram"; metric: string; title: string }
+  // One row per value of a dimension, columns from the listed metrics — the
+  // rollup view collapses the person grain server-side. The FIRST metric ranks
+  // the rows and supplies the distinct-person count column.
+  | {
+      kind: "dimension-table";
+      title: string;
+      dimension: string;
+      metrics: readonly string[];
+      /** What one row is, for the section label's count ("repositories"). */
+      noun: string;
+      /** Rows shown before the rest folds into a remainder line. */
+      limit?: number;
+    }
+  // Concentration risk per dimension value: how much of the metric the top
+  // contributors carry inside each value (bus factor per repository). Shares
+  // are computed from the per-person breakdown; nobody is named.
+  | {
+      kind: "ownership";
+      metric: string;
+      dimension: string;
+      title: string;
+    }
+  // The people who carried one dimension value, ranked, with the leader's
+  // share called out. Only ever rendered inside a drilldown, where the value
+  // is already the subject — a leaderboard of the whole roster is a different
+  // thing and this is not it.
+  | {
+      kind: "contributors";
+      metric: string;
+      title: string;
+      /** People shown before the rest folds into one line. */
+      limit?: number;
+    }
+  // Weekday × two-hour block ramp of one event-grain metric: when the work
+  // lands, read from the metric's own `hour_block` dimension.
+  | {
+      kind: "heatmap-hours";
+      metric: string;
+      title: string;
+      caption: string;
+    }
   | {
       kind: "participation";
       metrics: readonly string[];
@@ -91,6 +133,20 @@ export interface LensConfig {
   sections: readonly SectionSpec[];
   /** Whole-tab message when no metric of the lens is observed (rule 6). */
   notIngested?: string;
+  /**
+   * The screen for ONE value of a dimension the lens already groups by.
+   *
+   * A lens answers "which of these", and past a certain point the reader is
+   * asking about one of them instead. The drilldown is that screen: the same
+   * section kinds, every request filtered to the value, reached by clicking a
+   * row and left by the breadcrumb.
+   */
+  drilldown?: {
+    dimension: string;
+    /** Shown after the value, e.g. "activity, reach & risk". */
+    tagline?: string;
+    sections: readonly SectionSpec[];
+  };
 }
 
 export interface LensRoadmap {
@@ -327,7 +383,9 @@ export function overviewCardDirections(
 /** Unique metric keys a config needs in its period+peer grid. */
 export function sectionMetricKeys(config: LensConfig): string[] {
   const keys = new Set<string>();
-  for (const s of config.sections) {
+  // The drilldown's own sections count: they ride the same grid request, so a
+  // key it needs and the lens does not would otherwise never be asked for.
+  for (const s of [...config.sections, ...(config.drilldown?.sections ?? [])]) {
     switch (s.kind) {
       case "headline":
       case "stat-tiles":
@@ -340,7 +398,13 @@ export function sectionMetricKeys(config: LensConfig): string[] {
       case "distribution":
       case "composition":
       case "event-histogram":
+      case "ownership":
+      case "contributors":
+      case "heatmap-hours":
         keys.add(s.metric);
+        break;
+      case "dimension-table":
+        for (const k of s.metrics) keys.add(k);
         break;
       case "direction-cards":
         // Cards derive from every configured direction Overview lens (design O4).
@@ -402,8 +466,16 @@ export function visibleSections(
       case "distribution":
       case "composition":
       case "event-histogram":
+      case "ownership":
+      case "contributors":
+      case "heatmap-hours":
         if (metricVisible(s.metric, showPlanned, policy)) sections.push(s);
         break;
+      case "dimension-table": {
+        const metrics = visibleMetricKeys(s.metrics, showPlanned, policy);
+        if (metrics.length) sections.push({ ...s, metrics });
+        break;
+      }
       case "direction-cards":
       case "coverage-levels":
         // Neither names a metric of its own: the cards read each direction's
@@ -553,6 +625,11 @@ const DEV: Record<string, LensEntry> = {
         metric: "git.pr_cycle_time_h",
         title: "How long pull requests stayed open",
       },
+      {
+        kind: "event-histogram",
+        metric: "git.pr_size",
+        title: "How large pull requests were",
+      },
     ],
   },
   Delivery: {
@@ -581,7 +658,54 @@ const DEV: Record<string, LensEntry> = {
     ],
   },
   Activity: PRODUCT_GAP("Per-person activity-day metrics"),
-  Quality: PRODUCT_GAP("Review / reopen quality metrics"),
+  Quality: {
+    title: "Development · Quality",
+    tagline: "review hygiene & timing",
+    sections: [
+      {
+        kind: "headline",
+        metrics: ["git.reviews_performed", "git.pr_comments"],
+      },
+      {
+        kind: "composition",
+        metric: "git.pr_comments",
+        dimension: "comment_target",
+        title: "PR comments — own vs others' pull requests",
+      },
+      {
+        kind: "stat-tiles",
+        title: "Review hygiene (median across people)",
+        metrics: [
+          "git.review_coverage",
+          "git.reviewers_per_pr",
+          "git.multi_reviewer_rate",
+          "git.merges_without_approval_rate",
+        ],
+      },
+      {
+        kind: "stat-tiles",
+        title: "Review timing (median across people)",
+        metrics: [
+          "git.first_review_time_h",
+          "git.first_review_time_p75_h",
+          "git.review_to_merge_time_h",
+          "git.approval_to_merge_time_h",
+          "git.review_wait_share",
+        ],
+      },
+      { kind: "trend", metrics: ["git.review_coverage"] },
+      {
+        kind: "event-histogram",
+        metric: "git.first_review_time_h",
+        title: "How long pull requests waited for the first review",
+      },
+      {
+        kind: "stat-tiles",
+        title: "Outcomes (median across people)",
+        metrics: ["git.merge_rate", "git.pr_abandonment_rate"],
+      },
+    ],
+  },
   // Org-grain (issue #2803): a pipeline run belongs to the organization, so
   // this lens renders tenant-entity metrics — no roster, no peer, no person.
   CI: {
@@ -795,7 +919,134 @@ const DEV: Record<string, LensEntry> = {
     ],
   },
   Continuity: PRODUCT_GAP("Longitudinal continuity metrics"),
-  Repositories: SCREEN_GAP("Repository-level rollups"),
+  Repositories: {
+    title: "Development · Repositories",
+    tagline: "activity, reach & risk",
+    sections: [
+      {
+        kind: "headline",
+        metrics: [
+          "git.prs_merged",
+          "git.default_branch_prs_merged",
+          "git.default_branch_code_lines",
+          "git.non_default_branch_code_lines",
+        ],
+      },
+      {
+        kind: "trend",
+        metrics: ["git.prs_created", "git.prs_merged"],
+        activeContributorsFor: "git.prs_merged",
+      },
+      {
+        kind: "stat-tiles",
+        title: "Typical values (median)",
+        metrics: [
+          "git.pr_cycle_time_h",
+          "git.pr_cycle_time_p75_h",
+          "git.pr_size",
+          "git.pr_commits",
+          "git.merge_rate",
+          "git.commits_per_active_day",
+        ],
+      },
+      {
+        kind: "composition",
+        metric: "git.code_lines",
+        dimension: "repository",
+        splitBy: "branch_scope",
+        title: "Lines by repository — default vs other branches",
+      },
+      {
+        kind: "composition",
+        metric: "git.prs_merged",
+        dimension: "repository",
+        title: "PRs merged by repository",
+      },
+      {
+        kind: "dimension-table",
+        title: "Repositories · ranked by PRs merged",
+        dimension: "repository",
+        noun: "repositories",
+        metrics: [
+          "git.prs_merged",
+          "git.default_branch_prs_merged",
+          "git.lines_added",
+          "git.lines_removed",
+          "git.pr_cycle_time_h",
+          "git.pr_commits",
+        ],
+      },
+      {
+        kind: "ownership",
+        metric: "git.code_lines",
+        dimension: "repository",
+        title: "Ownership concentration — share of lines by top contributors",
+      },
+      {
+        kind: "event-histogram",
+        metric: "git.pr_cycle_time_h",
+        title: "How long pull requests stayed open",
+      },
+    ],
+    // One repository: who carried it, when the work landed, and how it splits
+    // between the trunk and everything else.
+    drilldown: {
+      dimension: "repository",
+      tagline: "one repository",
+      sections: [
+        {
+          kind: "headline",
+          metrics: [
+            "git.prs_merged",
+            "git.default_branch_prs_merged",
+            "git.commits",
+            "git.default_branch_code_lines",
+          ],
+        },
+        {
+          kind: "stat-tiles",
+          title: "Typical values (median)",
+          metrics: [
+            "git.pr_cycle_time_h",
+            "git.pr_cycle_time_p75_h",
+            "git.pr_size",
+            "git.pr_commits",
+            "git.merge_rate",
+            "git.review_coverage",
+          ],
+        },
+        {
+          kind: "contributors",
+          metric: "git.default_branch_code_lines",
+          title: "Top contributors — code lines on the default branch",
+        },
+        {
+          kind: "heatmap-hours",
+          metric: "git.commits",
+          title: "When commits land",
+          caption:
+            "Weekday × two-hour block, in UTC. Click a block for its commits.",
+        },
+        {
+          kind: "composition",
+          metric: "git.code_lines",
+          dimension: "branch_scope",
+          title: "Where the lines went — default branch vs the rest",
+        },
+        {
+          kind: "ownership",
+          metric: "git.default_branch_code_lines",
+          dimension: "repository",
+          title: "Ownership concentration",
+        },
+        {
+          kind: "event-histogram",
+          metric: "git.pr_cycle_time_h",
+          title: "How long pull requests stayed open",
+        },
+      ],
+    },
+  },
   Elements: SCREEN_GAP("Element-level (file/module) analytics"),
 };
 
@@ -1075,5 +1326,8 @@ export function directionMetricKeys(dir: string): string[] {
     if ("comingSoon" in entry || "entity" in entry) continue;
     for (const k of sectionMetricKeys(entry)) keys.add(k);
   }
+  // A figure whose records live under another metric needs that metric in the
+  // same request, or its tile has nothing to open.
+  for (const carrier of evidenceCarriers([...keys])) keys.add(carrier);
   return [...keys];
 }
