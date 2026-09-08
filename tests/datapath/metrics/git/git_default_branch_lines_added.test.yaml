@@ -31,8 +31,8 @@ description: >
   repository split, where both paths must answer with a single row; and an
   empty window.
 
-  The rig resolves `view: breakdown` to exactly one view per metric, so each
-  split needs its own case.
+  The API rejects a metric that requests the same view twice, so each split
+  needs its own case.
 
   Fixture — erin only, one repository, every commit's scope carried by the
   connector's own flag rather than by a branch row or a merged request:

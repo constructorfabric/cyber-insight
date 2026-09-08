@@ -134,6 +134,12 @@ def test_a_repository_that_reported_no_branches_reaches_one_scope_only(spec: Spe
         dimensions={"key": "repository", "value": "git-test:acme/nodefault"},
     ).equals(value=2)
 
+    # The opposite scope needs its own cardinality check: the rows it holds for
+    # the other two repositories are never selected, so nothing else counts them
+    # and a leaked dimension value would pass unseen.
+    missed = r.breakdown("git.non_default_branch_prs_created")
+    assert len(missed) == 3, f"the opposite scope gained or lost a repository: {missed!r}"
+
     landed = r.breakdown("git.default_branch_prs_created")
     assert len(landed) == 2, f"a third repository appeared: {landed!r}"
     assert not any(

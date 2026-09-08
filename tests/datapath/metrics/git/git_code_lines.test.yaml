@@ -26,8 +26,8 @@ description: >
   reports. So the category split of the unclassified total carries that one
   claim, and it is asserted on `git.lines_added` in the same request.
 
-  The rig resolves `view: breakdown` to exactly one view per metric, so each
-  split needs its own case.
+  The API rejects a metric that requests the same view twice, so each split
+  needs its own case.
 
   Cases: what the classifier admits and what it keeps out, with the category
   split that separates docs from config; the branch-scope, change-type and
