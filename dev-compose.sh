@@ -1608,6 +1608,9 @@ for dbt-built gold data rather than for containers to report healthy.
           --build-frontend   Build the SPA from this tree with pnpm, served by
                              the front-built nginx. Backend stays pinned.
           --build            Both.
+          --skip-build       With --build-backend: mount binaries already in
+                             deploy/compose/build/ instead of compiling. The
+                             caller owns their freshness.
 
           `up` refuses to pin a tree that differs from origin/main and names
           the flag to pass — but only when origin/main is in the checkout. A
@@ -2134,13 +2137,14 @@ cmd_test_stand() {
     up)
       # Each tree is pinned to its chart's appVersion or built from this one,
       # asked separately: --build is the both-axes alias.
-      local backend_mode=pinned build_frontend=false
+      local backend_mode=pinned build_frontend=false skip_build=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --build)          backend_mode=source; build_frontend=true; shift ;;
           --build-backend)  backend_mode=source; shift ;;
           --prebuilt-backend) backend_mode=prebuilt; shift ;;
           --build-frontend) build_frontend=true; shift ;;
+          --skip-build)     skip_build=true; shift ;;
           -h|--help) cmd_test_stand_help; return 0 ;;
           *) echo "ERROR: unknown test-stand up option: $1" >&2; return 2 ;;
         esac
@@ -2166,6 +2170,7 @@ cmd_test_stand() {
 
       local up_args=(--env-file "$TEST_STAND_ENV_FILE"
                      --authenticator-redirect "$(test_stand_origin)/auth/callback")
+      [[ "$skip_build" == "true" ]] && up_args+=(--skip-build)
       cmd_up "${up_args[@]}" || return 1
 
       # cmd_up resolved and exported the issuer for this run; persist what it
@@ -2206,13 +2211,14 @@ cmd_test_stand() {
       # and nothing the suite is about to delete. Its silver generators do not
       # run, so gold is empty and the gold gate would never pass -- readiness
       # is the services answering instead.
-      local mbackend_mode=pinned mbuild_frontend=false
+      local mbackend_mode=pinned mbuild_frontend=false mskip_build=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --build)          mbackend_mode=source; mbuild_frontend=true; shift ;;
           --build-backend)  mbackend_mode=source; shift ;;
           --prebuilt-backend) mbackend_mode=prebuilt; shift ;;
           --build-frontend) mbuild_frontend=true; shift ;;
+          --skip-build)     mskip_build=true; shift ;;
           -h|--help) cmd_test_stand_help; return 0 ;;
           *) echo "ERROR: unknown test-stand minimal option: $1" >&2; return 2 ;;
         esac
@@ -2226,8 +2232,10 @@ cmd_test_stand() {
                   test_stand_pull_backends || return 1 ;;
       esac
 
-      cmd_up --env-file "$TEST_STAND_ENV_FILE" --seed-target identity \
-             --authenticator-redirect "$(test_stand_origin)/auth/callback" || return 1
+      local mup_args=(--env-file "$TEST_STAND_ENV_FILE" --seed-target identity
+                      --authenticator-redirect "$(test_stand_origin)/auth/callback")
+      [[ "$mskip_build" == "true" ]] && mup_args+=(--skip-build)
+      cmd_up "${mup_args[@]}" || return 1
 
       update_env_var "$TEST_STAND_ENV_FILE" AUTHENTICATOR_OIDC_ISSUER "${AUTHENTICATOR_OIDC_ISSUER:-}"
       echo "=== persisted AUTHENTICATOR_OIDC_ISSUER=${AUTHENTICATOR_OIDC_ISSUER:-<empty>} ==="
