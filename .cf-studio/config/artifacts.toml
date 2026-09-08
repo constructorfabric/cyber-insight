@@ -203,6 +203,22 @@ kind = "ADR"
 path = "docs/components/backend/identity-resolution/identity/specs/ADR/0014-last-admin-protection.md"
 name = "ADR-0014: Last-Admin Protection on person_roles Revoke"
 
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0018-roster-minted-login-identity.md"
+name = "ADR-0018: Mint a Login Identity Only From an Observed Roster Account, Over Single-Question Routes"
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0017-visibility-policy-configuration.md"
+name = "ADR-0017: Tenant-Wide Visibility as a Configured Policy, Not as Issued Grants"
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0016-canonical-errors-and-conflict-status.md"
+name = "ADR-0016: Canonical Error Envelope, and Conflict as the Status for a Violated Invariant"
+[[systems.artifacts]]
+kind = "ADR"
+path = "docs/components/backend/identity-resolution/identity/specs/ADR/0015-self-scoped-visibility-read-without-admin.md"
+name = "ADR-0015: Self-Scoped Visibility Read Without Admin"
 [[systems]]
 name = "Identity Resolution"
 slug = "ir"

@@ -110,5 +110,5 @@ first/last names.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-routing-name-split`](../PRD.md#display-name-split-fallback)
-- [`cpt-insightspec-component-identity-domain`](../DESIGN.md#insightidentitydomain)
+- [`cpt-insightspec-fr-identity-routing-name-split`](../PRD.md#derive-missing-name-parts-from-the-display-name)
+- [`cpt-insightspec-component-identity-domain`](../DESIGN.md#domain-layer)

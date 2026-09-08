@@ -115,6 +115,6 @@ is enforced at build time.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#resolve-email-to-person_id)
-- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#hydrate-person-attributes)
-- [`cpt-insightspec-component-identity-infra`](../DESIGN.md#insightidentityinfrastructure)
+- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#address-matching-uses-the-current-value-per-source)
+- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#compose-attributes-from-every-source)
+- [`cpt-insightspec-component-identity-infra`](../DESIGN.md#persistence-layer)

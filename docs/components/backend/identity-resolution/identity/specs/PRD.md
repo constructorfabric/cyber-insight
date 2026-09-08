@@ -1,27 +1,4 @@
----
-status: draft
-version: "1.2"
-date: 2026-09-08
----
-
-> [!WARNING]
-> **Under review — audited against the implementation and found inaccurate in places.**
-> Read it against the code, not as authority. The specific claims the code contradicts
-> are listed in the repository [README](../../../../../../README.md#backend-specs--under-review). Where this
-> document and the committed `openapi.json` disagree, the contract is right.
-
-# PRD — Identity
-
-**Revision 1.2:** Trace quality verification directly through the owning feature's
-vector tests; Acceptance Criteria retain the canonical kit's checklist form.
-
-**Revision 1.1:** Explicit quality-vector migration of section 6, with a new
-[profile-resolution FEATURE](feature-profile-resolution/FEATURE.md). Existing NFR
-IDs and numerical targets are retained. The source-coverage NFR makes the existing
-multi-source goal measurable; inherited domain obligations now have explicit
-references. Checked NFRs are reopened because no revision-specific verification
-evidence accompanied them. This revision does not resolve the older functional
-and interface contradictions identified in the warning above.
+# PRD — Identity Resolution Service
 
 <!-- toc -->
 
@@ -39,11 +16,16 @@ and interface contradictions identified in the warning above.
   - [4.1 In Scope](#41-in-scope)
   - [4.2 Out of Scope](#42-out-of-scope)
 - [5. Functional Requirements](#5-functional-requirements)
-  - [5.1 Lookup contract](#51-lookup-contract)
-  - [5.2 Profile lookup (POST /v1/profiles, Phase 2 — #347)](#52-profile-lookup-post-v1profiles-phase-2--347)
-  - [5.3 Routing and normalisation](#53-routing-and-normalisation)
-  - [5.4 Schema lifecycle](#54-schema-lifecycle)
-  - [5.5 Parent/child edge cache](#55-parentchild-edge-cache)
+  - [5.1 Caller identity and authorization](#51-caller-identity-and-authorization)
+  - [5.2 Profile resolution](#52-profile-resolution)
+  - [5.3 The people roster](#53-the-people-roster)
+  - [5.4 Visibility](#54-visibility)
+  - [5.5 Organisation chart](#55-organisation-chart)
+  - [5.6 Roles and assignments](#56-roles-and-assignments)
+  - [5.7 Login resolution](#57-login-resolution)
+  - [5.8 Operator corrections](#58-operator-corrections)
+  - [5.9 Scheduled projection and publication](#59-scheduled-projection-and-publication)
+  - [5.10 Schema lifecycle](#510-schema-lifecycle)
 - [6. Non-Functional Requirements](#6-non-functional-requirements)
   - [6.1 NFR Inclusions](#61-nfr-inclusions)
   - [6.2 NFR Exclusions](#62-nfr-exclusions)
@@ -62,1271 +44,1692 @@ and interface contradictions identified in the warning above.
 
 ### 1.1 Purpose
 
-`insight-identity-resolution` is a Rust service on the gears-rust host
-(epic #1602) that serves person lookups over the multi-source observation log stored in
-the MariaDB `persons` table. It owns its database (per ADR-0006),
-applies its own SeaORM migrations via its `migrate` subcommand, and
-exposes a small read-only HTTP surface to api-gateway and internal
-workflows (`POST /v1/profiles`, `/health`, `/healthz`).
+The identity-resolution service is the product's authority on **who a person
+is**. It answers three different questions for three different callers, over
+one append-only journal of identity observations:
 
-The service is the first synchronous consumer of the append-only
-observation log seeded from `identity.identity_inputs`. It enriches
-analytics responses with display names, supervisor links, and other
-person attributes — without callers having to know which connector
-provided each value.
+- **Who is this?** — the product resolves a profile (attributes, org tree,
+  every source-native account the person holds) for the front end and for
+  analytics enrichment.
+- **Whose data may this caller see?** — every product surface that shows one
+  person's numbers to another person asks this service for the caller's
+  visible set, so the roster, the picker, the org chart and the metrics
+  runtime cannot disagree about it.
+- **Who just signed in?** — at login the authenticator has an identity
+  provider principal and needs the person it belongs to, before any tenant or
+  caller context exists.
+
+Alongside those reads it owns the writes that keep the answers correct: the
+operator correction surface over account-to-person bindings, the role and
+visibility grant tables the product's authorization reads, and the scheduled
+jobs that rebuild the person projection from connector evidence and publish it
+to the analytics warehouse.
 
 ### 1.2 Background / Problem Statement
 
-Identity-bearing data lands in Insight from multiple connectors —
-BambooHR, Cursor, Claude Admin, Jira, Slack, MS Entra, and others. PR
-#214 introduced an append-only `persons` observation log that unifies
-every connector behind a single schema (one row per
-`(insight_tenant_id, person_id, insight_source_type, insight_source_id,
-value_type, value_hash)`). The platform needs a synchronous lookup
-path on top of that log that (a) sees every source
-the seed pipeline writes, (b) returns live data without a pod restart,
-(c) is tenant-safe by construction, and (d) follows the cyberfabric
-gears-rust host / structured-JSON-logging / RFC 7807 conventions
-established for the other Rust services in the platform.
+Identity-bearing data reaches Insight from every connector — an HR directory,
+a chat platform, a code host, a task tracker, an AI tool. Each names the same
+human differently: an employee id here, a login there, an address in a third
+place. Every cross-source metric the product computes depends on those names
+collapsing onto one person, and every access decision depends on that person
+being the one the caller is entitled to see.
+
+An append-only observation journal (`persons`) unifies the sources behind one
+schema, but a journal alone answers nothing synchronously: it has no notion of
+a current value, no org tree, no permission model, and no way for a login to
+find its person. This service is the synchronous layer over that journal. It
+must see every source the pipeline writes, reflect a correction without a
+restart, refuse to cross a tenant boundary by construction, and hold the one
+place where "may this caller see this person" is decided.
+
+The service also carries the consequence of being asked those questions at the
+wrong moment. A first install has an empty journal; a login can arrive for
+someone no connector has yet described; two sources can claim the same
+address. None of those may crash, and none may be resolved by guessing.
 
 ### 1.3 Goals (Business Outcomes)
 
-- **Multi-source coverage.** Lookup answers correctly for any source
-  whose connector emits identity observations — not only BambooHR.
-- **Live data.** Updates that land in `persons` are visible without a
-  pod restart; no in-memory full-table cache to invalidate.
-- **Tenant safety.** Every query is scoped by `insight_tenant_id`; no
-  cross-tenant data leak is possible by construction.
-- **Operational predictability.** First-install behaviour is "every
-  lookup returns 404 until the seed runs" — never a crash loop.
+- **One person across sources.** A human observed by any supported connector
+  resolves to a single person, so cross-source metrics attribute to them
+  rather than fragmenting.
+- **One visibility answer.** Every surface that shows a person's data derives
+  its permission from the same rule in this service, so a name and the numbers
+  behind it cannot answer to different permissions.
+- **Corrections take effect immediately.** An operator's binding, merge,
+  detach or exclusion changes what the product answers without a redeploy or a
+  restart, and remains attributable afterwards.
+- **A person can always sign in once the organisation lists them.** Login
+  resolution succeeds for anyone the configured roster states, including
+  members the directory publishes without an address.
+- **Nothing crosses a tenant.** No configuration mistake and no data state
+  produces an answer assembled from another tenant's rows.
 
 ### 1.4 Glossary
 
 | Term | Definition |
 |------|------------|
-| `persons` | The MariaDB append-only observation log; one row per (tenant, person_id, source_type, source_id, value_type, created_at) per ADR-0011. The earlier UNIQUE on `value_hash` wrongly collapsed state transitions and was dropped. Defined in `identity` DB. |
-| Observation | One row in `persons` — a single (`value_type`, `value`) datapoint emitted by one source for one person at one instant. Never updated; superseded by a newer observation with the same partition key. |
-| `value_type` | Free-form `VARCHAR(50)` attribute name. Canonical set: `id`, `email`, `username`, `display_name`, `first_name`, `last_name`, `department`, `division`, `job_title`, `status`, `employee_id`, `parent_email`, `parent_id`, `parent_person_id`. |
-| `value_id` / `value_full_text` / `value` | Routing columns selected per `value_type` per ADR-0007. `id`/`email`/`username` → `value_id` (utf8mb4_unicode_ci — case-insensitive per ADR-0011); `display_name` → `value_full_text` (utf8mb4_unicode_ci); everything else → `value`. |
-| `insight_tenant_id` | `BINARY(16)` tenant UUID; part of every query and every index. |
-| Latest-per-source | The projection `ROW_NUMBER() OVER (PARTITION BY source_type, source_id, value_type ORDER BY created_at DESC)` — picks the most recent observation per attribute per source. |
-| Assembler | Collapses latest-per-source rows into a single profile response by picking the latest value across sources per `value_type`. |
-| SeaORM migrator | The service's migration mechanism (run via the `migrate` subcommand); tracks applied steps in a `seaql_migrations` table inside the service's own database. |
-| Seed | The `seed` subcommand that materialises `persons` rows from ClickHouse `identity.identity_inputs`. Not a schema migration. |
+| Observation | One `(value type, value)` datapoint emitted by one source for one person at one instant. Never updated; superseded by a later observation on the same partition. |
+| Journal | The append-only store of observations. Every current value the service reports is derived from it, never stored as a mutable field. |
+| Current value | The latest observation per person, per source instance, per value type. "Latest per source" is the projection; the assembler then picks a winner across sources. |
+| Binding | An observation that ties a source-native account to a person. Written by the seed, by the login bootstrap, or by an operator correction. |
+| Account | A source-native identity: a connector type, a connector instance, and an id within it. The unit an operator binds, detaches or excludes. |
+| Roster | The one source configured as the authority on who exists. Only it may cause a person to be minted for an account carrying no address. |
+| Visible set | The set of persons a caller may see, derived per request from the caller, their grants and the org chart, under the configured visibility policy. |
+| Visibility grant | An explicit, time-bounded record that one person may see another (or the whole tenant), independent of the reporting line. |
+| Role assignment | A time-bounded grant of a named role to a person in a tenant. The `admin` role gates the operator surfaces. |
+| Org chart | The materialised parent-to-child edge cache with validity intervals, rebuilt from the journal, filtered to one configured source. |
+| Operation journal | The record of one batch job run or one operator correction: who ran it, what was asked, what changed, and why it failed. |
+| Service principal | A caller whose token identifies another service rather than a person. The only caller admitted to the internal login-bootstrap routes. |
 
 ## 2. Actors
 
 ### 2.1 Human Actors
 
-#### Platform SRE
+#### Identity operator
+
+**ID**: `cpt-insightspec-actor-identity-operator`
+
+**Role**: Holds the `admin` role in a tenant. Reviews accounts the automatic
+pipeline could not decide, binds them to people, merges duplicates, detaches
+wrong bindings, excludes accounts that are not people, and manages role and
+visibility grants.
+
+**Needs**: To see every person and account in the tenant regardless of the
+reporting line; to have a correction take effect at once and survive the next
+automatic run; to be refused rather than guessed for when the evidence is
+contested; to read back what each of their decisions did.
+
+#### Product user
+
+**ID**: `cpt-insightspec-actor-product-user`
+
+**Role**: A signed-in person using Insight. Never calls this service directly —
+every read is on their behalf from the front end or the analytics service —
+but the answer is scoped to them, so they are the subject of every visibility
+decision.
+
+**Needs**: To see themselves, the people they are entitled to see, and nobody
+else; to reach a colleague's profile from any surface with the same result;
+to be told what they may do without probing for a refusal.
+
+#### Platform operator
 
 **ID**: `cpt-insightspec-actor-platform-sre`
 
-**Role**: Operates the Insight install on a customer cluster. Runs
-seed pipelines, reads `/health` and `/healthz` to determine pod
-readiness, and triages 5xx responses from the service.
+**Role**: Installs and runs Insight on a cluster. Configures the roster source,
+the visibility policy and the org-chart source, seeds the first admin, and
+diagnoses a stand where the projection is stale, a login is refused, or a job
+failed.
 
-**Needs**: A deterministic health/readiness contract; structured logs
-that name the failure mode without leaking PII; a clear error response
-when the seed has not yet been run.
-
-#### Connector Developer
-
-**ID**: `cpt-insightspec-actor-identity-connector-dev`
-
-**Role**: Adds new connectors that emit identity observations and
-extends the `value_type` taxonomy. Validates that new attributes
-surface correctly on the lookup response.
-
-**Needs**: A stable contract for which `value_type`s are projected;
-documented routing rules (ADR-0007); a way to extend the projection
-without breaking existing callers.
+**Needs**: A schema that migrates itself before the service serves; a job that
+refuses a destructive run rather than completing it; a journal that explains a
+failure without access to the logs; logs that name a failure without carrying
+a person's address.
 
 ### 2.2 System Actors
 
-#### api-gateway
+#### Gateway
 
 **ID**: `cpt-insightspec-actor-api-gateway`
 
-**Role**: External-facing reverse proxy. Calls
-`POST /v1/profiles` to enrich analytics responses with
-display-name, supervisor, and org-unit fields. The tenant travels
-as the `tenant_id` claim of the signed gateway JWT.
+**Role**: The product's edge. Terminates the browser session, mints the signed
+token every caller of this service presents, and forwards front-end requests
+under the identity mount. The caller identity, their tenant and their roles
+reach this service only as claims of that token.
 
-#### dbt-runner / Argo Workflows
+#### Authenticator
 
-**ID**: `cpt-insightspec-actor-identity-argo`
+**ID**: `cpt-insightspec-actor-authenticator`
 
-**Role**: Internal compute callers that may need person metadata when
-materialising Gold tables or running ad-hoc reconciliations. Carry
-the tenant context via the same header.
+**Role**: Drives the login. Presents an identity-provider principal to this
+service to find the person it belongs to, provisions one when the roster lists
+someone the journal has no binding for, reads the person's active roles to mint
+into the session token, and resolves an address for the administrative view-as
+feature.
 
-#### MariaDB
+#### Analytics service
 
-**ID**: `cpt-insightspec-actor-mariadb`
+**ID**: `cpt-insightspec-actor-analytics`
 
-**Role**: Stores the `persons` journal and the `org_chart` edges that
-the service reads and that the SeaORM migrator migrates. Connection
-target named by the gear config's `database_url`
-(`APP__gears__identity-resolution__config__database_url`).
+**Role**: Enriches metric responses with person attributes and forwards a
+cleared request's person set here to learn which of them the caller may see.
+Its access decisions are this service's answers.
 
-#### Seed pipeline
+#### Connector pipeline
 
 **ID**: `cpt-insightspec-actor-seed-pipeline`
 
-**Role**: Writes observation rows into `persons` from ClickHouse
-`identity.identity_inputs`. Runs out-of-band (operator-triggered);
-the service does not orchestrate it. The reader trusts that any
-visible row is well-formed per the routing rules in ADR-0007.
+**Role**: Produces the identity evidence the projection is built from. Each
+connector emits identity observations into the warehouse; the service's own
+scheduled job reads them and folds them into the journal. The pipeline does not
+write the journal directly.
+
+#### Metrics warehouse
+
+**ID**: `cpt-insightspec-actor-metrics-warehouse`
+
+**Role**: Consumes a published snapshot of the journal so warehouse transforms
+can attribute activity to a person without calling the service per row. The
+service is the sole writer of that snapshot.
+
+#### Identity database
+
+**ID**: `cpt-insightspec-actor-mariadb`
+
+**Role**: Stores the journal, the org chart, the person projection, the role
+and visibility grants, and the operation journal. The service owns this schema
+and migrates it.
+
+#### Scheduler
+
+**ID**: `cpt-insightspec-actor-scheduler`
+
+**Role**: Runs the projection rebuild on a schedule and on demand. Runs the job
+as a process, not as an API call — there is no authenticated trigger for it.
 
 ## 3. Operational Concept & Environment
 
 ### 3.1 Module-Specific Environment Constraints
 
-- **Rust / gears-rust host.** Service ships as a static
-  `linux/amd64` binary in the `insight-identity-resolution` image;
-  Kubernetes pod runs as UID 1000 non-root.
-- **MariaDB reachability at migrate time.** The `migrate` subcommand
-  (run as an initContainer) connects and applies migrations before
-  the serving container starts. If MariaDB is unreachable, the pod
-  fails early — kubelet retries. There is no "start without DB and
-  reconnect later" mode.
-- **No in-memory cache.** Every lookup hits MariaDB. Memory budget
-  (NFR-2) reflects the absence of cache, not its presence.
-- **Tenant claim mandatory in prod.** With `tenant_default_id`
-  unset, every request must carry a verified gateway JWT with a
-  `tenant_id` claim (oidc-authn-plugin). Dev / local clusters may pin
-  a default tenant in values; production overlays leave it empty.
+- **The schema is migrated before the service serves.** Migration runs as a
+  separate process step against the same database; a failed migration must
+  prevent the service from serving rather than surface as a runtime error.
+- **No in-process cache of the journal.** Every answer is derived per request,
+  so a correction or a completed job is visible immediately and there is no
+  cache to invalidate. The resource budget assumes this.
+- **A signed caller token is mandatory.** There is no unauthenticated mode and
+  no configured fallback identity for a request. A request whose token carries
+  no tenant is refused rather than served against a default.
+- **Batch work runs outside the request path.** The projection rebuild and the
+  snapshot publish are processes with their own lifetimes, exit codes and
+  concurrency control. They must be safe to run concurrently with serving and
+  with each other.
+- **The organisation shape is configuration, not data.** Which source supplies
+  the reporting line, which source is the roster, and whether visibility
+  follows the reporting line at all are per-install settings. An install with
+  no reporting lines is a supported deployment, not a degraded one.
 
 ## 4. Scope
 
 ### 4.1 In Scope
 
-- The `PersonResponse` shape (Phase 1) with parent attributes
-  (`parent_email`, `parent_id`, `parent_person_id`). The Phase-1
-  `GET /v1/persons/{email}` endpoint that carried it was retired
-  (zero callers); `POST /v1/profiles` is the successor.
-- `POST /v1/profiles` (Phase 2, constructorfabric/insight#347)
-  — single-profile lookup by either email (across all sources) or
-  source-native id (within one source instance), returning a
-  `ProfileResponse` with the full `ids[]` list of current
-  `value_type='id'` bindings. Single-result invariant enforced;
-  multiple matches surface as `422 urn:insight:error:ambiguous_profile`.
-- `GET /health` — DB ping (200 if reachable, 503 otherwise).
-- `GET /healthz` — process liveness (200 `text/plain "ok"`).
-- Tenant resolution from the verified gateway JWT's `tenant_id`
-  claim, with optional fallback to the `tenant_default_id` config.
-  Same resolution used by every endpoint.
-- Lowercase-email lookup against `value_type = 'email'`.
-- Display-name split fallback when explicit `first_name` /
-  `last_name` observations are absent.
-- SeaORM-migrator-applied schema (`001_persons.sql`,
-  `003_org_chart.sql`, ...) per ADR-0006.
+- Resolving a person from an address, a source-native account id, or the
+  canonical person key, and assembling their current attributes, org tree and
+  account list.
+- Deciding, for one caller, which persons they may see — as a batch filter, as
+  a paged roster, and as the gate on every other read.
+- Serving the canonical people roster and the org chart, including a
+  point-in-time view of the reporting line.
+- The role catalogue, role assignments and visibility grants that the product's
+  authorization is read from, and the caller's own view of them.
+- The operator correction surface over account-to-person bindings, and the
+  review queue of accounts awaiting a decision.
+- Login-time resolution and provisioning for the authenticator, over routes
+  reachable only by a service principal.
+- The scheduled projection rebuild, the snapshot publish, their concurrency
+  control and input guards, and the journal that records every run.
+- The schema this service owns, its migrations and the first-admin bootstrap.
 
 ### 4.2 Out of Scope
 
-- Recursive subordinate expansion via `parent_person_id` —
-  constructorfabric/insight#348 (GET subchart) lands separately.
-- Permission/role semantics beyond the admin gate — JWT verification
-  itself is in scope (the oidc-authn-plugin validates the ES256
-  gateway JWT and supplies the tenant claim).
-- Batch (multi-lookup) profile resolution — Phase 2 surfaces a single
-  lookup per request; multi-lookup body shape is a possible Phase 3
-  extension.
-- Temporal "as-of" queries by date range — Phase 3.
-- Write path (`POST /v1/resolve` golden-record bootstrap) —
-  constructorfabric/insight#349.
-- Writing observations into `persons` (owned by the seed pipeline
-  and a future reconciliation service).
-- Merge / split workflows on person identities.
-- OIDC subject mapping, org_units, memberships, user_identities,
-  user_roles tables — tracked separately under constructorfabric/insight#80.
+- **How identity evidence is produced.** Connector extraction and the warehouse
+  models that emit identity observations belong to the ingestion pipeline.
+- **The matching semantics themselves.** What counts as evidence, how a
+  correction folds into the journal and how conflicts are classified are
+  specified by the identity-resolution domain artifacts; this document
+  specifies the service's obligations when exposing them —
+  [domain PRD](../../../../../domain/identity-resolution/specs/PRD.md).
+- **Being an identity provider.** The service never authenticates anyone. It
+  maps an already-authenticated principal onto a person.
+- **Session handling.** Sessions, tokens and their lifetimes belong to the
+  authenticator and the gateway.
+- **Automatic fuzzy matching.** Nothing in this service links two identities on
+  a similarity judgement; an undecidable case reaches an operator.
+- **Erasure of a person on request.** The journal is append-only; a data-subject
+  erasure path is a separate, unbuilt capability.
 
 ## 5. Functional Requirements
 
-> **Testing strategy**: All functional requirements verified via
-> automated tests (`cargo test -p identity-resolution`) — unit tests
-> cover domain logic (profile assembly, display-name split);
-> integration tests cover SQL + endpoint behaviour against a
-> Testcontainers MariaDB.
+> **Testing strategy**: requirements are verified by automated tests in the
+> service's own suite — unit tests over the pure decision logic, and live tests
+> that drive the real route table against a real database. Where the observable
+> behaviour is the wire contract, the generated interface document is the
+> checked artifact and a drift gate enforces it.
 
-### 5.1 Lookup contract
+### 5.1 Caller identity and authorization
 
-#### Resolve email to person_id
+#### Every request answers to the caller's token
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-resolve-by-email`
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-caller-identified`
 
-The system **MUST** resolve an email to a single `person_id` using
-the latest observation per
-`(insight_source_type, insight_source_id, value_type, value_id)`
-partition where `value_type = 'email'` and `insight_tenant_id`
-matches. The comparison is case-insensitive at the storage layer
-(ADR-0011); the caller need not lowercase the input.
+**Vector**: Security
 
-**Rationale**: Email is the lookup key used by every current caller;
-"latest per source" matches the seed pipeline's semantics and avoids
-returning stale post-merge identities.
+The system **MUST** derive the caller, their tenant and their type from the
+verified token presented with the request, and **MUST** refuse any request
+whose token identifies no person or no tenant. No request parameter, header or
+configuration setting may name the caller instead.
 
-**Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-identity-argo`
+**Rationale**: The caller identity is the input to every visibility decision
+this service makes. Accepting it from anywhere the caller controls would make
+every other access rule decorative.
 
-#### Hydrate person attributes
+**Actors**: `cpt-insightspec-actor-api-gateway`, `cpt-insightspec-actor-product-user`
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-hydrate`
-
-The system **MUST** hydrate every other response field with the latest
-observation per `(insight_source_type, insight_source_id, value_type)`
-partition for the resolved `person_id`. The assembler **MUST** then
-pick the per-`value_type` winner across sources by latest `created_at`.
-
-**Rationale**: A single source can be authoritative for some fields
-and silent on others; the assembler must compose the response from
-multiple sources without preferring any one of them by default.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`
-
-#### Not-found returns RFC 7807
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-404`
-
-The system **MUST** return `404 Not Found` with an RFC 7807
-problem-details body when no current observation matches the supplied
-email + tenant.
-
-**Rationale**: Empty-result is a normal first-install state, not an
-error; callers must distinguish it from server failures.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`
-
-#### Missing tenant returns RFC 7807
+#### An unresolved tenant is refused, never defaulted
 
 - [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-400-tenant`
 
-The system **MUST** return `400 Bad Request` with an RFC 7807
-problem-details body of type
-`urn:insight:error:tenant_unresolved` when no tenant resolves from the
-verified JWT's `tenant_id` claim and no `tenant_default_id` is
-configured.
+**Vector**: Security
 
-**Rationale**: Silently defaulting a tenant in a multi-tenant
-deployment is a data-leak risk. The signed claim wins; the config
-default is opt-in for single-tenant clusters.
+The system **MUST** refuse a request whose token carries no resolvable tenant,
+and **MUST NOT** fall back to a configured tenant to serve it. The refusal
+**MUST** name the missing tenant as the cause so a misconfigured install is
+diagnosable.
+
+**Rationale**: Defaulting a tenant on a multi-tenant install serves one
+customer's data to another. A configured tenant exists for the batch jobs and
+the first-admin bootstrap, which have no caller; it is not a request-time
+fallback.
 
 **Actors**: `cpt-insightspec-actor-platform-sre`
 
-#### Surface parent attributes when present
+#### Operator surfaces require an active admin role
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-parent`
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-admin-gate`
 
-The system **MUST** surface `supervisor_email`, `supervisor_name`, and
-the legacy alias triple `parent_email` / `parent_id` /
-`parent_person_id` on the response. All five fields **MUST** be
-hydrated from the parent edge in `org_chart` filtered to a single
-configured source (default `bamboohr`, controlled by the gear
-config's `org_chart_source_type`). Stale
-`value_type='parent_*'` observations in `persons` **MUST NOT** be
-projected onto the response — the org-tree source of truth is
-`org_chart`.
+**Vector**: Security
 
-**Rationale**: Sourcing the supervisor edge from `org_chart` makes
-the response shape symmetric with the recursive subordinates walk —
-both come from the same materialised SCD2 cache filtered to one
-source. The legacy `parent_*` triple is kept additive so existing
-api-gateway adapters keep working unchanged.
+Every operator surface — the correction verbs, the account and person searches
+behind them, the role, role-assignment and visibility grant management, the
+tenant-wide roster, and the job journals — **MUST** require the caller to hold
+an active `admin` assignment in their own tenant. The check **MUST** read the
+current assignment state per request, so a grant or revocation takes effect
+without a restart, and **MUST** distinguish "not identified" from "identified
+but not permitted".
 
-**Actors**: `cpt-insightspec-actor-api-gateway`
+**Rationale**: These surfaces read and rewrite who everyone is. Gating them on
+a live grant rather than on a token claim alone means a revocation is
+immediate, and separating the two refusals lets the front end tell a signed-out
+user from an unprivileged one.
 
-#### Recursively expand subordinates
+**Actors**: `cpt-insightspec-actor-identity-operator`
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-subordinates`
+#### Internal routes admit only service principals
 
-The system **MUST** populate `subordinates[]` on the response with the
-full recursive subtree below the resolved person, walking
-`org_chart` filtered to the same configured source as the parent
-edge. Recursion **MUST** stop on:
-<list type="bullet">
-  <item>cycles — already-visited `person_id` (defence-in-depth on top
-        of the seeder's two-hop check),</item>
-  <item>missing observations — a `child_person_id` with no rows in
-        `persons` is skipped (no hollow leaves),</item>
-  <item>depth cap — the gear config's `max_depth`
-        (default 16, well above any realistic org tree).</item>
-</list>
-Subordinates **MUST** use the same wire shape as the top-level
-person (`PersonResponse` is self-referential). Empty list is the
-"leaf" signal.
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-service-principal-gate`
 
-**Rationale**: Surfaces the recursive supervisor tree directly on
-the response so callers do not need a second round-trip per
-subordinate. Cross-source enrichment (matrix orgs, multi-source
-trees) is reserved for the `GET /v1/subchart/{person_id}?depth=N`
-endpoint tracked under #348 Phase 3.
+**Vector**: Security
 
-**Actors**: `cpt-insightspec-actor-api-gateway`
+The login-bootstrap routes **MUST** be reachable only by a caller whose token
+identifies a service rather than a person, **MUST NOT** appear in the published
+interface document, and **MUST** refuse any other caller. Because they run
+before a caller identity exists, they are the only routes exempt from the
+visibility gate, and that exemption **MUST NOT** be reachable from any
+person-authenticated route.
 
-### 5.2 Profile lookup (POST /v1/profiles, Phase 2 — #347)
+**Rationale**: These routes answer without the protections every other route
+applies. Confining them to a service principal, and keeping them off the public
+contract, is what stops that latitude from becoming a way for a signed-in
+person to read the whole directory.
 
-#### Resolve profile by email or source-native id
+**Actors**: `cpt-insightspec-actor-authenticator`
+
+#### The caller can read their own identity and permissions
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-me`
+
+The system **MUST** let any identified caller read who the token says they are,
+which roles they actively hold, and which visibility policy the install runs.
+An empty role list **MUST** be a successful answer rather than a refusal.
+
+**Rationale**: A consumer that must probe for a refusal to learn what it may
+show produces a worse experience and a noisier audit trail than one that asks
+once. The policy is reported for the same reason — an empty org tree under a
+flat install is not a missing reporting line.
+
+**Actors**: `cpt-insightspec-actor-product-user`
+
+### 5.2 Profile resolution
+
+#### Resolve a profile by address, account id or person key
 
 - [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-resolve`
 
-The system **MUST** expose `POST /v1/profiles` accepting a JSON body
-of shape `{ value_type, value, insight_source_type?, insight_source_id? }`
-and returning a single `ProfileResponse` when exactly one current
-observation matches.
+**Vector**: Versatility
 
-The contract has two valid request shapes:
-- `value_type='email'` — `value` is the email to look up across ALL
-  source instances for the tenant. `insight_source_type` and
-  `insight_source_id` **MUST** be absent.
-- `value_type='id'` — `value` is the source-native account id from a
-  `persons.value_type='id'` observation. Both `insight_source_type`
-  and `insight_source_id` **MUST** be supplied.
+The system **MUST** resolve a single profile from any of three keys: an address
+matched across every source in the tenant; a source-native account id scoped to
+one named connector instance; or the canonical person key itself. All three
+**MUST** produce the same profile for the same person, and the person key
+**MUST** be usable for a person the journal holds no address for.
 
-The handler resolves over the canonical latest-per-source-instance
-partition `(insight_tenant_id, person_id, insight_source_type,
-insight_source_id, value_type)`; observations superseded by a newer
-row on the same partition do not contribute.
+**Rationale**: Callers hold different keys. The front end routes on the person
+key, an operator workflow starts from a connector account, and an enrichment
+path starts from an address. One contract covering all three keeps a single
+assembly path, so the answers cannot diverge by caller.
 
-**Rationale**: Phase 1 GET endpoint is limited to email lookup; the
-analytics front-end and internal workflows need to resolve by other
-identifier types (source-native id especially for the
-person-by-source workflows in constructorfabric/insight#344). POST
-with a structured body keeps the contract extensible for Phase 3
-date-range filtering without further URL gymnastics.
+**Actors**: `cpt-insightspec-actor-api-gateway`, `cpt-insightspec-actor-analytics`
 
-**Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-identity-argo`
+#### Address matching uses the current value per source
 
-#### Surface single-result invariant via 422
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-resolve-by-email`
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-ambiguous-422`
+The system **MUST** match an address against the current observation for each
+source instance, so a superseded address stops resolving to its former owner.
+Matching **MUST** be case-insensitive without requiring the caller to normalise
+the input.
 
-When `POST /v1/profiles` matches more than one distinct `person_id`
-on the same lookup, the system **MUST** return `422 Unprocessable
-Entity` with an RFC 7807 body of type
-`urn:insight:error:ambiguous_profile`. The body **MUST** echo the
-offending lookup verbatim and include the list of matched
-`person_ids` so the caller can investigate the data invariant
-violation without re-querying.
-
-**Rationale**: The data invariant is "exactly one current person
-per source-instance id, and exactly one current person per email
-across all sources for a tenant". A violation indicates a corrupted
-`persons` table state; silently picking one record would mask the
-problem and risk wrong-person responses. 422 (RFC 9110 §15.5.21
-"semantically correct request, server cannot process due to
-data state") matches the cyberfabric platform convention used by
-the analytics service for similar invariant breaches.
-
-**Actors**: `cpt-insightspec-actor-platform-sre`
-
-#### Project full alias list on response
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-ids-list`
-
-The `ProfileResponse` **MUST** include an `ids[]` array enumerating
-every current `value_type='id'` binding for the resolved person, one
-entry per `(insight_source_type, insight_source_id)` instance. Each
-entry has the shape
-`{ insight_source_type, insight_source_id, value }` and corresponds
-to the latest observation on its partition.
-
-**Rationale**: Consumers downstream (analytics enrichment, future
-front-end org-tree) need the full alias picture without making N
-follow-up lookups per source.
+**Rationale**: An address that moved between people must resolve to whoever
+holds it now; requiring every caller to normalise the case makes correctness
+depend on each caller getting it right.
 
 **Actors**: `cpt-insightspec-actor-api-gateway`
 
-#### Project the same org-tree shape as /v1/persons
+#### Compose attributes from every source
 
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-org-tree`
-
-The `POST /v1/profiles` response **MUST** carry the same org-tree
-fields the `GET /v1/persons/{email}` response carries:
-`supervisor_email`, `supervisor_name`, the legacy `parent_*` triple,
-and the recursive `subordinates[]` walk. The hydration **MUST** use
-the same `org_chart_source_type` config knob and produce identical
-tree shapes for the same resolved `person_id` regardless of which
-endpoint the caller used.
-
-**Rationale**: Phase 2 of #348 unifies the two read paths so the
-front-end and api-gateway can use either endpoint interchangeably
-without losing org-tree context. Implementation: `ProfileLookupService`
-delegates the tree walk to `PersonLookupService.HydrateForProfileAsync`,
-keeping the recursion in one place.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`
-
-#### Validate the request body
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-validation`
-
-The system **MUST** reject malformed `POST /v1/profiles` bodies with
-`400 Bad Request` + RFC 7807 body before reaching the persistence
-layer. The error type **MUST** be one of:
-`urn:insight:error:invalid_value_type`,
-`urn:insight:error:invalid_value`,
-`urn:insight:error:missing_source_for_id`,
-`urn:insight:error:source_not_allowed_for_email`.
-
-**Rationale**: the cross-field rules (`value_type='id'` requires both
-source fields; `value_type='email'` forbids them) live in one place,
-unit-testable independently of the endpoint.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-platform-sre`
-
-### 5.3 Routing and normalisation
-
-#### Display-name split fallback
-
-- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-routing-name-split`
-
-The system **MUST** fall back to splitting `display_name` into
-`first_name` / `last_name` when neither explicit observation is
-present, using the rules in ADR-0006 (`"Last, First"` vs
-`"First Last"`).
-
-**Rationale**: BambooHR's older snapshot lacked dedicated first/last
-fields; the split keeps the response shape complete without forcing
-a connector backfill.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`
-
-### 5.4 Schema lifecycle
-
-#### Service-owned migrations at startup
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-migrations-startup`
-
-The service **MUST** apply its own SeaORM migrations (steps under
-`src/backend/services/identity-resolution/src/migration/`, SQL under
-`src/migration/sql/`) against the configured MariaDB before serving
-traffic — via the `migrate` subcommand, run as an initContainer in
-Kubernetes. Migration history **MUST** be tracked in a
-`seaql_migrations` table inside the service's own database.
-
-**Rationale**: Per ADR-0006 each service owns its schema; serial
-startup ordering prevents requests from ever hitting an unmigrated
-table.
-
-**Actors**: `cpt-insightspec-actor-mariadb`, `cpt-insightspec-actor-platform-sre`
-
-#### Schema allows recording state transitions
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-schema-relax-uniqueness`
-
-The `persons` table **MUST** record every observation event, including
-a value reverting to a prior value at a different point in time
-(`Active → Inactive → Active`). The UNIQUE constraint **MUST NOT**
-include `value_hash` (which collapsed return-to-prior-value
-transitions); it **MUST** use `created_at` as the disambiguator so
-re-runs of the seeder against the same source snapshot remain
-idempotent while genuine state transitions are preserved.
-
-**Rationale**: Per ADR-0011, the original UNIQUE on `value_hash` was
-a design mistake — it conflated "same observation re-emitted on a
-re-run" (which should dedupe) with "same value observed again at a
-later time" (which should not). The fix is structural: drop the
-value-hash-based UNIQUE and re-key on `created_at`.
-
-**Actors**: `cpt-insightspec-actor-mariadb`,
-`cpt-insightspec-actor-seed-pipeline`
-
-#### Value comparisons are case-insensitive
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-schema-case-insensitive-value-id`
-
-All `value_id`-routed value_types (`id`, `email`, `username`,
-`employee_id`, `parent_email`, `parent_id`, `parent_person_id`)
-**MUST** compare case-insensitively. The column collation **MUST**
-be `utf8mb4_unicode_ci` so the comparison applies uniformly at the
-storage layer; SQL callers **MUST NOT** be required to wrap reads
-in `LOWER()` to get the right answer.
-
-**Rationale**: Per ADR-0011, the original `utf8mb4_bin` collation
-on `value_id` made every comparison strictly case-sensitive — a
-production lookup for `Alice.Smith@company.com` against a
-stored `alice.smith@company.com` returned 404. Switching the
-column to `utf8mb4_unicode_ci` aligns the storage with how the
-platform conventionally compares emails and UUID strings, and
-removes a fragile per-caller contract.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-mariadb`
-
-### 5.5 Parent/child edge cache
-
-Phase 1 of constructorfabric/insight#348 — storage layer for
-organisational tree relationships. No API surface change in Phase 1;
-the cache is read by Phase 2 endpoint enrichment and Phase 3 subchart
-walks.
-
-The cache depends on **`value_type='status'`** observations to close
-edges on employee deactivation (see `cpt-insightspec-fr-identity-org-chart-rebuild`
-below). The canonical value_type set the rebuild reads is therefore
-`parent_email`, `parent_person_id`, `email`, and `status` — these
-must continue to be enumerable as expected `value_type` values in
-new connector dbt models.
-
-**Multi-parent extensibility.** Phase 1 enforces single-parent per
-`(tenant, source_type, source_id, child)`. The schema can be promoted
-to multi-parent if a future source emits multiple supervisors per
-employee (matrix orgs) by adding `parent_person_id` to the primary
-key. The read API contract is already a list, so no consumer-side
-change is required. No source today produces multi-parent data; this
-is captured for future-readers, not implemented in Phase 1.
-
-#### Materialised parent/child edge cache
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-table`
-
-The service **MUST** own a `org_chart` table that stores
-direct parent->child edges per
-`(insight_tenant_id, insight_source_type, insight_source_id)` and
-keeps SCD2 history via `valid_from`/`valid_to`. The Phase-1 invariant
-is at most one CURRENT edge per
-`(tenant, source_type, source_id, child_person_id)`; multi-parent
-support (matrix orgs) is deferred to a Phase-1.5 schema change that
-adds `parent_person_id` to the primary key.
-
-**Rationale**: Per-source edges are first-class — Alice's manager in
-BambooHR is not the same edge as her channel admin in Slack — and a
-dedicated cache lets the Phase-3 recursive subchart endpoint be an
-index walk rather than a partition-arithmetic-inside-recursion query.
-
-**Actors**: `cpt-insightspec-actor-mariadb`,
-`cpt-insightspec-actor-seed-pipeline`
-
-#### Rebuild edges from persons deterministically
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-rebuild`
-
-The seeder **MUST** rebuild `org_chart` from `persons`: a
-tenant-scoped `DELETE` followed by `INSERT ... SELECT`, inside the
-same transaction as the observation writes. The rebuild **MUST** UNION two sources of edges:
-
-1. `value_type='parent_person_id'` observations (resolved Insight
-   UUIDs that a future reconciliation service will write; currently
-   zero rows but the path stays live).
-2. `value_type='parent_email'` observations resolved by JOIN to the
-   latest `value_type='email'` observation per (tenant, email)
-   partition. The JOIN **MUST** lowercase + trim the
-   `parent_email` side and **MUST** pick at most one `person_id`
-   per (tenant, email) via `ROW_NUMBER() OVER (...) WHERE rn=1`
-   ordered by `created_at DESC` so pending-iresolution
-   accumulation cannot break the UNIQUE key.
-
-Source 1 **MUST** take precedence over Source 2 when both have a
-row for the same `(tenant, person, source_type, source_id)`
-partition (NOT EXISTS guard). Malformed `value_id`s in Source 1
-(not a canonical 36-char UUID) and self-loops in both sources
-**MUST** be skipped pre-insert. Parent_emails that do not match any
-current email-bearer in the tenant **MUST** be skipped and counted
-in the seeder log; the seeder **MUST NOT** synthesise stub persons
-to carry an unresolved `parent_email`.
-
-Source 2 **MUST** intersect each `parent_email` observation period
-with the child's active intervals derived from `value_type='status'`
-observations:
-
-- An active interval starts at any `status` observation whose value
-  is not Inactive/Terminated and the previous observation was either
-  absent or Inactive/Terminated.
-- An active interval ends at the next observation whose value is
-  Inactive/Terminated, or NULL if no such observation exists.
-- A child with NO `status` observations **MUST** be treated as
-  always-active (synthetic [-infinity, NULL) interval) so connectors
-  that emit `parent_email` without `status` do not silently drop
-  every edge.
-- Re-activation (Inactive -> Active) **MUST** produce a second
-  `org_chart` row for the same (child, parent, source)
-  rather than reopening the existing closed row; SCD2 history
-  reflects every deactivation/reactivation cycle honestly.
-
-The seeder **MUST** process BambooHR accounts ahead of other source
-types in step 5 (person_id assignment) so the canonical
-`supervisorEmail` source establishes `person_id`s before downstream
-connectors share emails with it.
-
-After the swap, the seeder **MUST** count two-hop cycles among
-CURRENT edges (`valid_to IS NULL`) — pairs `(A->B)` and `(B->A)` on
-the same `(tenant, source_type, source_id)` — and **MUST** emit a
-WARN line when the count is non-zero, without failing the pipeline.
-Deeper cycles (A->B->C->A) are not detected in Phase 1; the Phase-3
-`/v1/subchart/{person_id}?depth=N` recursive CTE bounds traversal
-by `depth` to make those harmless to consumers.
-
-**Rationale**: Append-only `persons` with latest-per-partition makes
-the rebuild deterministic. The two-source
-union keeps the cache useful today (Source 2) while making the
-future reconciliation path activate transparently (Source 1). No
-stubs avoids inheriting the deferred operator-resolution work from
-ADR-0002.
-
-**Actors**: `cpt-insightspec-actor-seed-pipeline`,
-`cpt-insightspec-actor-mariadb`
-
-#### Read current parent and children edges
-
-- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-read`
-
-The service **MUST** expose current-parents and current-children
-reads returning org-chart edges scoped to a single tenant. Both **MUST** read CURRENT edges only
-(`valid_to IS NULL`) and **MUST** preserve per-source-instance edge
-granularity in the result. Temporal "as-of T" queries are Phase 3+
-and add a new method on the same interface; the table's
-`idx_valid_from` is the supporting index.
-
-**Rationale**: Phase-2 endpoint enrichment (parent/subordinates
-fields on `/v1/persons` and `/v1/profiles`) and Phase-3 subchart
-recursion both call the same two reads — one abstraction stable
-across the three phases.
-
-**Actors**: `cpt-insightspec-actor-api-gateway`,
-`cpt-insightspec-actor-mariadb`
-
-## 6. Non-Functional Requirements
-
-Reliability and Security protect against attributing activity to the wrong person
-or exposing another tenant's identity. Efficiency and Performance bound the cost
-and delay of synchronous lookups; Versatility requires those lookups to include
-every supported identity source. Each applicable requirement is an independent
-gate: a vector count is neither acceptance nor passing evidence.
-
-This is a draft baseline. The [FEATURE review decisions](feature-profile-resolution/FEATURE.md#15-review-decisions)
-name unresolved contract and measurement conditions. In particular, the older
-lookup-latency target cannot be silently transferred to a different operation,
-and inherited obligations cannot be replaced by a weaker local budget.
-
-### 6.1 NFR Inclusions
-
-#### P95 lookup latency
-
-- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-latency`
-
-**Vector**: Performance
-
-The system **MUST** answer the legacy person lookup within **50 ms p95**
-for tenants with under 50 000 persons.
-
-**Threshold**: Preserve the existing p95 ≤ 50 ms target at the gateway-to-service
-boundary for under 50 000 persons. The legacy operation is absent from the current
-contract. The previous p95 ≤ 200 ms fallback above 50 000 persons had no resolvable
-upstream requirement; at exactly 50 000 persons no latency target was specified.
-Operation mapping, load conditions, and the target for 50 000 or more persons are
-unresolved. **Owner:** Identity service maintainer, with QA; **resolution point:**
-approve these conditions before making the FEATURE ready for implementation or
-claiming latency acceptance. This requirement remains open, not excluded.
-
-**Rationale**: Identity lookup delay contributes directly to the wait for a
-person's profile and analytical context.
-
-#### Memory budget without caching
-
-- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-memory`
-
-**Vector**: Efficiency
-
-The system **MUST** stay under **384 MiB RSS** at steady state with
-zero in-memory full-table cache.
-
-**Threshold**: RSS ≤ 384 MiB across a 24 h soak with 100 RPS mixed
-hot/cold reads against a 50 000-row synthetic observation dataset. Request mix,
-person-to-observation ratio, org-tree shape, hardware, and database conditions
-are not yet fixed. **Owner:** Identity service maintainer, with QA;
-**resolution point:** approve a reproducible fixture and run procedure before
-accepting this NFR. Rows must not be relabelled as persons.
-
-**Rationale**: A bounded service footprint keeps identity enrichment affordable
-as the observation history grows.
-
-#### Structured JSON logs with PII redaction
-
-- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-logging-pii`
-
-**Vector**: Security
-
-The system **MUST** provide structured, correlatable request and failure logs
-without disclosing raw email lookup values or database credentials. The logging
-allow-list and sanitisation design remain in DESIGN section 4.2; request
-metadata **MUST** stay within that allow-list.
-
-**Threshold**: Zero raw email lookup values, connection strings, or database
-credentials in captured service logs for successful, rejected, and failing
-synthetic lookup requests.
-
-**Rationale**: Diagnostic access must not expose a person's identity lookup
-values or the credentials protecting the identity store.
-
-#### `BINARY(16)` UUID round-trip
-
-- [ ] `p1` - **ID**: `cpt-insightspec-nfr-identity-uuid-roundtrip`
-
-**Vector**: Reliability
-
-The system **MUST** preserve tenant, source-instance, person, and author
-identifiers exactly across storage and retrieval, so a lookup cannot attribute
-an observation to a different entity.
-
-**Threshold**: 100% byte-for-byte equality for all four identifier fields after
-a storage/read round trip; zero truncations or substitutions. The binary
-representation is specified in [DESIGN](DESIGN.md#binary16-for-every-uuid).
-
-**Rationale**: Changing an identifier changes whose activity, provenance, or
-access boundary an observation belongs to.
-
-#### Identity source coverage
-
-- [ ] `p1` - **ID**: `cpt-identity-svc-nfr-profile-source-coverage`
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-hydrate`
 
 **Vector**: Versatility
 
-The system **MUST** resolve identity observations from every supported source
-that emits them, including multiple instances of the same source, without a
-source-specific preference that overrides the lookup and hydration rules.
+The system **MUST** compose the person's attributes from the current
+observation of every source that describes them, preferring no source by
+default and picking the most recently observed value per attribute.
 
-**Threshold**: 100% of supported identity-emitting source types in a
-revision-pinned fixture manifest resolve the expected person and current alias
-set; zero source-instance collisions. This formalises the multi-source goal in
-section 1.3 and the profile requirements in section 5.2. **Owner:** Identity
-service maintainer, with connector maintainers and QA; **resolution point:**
-agree the manifest before accepting coverage. An absent fixture is a coverage
-gap, not an excluded source.
+**Rationale**: One source is authoritative for some attributes and silent on
+others. A profile assembled from a single preferred source would be
+systematically incomplete for every organisation whose directory does not
+carry everything.
 
-**Rationale**: A person's profile must remain usable when their identity comes
-from a different connector or a second instance of an existing connector.
+**Actors**: `cpt-insightspec-actor-api-gateway`
 
-#### Inherited tenant isolation
+#### Reject a malformed lookup before querying
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-validation`
+
+The system **MUST** refuse a lookup whose key and scope do not agree — a
+source-scoped key without its connector instance, or an unscoped key carrying
+one — naming the offending field, before any data is read.
+
+**Rationale**: The cross-field rules are the difference between "this account
+in this connector" and "this value anywhere in the tenant". Deciding them in
+one place, ahead of the query, keeps a malformed request from being answered
+under the wrong scope.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`
+
+#### Filter candidates by visibility before deciding the outcome
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-visibility-gate`
 
 **Vector**: Security
 
-**Inherits**: `cpt-ir-nfr-tenant-isolation`
+The system **MUST** reduce the matched candidates to those the caller may see
+**before** deciding whether the lookup found nothing, found one person, or is
+ambiguous. A candidate the caller cannot see **MUST NOT** change the outcome,
+appear in a refusal, or make an otherwise unique match read as ambiguous.
 
-**Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#tenant-data-isolation)
-owns the unchanged zero-leak target. Identity service maintainer and QA own the
-service contribution: the owning profile-resolution FEATURE and scenarios 9–10, linked to the shared
-`tests/stand/api/identity` and `tests/datapath/identity` evidence when implemented
-and run. No passing evidence is attached yet; domain acceptance must also cover
-the upstream mirror/cache/error scope beyond this FEATURE.
+**Rationale**: Applying visibility after the decision leaks the existence of
+people the caller may not see through the shape of the answer, and lets an
+invisible duplicate deny the caller a lookup they are entitled to.
 
-#### Inherited profile lookup latency
+**Actors**: `cpt-insightspec-actor-product-user`
+
+#### Refuse an ambiguous lookup rather than choosing
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-ambiguous`
+
+**Vector**: Reliability
+
+When a lookup matches more than one visible person, the system **MUST** refuse
+it as a violated invariant and name the matched persons, rather than returning
+one of them.
+
+**Rationale**: The invariant is one current person per address in a tenant and
+per account within a connector instance. Silently choosing would attribute one
+human's data to another and hide the data defect that caused it; naming the
+matches lets an operator repair it without re-querying.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### An unmatched lookup is an answer, not a failure
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-unmatched`
+
+The system **MUST** distinguish "no such person here" from a service failure,
+and **MUST** answer the former identically whether the person does not exist or
+the caller may not see them.
+
+**Rationale**: An empty journal is the normal state of a fresh install, so
+callers must be able to treat "not found" as routine. Answering the invisible
+case the same way is what stops the refusal from disclosing that the person
+exists.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`, `cpt-insightspec-actor-product-user`
+
+#### Report every account the person holds
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-ids-list`
+
+**Vector**: Versatility
+
+A resolved profile **MUST** carry every current source-native account binding
+the person holds, one per connector instance.
+
+**Rationale**: Consumers that would otherwise make one follow-up lookup per
+source get the whole picture in the answer they already asked for.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`
+
+#### Report the supervisor from the org chart
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-parent`
+
+A resolved profile **MUST** carry the person's supervisor as recorded by the
+configured org-chart source, hydrated from that supervisor's own observations.
+Superseded supervisor attributes carried on the person's own observations
+**MUST NOT** be reported — the org chart is the source of truth for the
+reporting line.
+
+**Rationale**: Reading the edge from one materialised, source-scoped cache
+makes the supervisor and the subtree consistent by construction, and keeps a
+stale attribute on the person's own record from contradicting it.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`
+
+#### Report the reporting subtree
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-lookup-subordinates`
+
+**Vector**: Reliability
+
+A resolved profile **MUST** carry the recursive subtree below the person on the
+configured org-chart source. The walk **MUST** terminate on a repeated person,
+**MUST** skip a person the journal does not describe rather than emitting an
+empty placeholder, and **MUST** stop at a configured depth. Expanding the
+subtree **MUST** be switchable off without affecting the rest of the profile.
+
+**Rationale**: A cache rebuilt from imperfect evidence can contain a cycle, and
+an unbounded recursion over one is an outage. The switch exists because the
+expansion is the most expensive part of the answer and not every install needs
+it.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`
+
+#### Derive missing name parts from the display name
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-routing-name-split`
+
+The system **MUST** derive first and last name from the display name when
+neither is separately observed, handling both the "family name first" and
+"given name first" conventions.
+
+**Rationale**: Several directories publish only a display name. Deriving the
+parts keeps the profile complete without a connector backfill, and keeping the
+rule in one place stops each consumer inventing its own.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`
+
+#### Resolve many people in one request
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-profile-batch`
 
 **Vector**: Performance
 
-**Inherits**: `cpt-ir-nfr-alias-lookup-latency`
+The system **MUST** resolve a set of person keys to profiles in a single
+request, returning only those the caller may see, and **MUST** bound the number
+of keys one request may carry.
 
-**Verification**: The [Identity Resolution PRD](../../../../../domain/identity-resolution/specs/PRD.md#alias-lookup-latency)
-owns the unchanged profile-lookup target and load. Identity service maintainer
-and QA own scenario 13 in the profile-resolution FEATURE as the shared
-measurement record.
-The fixture and load harness are pending (FEATURE decision D-3); no passing
-evidence exists in this migration. This obligation is additional to the local
-legacy lookup target, not a substitution for it.
+**Rationale**: A metric response names many people at once; resolving them one
+request at a time turns one screen into hundreds of round trips. The bound is
+what keeps a single request from becoming the outage the round trips were.
+
+**Actors**: `cpt-insightspec-actor-analytics`
+
+### 5.3 The people roster
+
+#### Serve the canonical roster
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-people-roster`
+
+The system **MUST** serve the current roster of people in the caller's tenant,
+each with the name parts, address, account handle and attributes their sources
+state, and their supervisor. The roster **MUST** default to what the caller may
+see; reading the whole tenant **MUST** require the admin role.
+
+**Rationale**: Two different questions — "who can I work with" and "who exists"
+— must not answer through the same unguarded surface, and defaulting to the
+narrower one means a caller cannot enumerate the organisation by omitting a
+parameter.
+
+**Actors**: `cpt-insightspec-actor-product-user`, `cpt-insightspec-actor-identity-operator`
+
+#### Narrow the roster by search terms
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-people-search`
+
+**Vector**: Versatility
+
+The system **MUST** narrow a listing by search terms matched against the
+person's current observed values, requiring every term to match. A term that is
+a person key **MUST** name that person directly, so a person the journal holds
+no values for is still reachable.
+
+**Rationale**: Search must agree with resolution — a value that stopped being
+current must stop matching its former owner. The person key is the one
+identifier an operator can copy from a screen, and the only handle on a person
+with no other values.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Page every listing safely
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-listing-paging`
+
+**Vector**: Reliability
+
+Every listing **MUST** be paged with a bounded page size and an opaque
+continuation token. A token **MUST** be refused when it was issued for a
+different listing, a different tenant or a different query, rather than
+resuming at a position that query never ordered.
+
+**Rationale**: An unbounded listing is an outage on a large tenant. A token
+accepted by the wrong query silently skips or repeats people, which is worse
+than a refusal because nothing surfaces it.
+
+**Actors**: `cpt-insightspec-actor-product-user`
+
+### 5.4 Visibility
+
+#### Answer which of these people the caller may see
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-visible-persons-batch`
+
+**Vector**: Security
+
+The system **MUST** answer, for a bounded set of person keys supplied by the
+caller, which of them that caller may see. The answer **MUST** be a subset of
+what was asked, so it cannot be used to discover who exists.
+
+**Rationale**: The metrics runtime holds the people a request would report on
+and needs one authoritative filter rather than its own copy of the rule.
+Echoing only the input is what keeps that filter from doubling as a directory.
+
+**Actors**: `cpt-insightspec-actor-analytics`
+
+#### The visible set follows the configured policy
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-visible-persons-policy`
+
+**Vector**: Security
+
+The visible set **MUST** be derived under one configured policy for the whole
+install: either the caller, their explicit grants and the org-chart descendants
+of both; or every person in the tenant. The same policy **MUST** apply to the
+batch filter, the roster, the profile gate and the org-chart reads, and roles
+**MUST NOT** confer visibility. Changing the policy **MUST NOT** write or
+destroy any grant.
+
+**Rationale**: An organisation whose roster carries no reporting lines would
+otherwise see nothing, and issuing everyone a wildcard grant to compensate
+would be an irreversible rewrite of the permission data. Sharing one derivation
+across every consumer is what makes them agree; keeping roles out of it means
+an operator role does not silently widen what its holder can read.
+
+**Actors**: `cpt-insightspec-actor-platform-sre`, `cpt-insightspec-actor-product-user`
+
+#### Enumerate the caller's visible people
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-visible-persons-roster`
+
+The system **MUST** let a caller enumerate the people in their own visible set,
+a page at a time, using the same label rule and ordering as the operator
+listing.
+
+**Rationale**: A picker that ordered or labelled people differently from the
+roster beside it reads as two different datasets. Deriving it by restriction
+from the same listing is what keeps them one.
+
+**Actors**: `cpt-insightspec-actor-product-user`
+
+#### Manage visibility grants
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-visibility-grants`
+
+**Vector**: Security
+
+The system **MUST** let an operator grant one person visibility of another, or
+of the whole tenant, and revoke it. Grants **MUST** be time-bounded and retain
+their history, and **MUST** record who made the change and why.
+
+**Rationale**: Visibility beyond the reporting line is an exception, and an
+exception without an author, a time and a reason cannot be audited or safely
+removed later.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+### 5.5 Organisation chart
+
+#### Serve a subtree the caller may see
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-subchart-read`
+
+**Vector**: Security
+
+The system **MUST** serve the reporting subtree rooted at a named person, and
+**MUST** answer a root the caller may not see identically to a root that does
+not exist. Descendants **MUST NOT** be filtered individually.
+
+**Rationale**: A distinct refusal for "exists but hidden" discloses the person.
+Per-node filtering is unnecessary because the visible set is closed under
+descent — once the root is visible, so is everything below it — and adding it
+would only invite the two rules to drift apart.
+
+**Actors**: `cpt-insightspec-actor-product-user`
+
+#### Serve every root the caller may see
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-subchart-forest`
+
+The system **MUST** serve the set of top-level people in the caller's visible
+set as a forest, and **MUST** answer an empty forest rather than a refusal when
+the caller sees no one.
+
+**Rationale**: A caller who has not been placed in the org chart is a normal
+state on a partially seeded install; answering it as an error would make an
+ordinary screen look broken.
+
+**Actors**: `cpt-insightspec-actor-product-user`
+
+#### Read the reporting line as it stood
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-subchart-point-in-time`
+
+**Vector**: Versatility
+
+The system **MUST** support reading the org chart as of a past instant, and
+**MUST** refuse an instant in the future.
+
+**Rationale**: A metric over a past period is only interpretable against the
+organisation as it was then. A future instant is always a caller mistake and
+answering it would silently return the present.
+
+**Actors**: `cpt-insightspec-actor-analytics`
+
+#### Every traversal is bounded
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-subchart-bounded`
+
+**Vector**: Reliability
+
+Every org-chart traversal **MUST** be depth-bounded by a server-side limit that
+the caller can lower but not raise, and that applies when the caller specifies
+no depth.
+
+**Rationale**: The depth limit is the only thing standing between a caller and
+a whole large tenant in one response, and between cyclic cache data and a
+database recursion error. A caller-supplied bound alone secures neither.
+
+**Actors**: `cpt-insightspec-actor-platform-sre`
+
+#### Maintain the parent-and-child edge cache
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-table`
+
+The system **MUST** maintain a per-source cache of direct reporting edges with
+validity intervals, holding at most one current edge per person per source
+instance, and retaining superseded edges as history.
+
+**Rationale**: Reporting lines are per-source facts — a manager in the HR
+directory is not the same relation as an administrator in a chat platform — and
+a materialised cache turns every tree read into an index walk instead of a
+recomputation over the journal.
+
+**Actors**: `cpt-insightspec-actor-mariadb`
+
+#### Rebuild edges deterministically from the journal
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-rebuild`
+
+**Vector**: Reliability
+
+The rebuild **MUST** derive edges from the journal so that the same journal
+always produces the same cache. It **MUST** prefer a resolved supervisor
+reference over one that has to be matched by address; **MUST** skip an edge
+whose supervisor matches nobody rather than inventing a placeholder person;
+**MUST** skip self-references; **MUST** close an edge while the person is
+inactive and open a new one when they return, rather than reopening the closed
+one; **MUST** treat a person with no activity status as always active; and
+**MUST** report, without failing, any mutual pair of edges it produced.
+
+**Rationale**: Determinism is what makes the cache safe to rebuild rather than
+patch. Inventing a placeholder for an unmatched supervisor would fabricate
+people; reopening a closed edge would erase the fact that someone left and
+returned; and a mutual pair is a data defect an operator must see, not a reason
+to abandon a whole run.
+
+**Actors**: `cpt-insightspec-actor-seed-pipeline`, `cpt-insightspec-actor-mariadb`
+
+#### Read current edges by person
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-org-chart-read`
+
+The system **MUST** read the current supervisor of a person and the current
+direct reports of a person, tenant-scoped, preserving which source instance
+each edge came from.
+
+**Rationale**: The profile projection and the tree traversals share these two
+reads, so one abstraction keeps them consistent, and preserving the source
+means a multi-source install can tell the two organisational shapes apart.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`, `cpt-insightspec-actor-mariadb`
+
+### 5.6 Roles and assignments
+
+#### Maintain the role catalogue
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-roles-catalogue`
+
+The system **MUST** maintain the catalogue of named roles, tenant-independent,
+and **MUST** provide the roles the product's own authorization depends on
+without an operator having to create them.
+
+**Rationale**: The role that gates this service's operator surfaces cannot
+itself be something an operator must create first — a fresh install would have
+no way to reach the surface that creates it.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Refuse to delete a role in use
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-roles-in-use-guard`
+
+**Vector**: Reliability
+
+Deleting a role **MUST** be refused while any active assignment of it exists,
+and the check and the deletion **MUST NOT** be separable by a concurrent grant.
+
+**Rationale**: A deleted role with live assignments leaves permission rows
+pointing at nothing, which reads as either "no permission" or "unknown
+permission" depending on the consumer. Checking and deleting atomically is what
+stops a grant landing in the gap.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Grant and revoke roles with history
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-person-roles-grant`
+
+**Vector**: Security
+
+The system **MUST** let an operator grant a role to a person in a tenant and
+revoke it, keeping every assignment time-bounded with its author and reason,
+and **MUST** keep revoked assignments as history rather than deleting them.
+
+**Rationale**: Permission changes are the events an audit asks about first.
+Deleting them on revocation destroys exactly the record that matters.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Refuse to revoke the last admin
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-person-roles-last-admin`
+
+**Vector**: Reliability
+
+The system **MUST** refuse to revoke the last active admin assignment in a
+tenant.
+
+**Rationale**: There is no in-product path back from a tenant with no admin —
+the surface that grants the role is itself admin-gated — so recovery requires
+direct database access.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Report a person's active roles to the authenticator
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-active-roles-for-token`
+
+**Vector**: Security
+
+The system **MUST** report a named person's active role names in a tenant to a
+service principal, so the session token can carry them, and **MUST** treat an
+empty list as a valid answer.
+
+**Rationale**: The session token is minted once per login and refresh; without
+this read it would either carry no roles or the authenticator would need its
+own copy of the assignment rules.
+
+**Actors**: `cpt-insightspec-actor-authenticator`
+
+### 5.7 Login resolution
+
+#### Resolve a login by directory principal
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-login-by-external-id`
+
+**Vector**: Security
+
+The system **MUST** resolve an identity-provider principal — its source type
+and its native user id — to a person for the authenticator, and **MUST NOT**
+fall back to matching an address when no binding exists.
+
+**Rationale**: The directory id is the identifier the provider guarantees;
+an address is not, and it can be reassigned. A fallback would mean a login for
+an unbound principal silently entering as whoever last held that address.
+
+**Actors**: `cpt-insightspec-actor-authenticator`
+
+#### Resolve a login by roster address where configured
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-login-by-roster-email`
+
+**Vector**: Security
+
+Where the install's provider has no directory connector, the system **MUST**
+resolve a login by address, confined to the configured roster source, scoped to
+the caller's tenant, and matched only against a person still holding a live
+account under that source. It **MUST** refuse outright when no roster is
+configured, when no tenant is known, or when no such person exists, and
+**MUST** record when the address was claimed by more than one person.
+
+**Rationale**: An address does not carry the cross-tenant uniqueness a
+directory id does, so this path spends the tenant already known rather than
+searching every install. Confining it to one source and to live accounts is
+what keeps a login from matching a stale record; refusing rather than widening
+is what keeps a misconfiguration from admitting everyone.
+
+**Actors**: `cpt-insightspec-actor-authenticator`
+
+#### Provision a person the roster already lists
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-login-provision`
+
+**Vector**: Security
+
+When an authenticated principal has no binding, the system **MUST** mint a
+person for them **only** if a connector has already observed that account, and
+**MUST** bind it under that observation's own connector instance. It **MUST**
+refuse for an account the source reports as closed, for an account carrying an
+address that the automatic resolution would link anyway, and for an asserted
+tenant that is not the one the journal is keyed by. Two concurrent logins
+**MUST NOT** produce two people, and an account an operator has already
+excluded **MUST NOT** be revived.
+
+**Rationale**: Without this, a directory member published without an address is
+refused at login until an operator binds them by hand. Minting only for an
+already-observed account is what keeps the roster the authority on who exists,
+rather than letting anyone who reaches the provider become a person. Reusing
+the observed connector instance is what lets the next scheduled run adopt the
+person instead of minting a second.
+
+**Actors**: `cpt-insightspec-actor-authenticator`, `cpt-insightspec-actor-identity-operator`
+
+#### Resolve an address for administrative view-as
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-login-override`
+
+**Vector**: Security
+
+The system **MUST** provide the authenticator a resolution by address across
+any source and any tenant, reachable only by a service principal, and used only
+for the administrative view-as feature. It **MUST** be a distinct route from
+every login-resolution path.
+
+**Rationale**: This lookup has deliberately more latitude than any login may
+have. Keeping it on its own route — rather than as a mode of a shared one — is
+what makes it impossible for an absent field on a login to reach it.
+
+**Actors**: `cpt-insightspec-actor-authenticator`
+
+### 5.8 Operator corrections
+
+#### Expose the correction verbs
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-corrections-surface`
+
+The system **MUST** expose the operator corrections defined by the identity
+domain — binding an account to a person, merging people, detaching an account,
+and excluding an account that is not a person — including a bulk form of
+binding with a bounded item count and a per-item outcome. Each **MUST** append
+to the journal under the calling operator and **MUST NOT** update or delete
+what is already recorded.
+
+**Rationale**: The semantics belong to the domain; the service's obligation is
+that they are reachable, attributable and non-destructive. Per-item outcomes on
+a bulk call are what let an operator import a prepared table without a single
+bad row failing the rest.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Journal every correction
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-corrections-journal`
+
+**Vector**: Security
+
+Every correction **MUST** be recorded with its author, its request, its
+outcome, and its time, and the trail for one account or one person **MUST** be
+readable back.
+
+**Rationale**: A correction changes who data is attributed to. Being able to
+reconstruct who decided what, and when, is the difference between an auditable
+system and one that must be trusted.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+#### Surface what needs a decision
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-review-queue`
+
+The system **MUST** surface the accounts awaiting an operator decision, with
+the evidence behind each, and **MUST** distinguish an account minted from the
+roster from one whose evidence is contested.
+
+**Rationale**: An operator cannot review what they cannot enumerate, and the
+two cases need different judgements — one is a confirmation, the other is a
+conflict.
+
+**Actors**: `cpt-insightspec-actor-identity-operator`
+
+### 5.9 Scheduled projection and publication
+
+#### Rebuild the projection on a schedule
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-seed-run`
+
+**Vector**: Reliability
+
+The system **MUST** rebuild the person projection — bindings, the people
+roster and the org chart — from connector evidence, on a schedule and on
+demand, as a process rather than an authenticated request. Its completion
+**MUST** include publishing the refreshed journal to the metrics warehouse.
+
+**Rationale**: Without a scheduled rebuild the organisation freezes at the last
+manual run while the underlying connectors keep changing. Keeping it off the
+API means no caller can trigger a full rebuild, and folding the publish into
+completion means the warehouse cannot be left behind by a successful run.
+
+**Actors**: `cpt-insightspec-actor-scheduler`, `cpt-insightspec-actor-seed-pipeline`
+
+#### Refuse a destructive run
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-seed-guards`
+
+**Vector**: Reliability
+
+The rebuild **MUST** refuse to run when its input is empty, and when the
+journal already holds people under a tenant other than the one it would write.
+The publish **MUST** refuse to replace a populated snapshot with an empty one.
+Each refusal **MUST** be overridable explicitly and **MUST** be recorded as a
+failed run with its reason.
+
+**Rationale**: An empty read almost always means a misconfigured or wiped
+dependency, not that nobody exists — and acting on it either erases the
+warehouse mirror or mints a parallel set of people under the wrong tenant,
+neither of which an append-only journal can undo. An explicit override exists
+because a deliberate wipe is a real operation.
+
+**Actors**: `cpt-insightspec-actor-platform-sre`
+
+#### Serialize runs and reclaim abandoned ones
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-seed-serialization`
+
+**Vector**: Reliability
+
+Concurrent rebuilds **MUST** be serialized, including across separate
+deployments sharing one database; a run that cannot acquire its turn **MUST**
+report that distinctly rather than queueing behind it; and a run abandoned
+mid-flight **MUST** be reclaimable by the next one rather than blocking it.
+
+**Rationale**: Connectors finishing together trigger their rebuild steps at the
+same time, and two rebuilds over the same journal race. A distinct outcome for
+"busy" lets the scheduler treat it as normal; reclaiming abandoned runs is what
+keeps one crashed process from stopping every later one.
+
+**Actors**: `cpt-insightspec-actor-scheduler`
+
+#### Publish the journal to the warehouse
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-publish-persons-snapshot`
+
+**Vector**: Reliability
+
+The system **MUST** publish the journal to the metrics warehouse as a whole
+snapshot replaced atomically, so a reader never sees a partial state, and
+**MUST** provide a way to republish it when it has fallen behind.
+
+**Rationale**: The warehouse resolves activity to a person for every metric
+built; a partially visible snapshot would attribute a slice of the
+organisation's work to nobody. The manual republish is the repair path when a
+publish was missed.
+
+**Actors**: `cpt-insightspec-actor-metrics-warehouse`
+
+#### Read what each run did
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-operations-journal-read`
+
+The system **MUST** let an operator read the history of rebuild and publish
+runs — status, what was asked, what changed, and the failure reason — without
+access to the process logs.
+
+**Rationale**: These jobs run unattended, and the person diagnosing a stale
+organisation is usually not the person with log access to the cluster.
+
+**Actors**: `cpt-insightspec-actor-platform-sre`, `cpt-insightspec-actor-identity-operator`
+
+### 5.10 Schema lifecycle
+
+#### Own and migrate the schema before serving
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-migrations-startup`
+
+**Vector**: Reliability
+
+The service **MUST** own its database schema and apply its own migrations
+before it serves traffic; a failed migration **MUST** prevent serving. Each
+migration **MUST** be recorded so a repeated run is a no-op, and **MUST** be
+individually re-runnable without error.
+
+**Rationale**: Serving against an unmigrated schema turns a deployment mistake
+into wrong answers rather than a failed rollout. Recording and idempotence
+together mean a restart, a retry and a crash mid-migration all converge on the
+same state.
+
+**Actors**: `cpt-insightspec-actor-mariadb`, `cpt-insightspec-actor-platform-sre`
+
+#### Record every state transition
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-schema-relax-uniqueness`
+
+**Vector**: Reliability
+
+The journal **MUST** record a value returning to a previous value at a later
+time as a separate event, while a re-run of the rebuild over the same evidence
+**MUST NOT** duplicate rows.
+
+**Rationale**: Deduplicating on the value alone conflates "the same fact
+re-observed on a re-run", which should collapse, with "this became true again",
+which is a distinct event — and losing the latter erases every departure and
+return from the history.
+
+**Actors**: `cpt-insightspec-actor-mariadb`, `cpt-insightspec-actor-seed-pipeline`
+
+#### Compare identifier values case-insensitively
+
+- [x] `p1` - **ID**: `cpt-insightspec-fr-identity-schema-case-insensitive-value-id`
+
+**Vector**: Reliability
+
+Identifier-shaped values **MUST** compare case-insensitively at the storage
+layer, so no caller has to normalise a value to get the right answer.
+
+**Rationale**: A case-sensitive comparison makes a lookup for an address fail
+against the same address stored with different capitalisation. Fixing it once
+in storage removes a contract every caller would otherwise have to honour
+individually.
+
+**Actors**: `cpt-insightspec-actor-api-gateway`, `cpt-insightspec-actor-mariadb`
+
+#### Seed the first administrator
+
+- [x] `p2` - **ID**: `cpt-insightspec-fr-identity-bootstrap-admin`
+
+The system **MUST** be able to grant the admin role to a configured person in
+the configured tenant at migration time, idempotently, and **MUST** skip with a
+warning rather than fail when the configuration is incomplete.
+
+**Rationale**: A fresh install has nobody who can reach the admin-gated surface
+that grants the admin role. Failing the migration over an optional convenience
+would make an unrelated deployment fail.
+
+**Actors**: `cpt-insightspec-actor-platform-sre`
+
+## 6. Non-Functional Requirements
+
+This service sits in front of every screen the product shows and inside every
+access decision it makes. Its quality concerns follow from that position:
+**Security** dominates, because a wrong answer here discloses one person's data
+to another or admits the wrong person at login; **Reliability** follows,
+because the projection is rebuilt rather than edited and a bad run is not
+undoable; **Performance** matters because a profile read is on the critical
+path of every screen; **Efficiency** matters because the service holds no cache
+and pays for that at every request; **Versatility** matters because the set of
+sources an install runs is not known in advance.
+
+### 6.1 NFR Inclusions
+
+#### No answer crosses a tenant
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-tenant-isolation`
+
+**Vector**: Security
+
+Every person-authenticated answer **MUST** be assembled only from the caller's
+own tenant, including nested projections such as the supervisor, the subtree
+and the account list.
+
+**Threshold**: An invariant, not a rate: zero person-authenticated responses
+contain data from another tenant, under any configuration. The two service-only
+login lookups that deliberately search across tenants are the whole of the
+exception, and each is confined to a single response field.
+
+**Rationale**: Cross-tenant disclosure is the failure that ends a customer
+relationship, and it is reachable through the least obvious paths — a nested
+supervisor, an ambiguity list — not the obvious ones.
+
+#### The caller cannot enlarge their visible set
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-visibility-integrity`
+
+**Vector**: Security
+
+No request parameter, no listing, and no refusal message **MUST** reveal a
+person outside the caller's visible set, and no role **MUST** widen it.
+
+**Threshold**: An invariant: for a fixed caller and policy, the union of person
+identifiers appearing in every response body and every refusal across the whole
+authenticated surface is a subset of that caller's visible set.
+
+**Rationale**: The visible set is only as good as its weakest surface. A
+refusal that names a person, or a batch answer that reports one that was not
+asked about, defeats the rule everywhere else.
+
+#### No credential and no address in a log line
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-logging-pii`
+
+**Vector**: Security
+
+Logs **MUST** be structured and **MUST NOT** carry a person's address or any
+credential, including in configuration dumps, connection targets and error
+payloads.
+
+**Threshold**: An invariant: no log line emitted by the service on any code
+path contains a personal address or a credential, verified by tests that seed
+recognisable values and scan the captured output.
+
+**Rationale**: Log aggregation crosses trust boundaries that the service's own
+answers do not, so anything reaching it is effectively disclosed more widely
+than the API ever discloses it.
+
+#### Every response and traversal is bounded
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-bounded-responses`
+
+**Vector**: Reliability
+
+Every listing, batch request and recursive expansion **MUST** have a
+server-side bound that the caller can lower but not raise.
+
+**Threshold**: An invariant: no authenticated request can produce an unbounded
+response or an unbounded traversal — page sizes, batch item counts and org-tree
+depth all clamp to a server maximum, including when the caller supplies nothing
+or supplies a nonsense value.
+
+**Rationale**: The org chart and the roster grow with the customer, so any
+surface without a ceiling is an outage that arrives on the largest and most
+important install first.
+
+#### A batch job is safe to re-run and safe to interrupt
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-job-idempotence`
+
+**Vector**: Reliability
+
+Rebuilding the projection or publishing the snapshot **MUST** be safe to repeat
+and safe to abandon: a repeat over unchanged evidence changes nothing, and an
+interrupted run leaves no state that blocks the next one.
+
+**Threshold**: An invariant: a second run over unchanged evidence produces no
+new observations and no changed edges, and a run terminated at any point leaves
+the schema, the lock and the operation journal in a state the next run
+completes from.
+
+**Rationale**: These jobs run unattended on a schedule against an append-only
+store. A non-idempotent repeat corrupts the history it cannot then undo, and a
+run that leaves a lock behind stops every later one silently.
+
+#### Profile resolution latency
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-latency`
+
+**Vector**: Performance
+
+Resolving one profile **MUST** complete within an agreed budget under a stated
+organisation size, measured at the gateway-to-service hop.
+
+**Threshold**: **Open decision.** The measurement boundary is fixed — the
+gateway-to-service hop for a single profile resolution with the subtree
+expansion enabled — but no target has been agreed. Two properties must be
+stated together with any number: the organisation size it holds at, and whether
+it covers the subtree expansion, whose cost is proportional to the subtree, not
+constant. Owner: the platform performance baseline; until it lands, this
+obligation is measured and reported, not enforced.
+
+**Rationale**: A profile read is on the critical path of every screen, so it
+constrains the whole product's responsiveness. Recording it as an open decision
+rather than an invented number keeps a fabricated budget from being cited as
+agreed.
+
+#### Steady-state footprint without a cache
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-memory`
+
+**Vector**: Efficiency
+
+The service **MUST** operate within its deployed memory allocation while
+holding no cache of the journal.
+
+**Threshold**: Resident memory stays within the memory limit the shipped chart
+configures for the service, at steady state, under the install's normal read
+mix. The limit is the agreed figure; any specification-level number must be
+reconciled with it rather than stated independently.
+
+**Rationale**: Deriving every answer per request is a deliberate trade of
+memory for freshness, and the deployed limit is what makes that trade
+verifiable instead of theoretical.
+
+#### Identifier round-trip fidelity
+
+- [x] `p1` - **ID**: `cpt-insightspec-nfr-identity-uuid-roundtrip`
+
+**Vector**: Reliability
+
+Every identifier written and read back **MUST** be byte-identical, with no
+reliance on a driver's textual fallback representation.
+
+**Threshold**: An invariant: an identifier written by one path and read by
+another compares equal, for every identifier column in the schema.
+
+**Rationale**: The compact binary storage form silently truncates a textual
+identifier rather than rejecting it, so the failure surfaces as a person who
+cannot be found rather than as an error at the write.
+
+#### Support any configured source set
+
+- [x] `p2` - **ID**: `cpt-insightspec-nfr-identity-source-versatility`
+
+**Vector**: Versatility
+
+Adding a connector that emits identity observations **MUST NOT** require a
+change to this service, and an install that configures no reporting-line
+source, no roster source, or a single source **MUST** remain fully functional.
+
+**Threshold**: An invariant: the service's behaviour is a function of the
+observations present and the configured policy, with no per-connector branch in
+its code. Every combination of "reporting source configured or not" and "roster
+configured or not" is a supported install.
+
+**Rationale**: The connector set differs per customer and grows continuously.
+A service that needs a change per source makes every new connector a release of
+the identity service too.
 
 ### 6.2 NFR Exclusions
 
-- **Service-managed in-memory replication**: excluded as an implementation
-  mechanism because the read path has no replicated in-memory identity store.
-  This does not waive availability or dependency-failure obligations.
-- **Profile-read write throughput**: no writes are part of the profile lookup
-  feature. Seed, correction, and administration write paths require their own
-  targets; the service as a whole must not be described as read-only.
-
-No quality vector is excluded: every vector has a local or inherited obligation
-in section 6.1. Missing performance evidence remains an open obligation.
+- **Service-level availability target**: not applicable here — the service is
+  stateless beyond its connection pool, so availability is a property of the
+  deployment and the database, and is specified at the platform level rather
+  than per service.
+- **Recovery objectives (data loss and downtime tolerance)**: not applicable
+  here — the service stores no state that is not derivable from the journal and
+  the connector evidence, so recovery objectives belong to the database and the
+  ingestion pipeline that feed it.
+- **Write throughput target**: not applicable — the interactive surface's
+  writes are operator corrections and grants, which are human-paced; the bulk
+  write path is the scheduled rebuild, whose obligation is idempotence and
+  refusal to run destructively, not a rate.
+- **Interaction-capability obligations (usability, accessibility,
+  internationalization, device support)**: not applicable — the service has no
+  user interface; these obligations are held by the front end that consumes it.
+- **Safety obligations**: not applicable — the service has no physical
+  actuation and no path to physical harm.
 
 ## 7. Public Library Interfaces
 
+The wire contract is generated from the implementation and committed at
+[`openapi.json`](../../openapi.json); a build gate fails on drift, so it is the
+authority on shapes, parameters and status codes. This section names the
+interface surfaces, their stability and their compatibility policy; the endpoint
+inventory and the error model are in
+[DESIGN §3.3](DESIGN.md#33-api-contracts).
+
 ### 7.1 Public API Surface
 
-#### `GET /v1/persons/{email}` — Person lookup
-
-- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-person-lookup`
-
-**Type**: HTTP/REST endpoint.
-
-**Stability**: **retired** — the public endpoint was removed (approved, zero callers); [`POST /v1/profiles`](#post-v1profiles--profile-resolution) is the successor. The path-form lookup kept the caller's email in the URL, which leaked into observability surfaces this service does not control (api-gateway access logs, ingress logs, browser history, CDN/proxy logs). The description below is kept for historical traceability of the response shape, which lives on in `POST /v1/profiles`.
-
-**Stability history**: Phase 2 of #348 added `supervisor_email`,
-`supervisor_name`, and the `subordinates[]` recursion onto the existing
-shape — both are additive (non-breaking) per the policy below.
-
-**Description**: Resolves `{email}` to a single `PersonResponse` JSON
-body with the org-tree projection from the BambooHR slice of
-`org_chart` (`identity.org_chart_source_type` config knob — defaults
-to `bamboohr`). Comparison is case-insensitive at the storage layer
-(ADR-0011). Tenant supplied via the verified JWT's `tenant_id` claim
-or config default.
-Returns 200 + body on hit, 404 + RFC 7807 on miss, 400 + RFC 7807 on
-missing tenant, 5xx on service error.
-
-**Breaking Change Policy**: Major version bump for response-shape
-changes; additive fields are non-breaking; the URL template is
-stable across minor versions.
-
-**Request**
-
-```http
-GET /v1/persons/alice@example.com
-Accept: application/json
-X-Insight-Tenant-Id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-```
-
-No request body. Path parameter `{email}` carries the lookup key
-(URL-encoded if it contains a `+`, `@`, or non-ASCII characters).
-
-**Response 200 OK**
-
-```jsonc
-{
-  "person_id": "11111111-1111-1111-1111-111111111111",
-  "email": "alice@example.com",
-  "display_name": "Alice Smith",
-  "first_name": "Alice",
-  "last_name": "Smith",
-  "department": "Engineering",
-  "division": "R&D",
-  "job_title": "Staff Engineer",
-  "status": "Active",
-  // Hydrated from the BambooHR `org_chart` edge — Bob's own observations.
-  "supervisor_email": "bob@example.com",
-  "supervisor_name": "Jones, Bob",
-  // Legacy alias triple mirroring the same edge (kept for older callers).
-  "parent_email": "bob@example.com",
-  "parent_id": "BOB-7",
-  "parent_person_id": "22222222-2222-2222-2222-222222222222",
-  // Recursive BambooHR-only walk down `org_chart`; same shape, full depth.
-  "subordinates": [
-    {
-      "person_id": "33333333-...",
-      "email": "dave@example.com",
-      "display_name": "Dave Ng",
-      "first_name": "Dave",
-      "last_name": "Ng",
-      "department": "Engineering",
-      "division": "R&D",
-      "job_title": "Senior Engineer",
-      "status": "Active",
-      "supervisor_email": "alice@example.com",
-      "supervisor_name": "Alice Smith",
-      "parent_email": "alice@example.com",
-      "parent_id": "ALICE-1",
-      "parent_person_id": "11111111-1111-1111-1111-111111111111",
-      "subordinates": []
-    }
-  ]
-}
-```
-
-**Response 404 Not Found** — `RFC 7807` body, `type:
-urn:insight:error:person_not_found`.
-
-**Response 400 Bad Request** — `RFC 7807` body, `type:
-urn:insight:error:tenant_unresolved` when neither header nor
-`tenant_default_id` resolve a tenant UUID.
-
-#### `POST /v1/profiles` — Profile resolution
+#### Profile resolution
 
 - [x] `p1` - **ID**: `cpt-insightspec-interface-identity-profile-resolve`
 
-**Type**: HTTP/REST endpoint (JSON request body).
+**Type**: HTTP/REST, JSON request body.
 
-**Stability**: stable. Phase 2 of #348 added the same org-tree fields
-as the GET endpoint (additive).
+**Stability**: stable.
 
-**Description**: Resolves a single `person_id` either by email across
-all sources for the tenant (`value_type="email"`) or by source-native
-account id within one source instance (`value_type="id"`). Surfaces
-the full `ids[]` projection (all current `value_type='id'`
-observations, one per source instance) and the same BambooHR-scoped
-org-tree (`supervisor_*`, legacy `parent_*`, `subordinates[]`) the
-GET endpoint emits. Multiple matching `person_id`s violate the
-single-result invariant and produce a 422 RFC 7807 problem-details
-body of type `urn:insight:error:ambiguous_profile` carrying the
-original request body plus the list of conflicting `person_id`s
-(ADR-0009).
+**Description**: Resolves one person from an address, a source-scoped account
+id or the canonical person key, and the batch form that resolves many person
+keys at once. Returns the person's current attributes, their org tree and every
+account they hold, filtered by the caller's visible set.
 
-**Breaking Change Policy**: Major version bump for response-shape
-changes; additive fields are non-breaking; the URL is stable across
-minor versions.
+**Breaking Change Policy**: additive response fields and additional accepted
+lookup keys are non-breaking; removing a field or narrowing an accepted key
+requires a major version.
 
-**Request — by email**
+#### People and visibility
 
-```http
-POST /v1/profiles
-Content-Type: application/json
-Authorization: Bearer <gateway JWT carrying tenant_id>
+- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-people`
 
-{
-  "value_type": "email",
-  "value": "alice@example.com",
-  "insight_source_type": null,
-  "insight_source_id": null
-}
-```
+**Type**: HTTP/REST.
 
-**Request — by source-native id**
+**Stability**: stable.
 
-```http
-POST /v1/profiles
-Content-Type: application/json
-Authorization: Bearer <gateway JWT carrying tenant_id>
+**Description**: The canonical people roster and single-person read, the
+caller's own visible roster, the batch visible-set filter, and the caller's
+self-description. Paged surfaces issue an opaque continuation token that is
+valid only for the listing and query that issued it.
 
-{
-  "value_type": "id",
-  "value": "alice-bamboo-001",
-  "insight_source_type": "bamboohr",
-  "insight_source_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-}
-```
+**Breaking Change Policy**: additive fields are non-breaking; the continuation
+token is opaque and its encoding may change at any time, so no consumer may
+construct or parse one.
 
-`insight_source_type` and `insight_source_id` MUST be null for
-`value_type="email"` and MUST both be present for `value_type="id"`.
+#### Organisation chart
 
-**Response 200 OK**
+- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-subchart`
 
-```jsonc
-{
-  "person_id": "11111111-1111-1111-1111-111111111111",
-  "insight_tenant_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  "email": "alice@example.com",
-  "display_name": "Alice Smith",
-  "first_name": "Alice",
-  "last_name": "Smith",
-  "department": "Engineering",
-  "division": "R&D",
-  "job_title": "Staff Engineer",
-  "status": "Active",
-  "username": "asmith",
-  "employee_id": "ALICE-1",
-  // Org-tree (same shape as `/v1/persons/{email}`, BambooHR-only).
-  "supervisor_email": "bob@example.com",
-  "supervisor_name": "Jones, Bob",
-  "parent_email": "bob@example.com",
-  "parent_id": "BOB-7",
-  "parent_person_id": "22222222-2222-2222-2222-222222222222",
-  "subordinates": [
-    /* recursive PersonResponse[] — empty when leaf */
-  ],
-  // All current source-native id bindings (one per source instance).
-  "ids": [
-    { "insight_source_type": "bamboohr", "insight_source_id": "bbbb...", "value": "alice-bamboo-001" },
-    { "insight_source_type": "slack",    "insight_source_id": "eeee...", "value": "U03ABCDEF" }
-  ]
-}
-```
+**Type**: HTTP/REST.
 
-Optional attribute fields that have no observation are omitted from the
-JSON body (the assembler emits `null` and the serializer drops them).
+**Stability**: stable.
 
-**Response 404 Not Found** — `RFC 7807` body, `type:
-urn:insight:error:person_not_found`.
+**Description**: The reporting subtree rooted at a person the caller may see,
+and the forest of every root they may see, both optionally as of a past instant
+and both bounded by a server-side depth limit.
 
-**Response 400 Bad Request** — `RFC 7807` body with one of:
-`urn:insight:error:tenant_unresolved`,
-`urn:insight:error:invalid_value_type`,
-`urn:insight:error:missing_source_type`, etc. (one URN per call —
-the first validation failure wins).
+**Breaking Change Policy**: additive node fields are non-breaking; the depth
+ceiling is an operational setting and may change without a version bump.
 
-**Response 422 Unprocessable Entity** —
-`urn:insight:error:ambiguous_profile`. Body extends the standard
-RFC 7807 shape with the original `lookup` body and the conflicting
-`person_ids[]`:
+#### Administration
 
-```jsonc
-{
-  "type": "urn:insight:error:ambiguous_profile",
-  "title": "Data Invariant Violated",
-  "status": 422,
-  "detail": "lookup matched 2 distinct person_ids; invariant requires exactly 1",
-  "lookup": { "value_type": "email", "value": "shared@example.com", "insight_source_type": null, "insight_source_id": null },
-  "person_ids": ["11111111-...", "33333333-..."]
-}
-```
+- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-admin`
 
-#### `GET /health` — Database readiness
+**Type**: HTTP/REST.
+
+**Stability**: stable.
+
+**Description**: The admin-gated surfaces — the role catalogue, role
+assignments, visibility grants, the operator person and account searches, the
+correction verbs, the review queue, and the rebuild and publish journals.
+
+**Breaking Change Policy**: additive fields and new verbs are non-breaking;
+changing which refusals a guard produces is breaking, because consumers branch
+on them.
+
+#### Internal login resolution
+
+- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-internal-login`
+
+**Type**: HTTP/REST, service principals only.
+
+**Stability**: internal — deliberately absent from the published contract, and
+changeable in lockstep with the authenticator.
+
+**Description**: One route per login question: resolve by directory principal,
+resolve by roster address, provision a person the roster already lists, read a
+person's active roles, and the administrative view-as address resolution. Each
+answers exactly one question, so no absent field can route a login onto a path
+the install did not configure.
+
+**Breaking Change Policy**: not a public contract; changes ship together with
+the authenticator. The response shape is depended on verbatim and is pinned by
+tests on both sides.
+
+#### Health and readiness
 
 - [x] `p1` - **ID**: `cpt-insightspec-interface-identity-health`
 
-**Type**: HTTP/REST endpoint.
+**Type**: HTTP/REST.
 
 **Stability**: stable.
 
-**Description**: Pings MariaDB. Returns 200 when the pool is
-healthy, 503 otherwise. Wired as the Helm readiness probe.
+**Description**: The liveness and readiness endpoints the deployment's probes
+are wired to. They are provided by the service host, not implemented by this
+service, and consequently report process health rather than database
+reachability — see [DESIGN §3.3](DESIGN.md#33-api-contracts) for what that
+implies for a stand whose database is unreachable.
 
-**Breaking Change Policy**: No payload shape — never breaking.
-
-**Request**
-
-```http
-GET /health
-```
-
-No body, no headers required.
-
-**Response 200 OK**
-
-```jsonc
-{ "status": "healthy" }
-```
-
-**Response 503 Service Unavailable**
-
-```jsonc
-{ "status": "unhealthy" }
-```
-
-#### `GET /healthz` — Process liveness
-
-- [x] `p1` - **ID**: `cpt-insightspec-interface-identity-healthz`
-
-**Type**: HTTP/REST endpoint.
-
-**Stability**: stable.
-
-**Description**: Returns 200 `text/plain "ok"` if the process is up;
-does not touch MariaDB. Wired as the Helm liveness probe.
-
-**Breaking Change Policy**: No payload shape — never breaking.
-
-**Request**
-
-```http
-GET /healthz
-```
-
-**Response 200 OK** — `text/plain` body:
-
-```
-ok
-```
-
-#### `GET /v1/subchart/{person_id}?depth=N` (Phase 3 — #348)
-
-Depth-bounded recursive walk of `org_chart` rooted at `{person_id}`,
-returning the subtree as a nested JSON tree. Single MariaDB recursive
-CTE — one round-trip, no N+1 hydration.
-
-**Request**: `GET /v1/subchart/{person_id}?depth=<n>`. The path
-parameter is a UUID; the optional `depth` query parameter is a
-non-negative integer. **`depth=0`** returns only the root,
-**`depth=1`** root + direct reports, etc. **Omitting `depth`** means
-unbounded — MariaDB's `cte_max_recursion_depth` (default 1000) is the
-ceiling, and the `org_chart` is acyclic by construction (the rebuild
-step in the Python seeder emits a WARN on any 2-hop cycle), so the
-CTE terminates without an explicit app-level cap. DoS protection via
-payload size is a gateway-layer concern, not this endpoint's.
-
-**Response**:
-
-```json
-{
-  "root": {
-    "person_id": "...",
-    "email": "...",
-    "display_name": "...",
-    "job_title": "...",
-    "status": "...",
-    "subordinates": [ /* recursive same shape */ ]
-  }
-}
-```
-
-Each text field may be `null` when no current observation of that
-`value_type` exists for the node. The shape is deliberately leaner
-than `PersonResponse` — no `supervisor_*` / `parent_*` (the parent is
-the position in the tree) and no `department`/`division` (added via
-rollforward if a real consumer asks).
-
-**Authentication**: `X-Insight-Person-Id` header required. Caller is
-not required to hold the admin role.
-
-**Visibility**: gated by the same `VisibilityService.CanSeeAsync`
-that protects `/v1/persons/{email}` and `POST /v1/profiles`. If the
-caller cannot see the root, the response is **404
-`urn:insight:error:person_not_found`** in the same shape as
-"target does not exist" so existence does not leak. Per-node filtering
-is intentionally not applied — the visibility CTE is closed under
-`org_chart` descent, so once the caller can see the root, every
-descendant is already in their visible set. Matches the Phase-2
-behaviour of `subordinates[]` on `/v1/persons`.
-
-**Tenant scoping**: via the same tenant resolution as
-the other endpoints (verified JWT `tenant_id` claim → config
-default). The `org_chart.insight_source_type` filter is pinned to
-the gear config's `org_chart_source_type`, identical to the Phase-2
-endpoints.
-
-**Errors**:
-
-- **`401 urn:insight:error:caller_unresolved`** — missing
-  `X-Insight-Person-Id` header.
-- **`400 urn:insight:error:tenant_unresolved`** — no tenant header
-  and no `tenant_default_id` configured.
-- **`400 urn:insight:error:invalid_depth`** — `depth < 0`.
-- **`404 urn:insight:error:person_not_found`** — root does not exist
-  in the tenant OR caller cannot see it.
+**Breaking Change Policy**: no payload contract; never breaking.
 
 ### 7.2 External Integration Contracts
 
-#### `IDENTITY__*` env-var contract
+#### Host and gear configuration
 
 - [x] `p1` - **ID**: `cpt-insightspec-contract-identity-env-config`
 
-(The contract is the gears-rust host config; the older `IDENTITY__*`
-env prefix is gone.)
+**Direction**: required from the operator.
 
-**Direction**: required from operator (Helm umbrella or BYO Secret).
+**Protocol/Format**: the service host's layered configuration — a YAML section
+per gear, overridable per field by environment variables. The full field list,
+defaults and the override spelling are in
+[DESIGN §4.1](DESIGN.md#41-configuration-surface).
 
-**Protocol/Format**: gears-rust host configuration — YAML section
-`gears.identity-resolution.config`, with double-underscore env
-overrides `APP__gears__identity-resolution__config__<field>`.
+**Compatibility**: fields are added compatibly; removing or renaming one is a
+breaking change to the deployment contract and requires a chart major version.
 
-Known fields (snake-case, env override
-`APP__gears__identity-resolution__config__<field>`):
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `database_url` | URL string | — | MariaDB connection (`mysql://user:pass@host:port/db`). Required. |
-| `tenant_default_id` | UUID | — | Fallback tenant when the JWT carries no resolvable tenant. Useful for single-tenant clusters and local dev; also scopes the bootstrap-admin seed. |
-| `expand_subordinates` | bool | `true` | Kill switch for the recursive org-tree walk on `/v1/profiles`. |
-| `max_depth` | int | `16` | Hard cap on the recursion depth. |
-| `org_chart_source_type` | string | `bamboohr` | Which `insight_source_type` drives the org-tree projection on `/v1/profiles`. |
-| `clickhouse_url` / `clickhouse_database` / `clickhouse_user` / `clickhouse_password` | strings | — / `identity` / — / — | ClickHouse HTTP coordinates (port 8123) for the persons-seed reader. |
-| `bootstrap_admin_person_id` | UUID | — | Optional migrate-time first-admin bootstrap. |
-
-The listener bind address (`0.0.0.0:8082`) lives in the host's
-`api-gateway` gear config, supplied by the deployment's config layer.
-
-**Compatibility**: Backward-compatible field additions only; renames
-require a major version bump of the chart's umbrella schema.
-
-#### `insight-identity-config` Secret
+#### Deployment secret
 
 - [x] `p2` - **ID**: `cpt-insightspec-contract-identity-config-secret`
 
-(Now named `insight-identity-resolution-config`; the heading keeps
-the historical name for anchor stability.)
+**Direction**: provided by the deployment chart, consumed by the service.
 
-**Direction**: provided by umbrella chart, consumed by the service
-pod via `envFrom`.
+**Protocol/Format**: a Kubernetes Secret carrying the configuration overrides
+that must not be committed — the database connection, the warehouse
+coordinates and their credentials, and the optional bootstrap settings.
 
-**Protocol/Format**: Kubernetes `Secret` (string data) containing the
-`APP__gears__identity-resolution__config__*` keys
-(`...__database_url` etc.).
+**Compatibility**: additive keys are non-breaking; the service must start with
+only the required keys present.
 
-**Compatibility**: Stable across chart minor versions; additive fields
-non-breaking.
+#### Published person snapshot
+
+- [x] `p1` - **ID**: `cpt-insightspec-contract-identity-persons-snapshot`
+
+**Direction**: provided by this service, consumed by the warehouse transforms.
+
+**Protocol/Format**: a whole-table snapshot of the journal in the analytics
+warehouse, replaced atomically, carrying its own publication watermark.
+
+**Compatibility**: the service is the sole writer; consumers must tolerate the
+snapshot being replaced beneath them and must not write to it.
 
 ## 8. Use Cases
 
-#### Resolve email to person
+#### A screen shows a colleague's profile
 
 - [x] `p1` - **ID**: `cpt-insightspec-usecase-identity-lookup-email`
 
-**Actor**: `cpt-insightspec-actor-api-gateway`
+**Actor**: `cpt-insightspec-actor-product-user`
 
 **Preconditions**:
-- Seed pipeline has populated at least one `value_type='email'`
-  observation for the target tenant.
-- Caller's request carries a verified gateway JWT with a `tenant_id`
-  claim, or the service is configured with a `tenant_default_id`.
+
+- The projection has been built at least once for the tenant.
+- The caller holds a valid session and their token names their tenant.
 
 **Main Flow**:
-1. api-gateway receives an analytics request that needs person
-   enrichment.
-2. api-gateway resolves the JWT principal and derives the email; the
-   tenant travels in the signed JWT.
-3. api-gateway issues `POST /v1/profiles`
-   (`{"value_type":"email","value":"..."}`) to the service.
-4. The service resolves the `person_id` via the latest-per-source
-   email observation (case-insensitive comparison per ADR-0011),
-   hydrates all attributes, and returns 200 + JSON.
-5. api-gateway merges the person object into the analytics response.
+
+1. The caller opens a person's page in the product.
+2. The front end asks this service to resolve that person by their key.
+3. The service establishes the caller and tenant from the token.
+4. The service narrows the match to what the caller may see.
+5. The service composes the person's current attributes across sources, their
+   supervisor and their subtree, and every account they hold.
+6. The front end renders the profile.
 
 **Postconditions**:
-- The analytics response carries the resolved person attributes.
+
+- The caller has seen only a person within their visible set.
 
 **Alternative Flows**:
-- **No observation matches**: service returns 404 + RFC 7807 problem
-  details; api-gateway includes a `person_unresolved` flag in the
-  analytics response.
-- **No tenant**: service returns 400 +
-  `urn:insight:error:tenant_unresolved`; api-gateway returns 401 to
-  the original caller (the missing tenant means the principal was
-  not properly resolved).
 
-#### Liveness and readiness
+- **Nobody matches, or the caller may not see them**: the service answers
+  "not found" identically in both cases, and the front end shows the same
+  empty state.
+- **Several visible people match**: the service refuses and names them; the
+  front end reports a data problem rather than showing an arbitrary person.
 
-- [x] `p1` - **ID**: `cpt-insightspec-usecase-identity-probes`
+#### An operator resolves an unattributed account
+
+- [x] `p1` - **ID**: `cpt-insightspec-usecase-identity-operator-correction`
+
+**Actor**: `cpt-insightspec-actor-identity-operator`
+
+**Preconditions**:
+
+- The operator holds an active admin assignment in the tenant.
+- A connector has observed an account the automatic pipeline did not bind.
+
+**Main Flow**:
+
+1. The operator lists the accounts awaiting a decision and reads the evidence
+   behind one.
+2. The operator searches the tenant's people for the person it belongs to.
+3. The operator binds the account to that person.
+4. The service appends the binding under the operator's authorship, journals
+   the call, and publishes the refreshed journal to the warehouse.
+5. Subsequent product reads attribute the account's activity to that person.
+
+**Postconditions**:
+
+- The account is bound, the decision is attributable, and the next scheduled
+  rebuild preserves it.
+
+**Alternative Flows**:
+
+- **The account is not a person**: the operator excludes it; it stops reaching
+  the queue and never resolves to a person at login.
+- **The operator picked the wrong person**: the operator detaches the binding;
+  the history retains both decisions.
+
+#### Someone signs in for the first time
+
+- [x] `p1` - **ID**: `cpt-insightspec-usecase-identity-login-bootstrap`
+
+**Actor**: `cpt-insightspec-actor-authenticator`
+
+**Preconditions**:
+
+- The install's identity provider has authenticated the principal.
+- A connector has observed the account the principal corresponds to.
+
+**Main Flow**:
+
+1. The authenticator asks this service for the person behind the principal,
+   using whichever resolution the install configured.
+2. No binding exists, so the authenticator asks the service to provision one.
+3. The service confirms a connector has already observed the account, and that
+   the account is neither closed nor one that automatic resolution would link.
+4. The service mints a person, binds the account under the observed connector
+   instance, and marks it for operator confirmation.
+5. The authenticator reads the person's active roles and mints the session.
+
+**Postconditions**:
+
+- The person can use the product, and their account is queued for an operator
+  to confirm.
+
+**Alternative Flows**:
+
+- **No connector has observed the account**: the service refuses; the
+  authenticator denies the login rather than creating an unknown person.
+- **An operator has already excluded the account**: the service answers that it
+  resolves to no person, and records the refusal.
+- **Two logins race**: one mints; the other reads what is in force. One person
+  results.
+
+#### An operator diagnoses a stale organisation
+
+- [x] `p2` - **ID**: `cpt-insightspec-usecase-identity-diagnose-stale-projection`
 
 **Actor**: `cpt-insightspec-actor-platform-sre`
 
 **Preconditions**:
-- Pod is scheduled with the Helm probe wiring.
+
+- The operator holds an active admin assignment in the tenant.
 
 **Main Flow**:
-1. kubelet hits `/healthz` every 10 s for liveness.
-2. kubelet hits `/health` every 5 s for readiness.
-3. A failing `/health` (DB unreachable) flips the pod out of the
-   Service endpoints until the pool recovers.
+
+1. The operator reads the history of rebuild runs.
+2. The most recent run is recorded as failed, with the guard that refused it
+   and the reason.
+3. The operator corrects the underlying cause — the warehouse coordinates, the
+   configured tenant, or the connector that produced no evidence.
+4. The operator triggers a run out of band and confirms it completed.
 
 **Postconditions**:
-- Traffic is routed only to pods whose DB pool is healthy.
+
+- The projection and the published snapshot are current, and the journal
+  records both the failure and the recovery.
 
 ## 9. Acceptance Criteria
 
-- [ ] An integration test against a Testcontainers MariaDB returns
-      the seeded Alice record with email, display_name, job_title
-      fields populated.
-- [ ] The same integration test returns 404 + RFC 7807 body for an
-      unknown email.
-- [ ] The same integration test returns 400 +
-      `urn:insight:error:tenant_unresolved` when the request carries
-      no resolvable tenant and no default is configured.
-- [ ] `cargo test -p identity-resolution` passes (unit + integration)
-      on a fresh checkout.
-- [ ] Helm template renders `Service`, `Deployment`, `Secret`, and
-      `_helpers.tpl` host references with the canonical
-      `insight-identity-resolution` name.
-- [ ] The `migrate` subcommand creates `persons` and `org_chart`
-      against an empty `identity` MariaDB on first pod start; re-running the pod is a no-op against
-      `seaql_migrations`.
-- [ ] `cfs validate --skip-code --artifact docs/components/backend/identity-resolution/identity`
-      reports zero errors.
+- [ ] A caller resolves the same person by address, by source-scoped account id
+      and by person key, and receives the same profile.
+- [ ] A caller cannot resolve, list, filter or traverse to a person outside
+      their visible set, and the refusal for a hidden person is
+      indistinguishable from the refusal for one that does not exist.
+- [ ] A lookup matching several visible people is refused and names them;
+      making one of them invisible to the caller turns the same lookup into a
+      successful single match.
+- [ ] Granting and revoking the admin role changes what the operator surfaces
+      allow on the next request, with no restart.
+- [ ] Revoking the last active admin assignment in a tenant is refused, and
+      deleting a role with an active assignment is refused.
+- [ ] Under the tenant-wide visibility policy, a caller with no reporting line
+      and no grants sees the whole tenant; switching back leaves every grant
+      unchanged.
+- [ ] A login for a principal the roster lists but no connector has observed is
+      refused; one for an observed account provisions exactly one person, and
+      the next scheduled rebuild adopts that person rather than minting another.
+- [ ] A rebuild over unchanged evidence writes no new observations and changes
+      no edges; a rebuild against an empty input, and a publish that would empty
+      a populated snapshot, are both refused and recorded as failed runs.
+- [ ] The committed interface document regenerates from the implementation with
+      no difference.
+- [ ] `cfs validate --artifact` reports no error for the PRD, the DESIGN and
+      every ADR in this specification set, and `cfs validate-toc` passes for
+      each.
 
 ## 10. Dependencies
 
 | Dependency | Description | Criticality |
 |------------|-------------|-------------|
-| MariaDB `identity` database | Read target + SeaORM migration target. | p1 |
-| Seed pipeline (the service's `seed` subcommand) | Populates the rows the reader returns. | p1 |
-| BambooHR `bamboohr__identity_inputs` dbt model | Source of identity observations for the first connector to land on the new schema. | p1 |
-| Reconciliation service (future) | Writes `parent_person_id` observations consumed by Phase 2 org-tree expansion. | p2 |
-| api-gateway | Sole external caller in Phase 1. | p1 |
+| Identity database | Stores the journal, the org chart, the people projection, the grants and the operation journal. The service owns and migrates this schema. | p1 |
+| Analytics warehouse | Supplies the connector identity evidence the rebuild reads, and receives the published person snapshot. | p1 |
+| Gateway and authenticator | Establish and sign the caller identity every request is answered against. Without them the service admits nobody. | p1 |
+| Connector pipeline | Produces the identity evidence. Without it the journal is empty and every lookup legitimately finds nothing. | p1 |
+| Scheduler | Runs the rebuild. Without it the projection freezes at the last manual run. | p1 |
+| Service host framework | Provides the routing, the token verification, the configuration layering, the health endpoints and the log pipeline. | p1 |
 
 ## 11. Assumptions
 
-- Single MariaDB database per service instance — no sharding, no
-  multi-region writes from this service.
-- The seed pipeline's `INSERT IGNORE` semantics guarantee no duplicate
-  observations under the natural-key UNIQUE; the reader does not
-  deduplicate beyond `ROW_NUMBER()` filtering.
-- `insight_tenant_id` is a `BINARY(16)` UUID for the lifetime of this
-  service; if the project adopts string tenants the schema (and this
-  PRD) need a major revision.
-- All callers in the Insight platform forward via api-gateway —
-  external direct callers are out of scope until OIDC subject mapping
-  ships.
+- One database per install; the service neither shards nor writes to more than
+  one.
+- Tenants are identified by an opaque fixed-width identifier; a change to that
+  representation is a schema and specification revision, not a configuration
+  change.
+- Every person-authenticated caller reaches the service through the gateway.
+  Direct callers are not a supported deployment.
+- At most one source is configured as the roster. Naming a second, or naming a
+  source spanning several connector instances, is unsupported and produces
+  duplicate people the service cannot rejoin.
+- The connector evidence names the same human consistently enough for the
+  address match to be correct where it applies; where it is not, the operator
+  correction surface is the intended remedy rather than a better automatic
+  match.
 
 ## 12. Risks
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| `persons` schema evolves under us | Reader SQL drifts and silently returns wrong fields. | Centralise SQL with the repositories in `src/infra/db/`; integration tests pin column names. |
-| Misconfigured `tenant_default_id` in multi-tenant cluster | Wrong-tenant data served to a caller whose JWT lacks a tenant. | The signed JWT claim always wins; helm validator warns when `tenantDefaultId` is set with `identityResolution.deploy=true` in a production overlay (planned). |
-| Seed pipeline never runs on a fresh cluster | Every lookup returns 404 indefinitely. | `/health` only checks DB reachability — the operator sees green pods and an empty `persons` table; document the post-install seed step in the README. |
-| BambooHR connector evolves the `value_type` set | New observations are silently ignored. | Hardcoded routing in ADR-0007 + integration test that asserts the projection of each known `value_type`. |
+| The readiness endpoint does not reflect database reachability | A stand shows healthy pods while every request fails, and the failure is diagnosed as a client problem. | Documented in DESIGN §3.3 as a known gap; a readiness check that exercises the connection pool is the fix. |
+| The roster setting is enabled and later withdrawn | The journal is append-only, so the minted people and their queue items remain; on an install resolving logins by address, clearing it denies every login rather than only disabling minting. | The refusal is explicit and logged; the setting's dual effect is documented at the configuration surface. |
+| A specification number and a deployed setting disagree | An obligation is cited against a figure the install never ran, and the discrepancy is discovered during an incident. | Thresholds name the deployed setting as the agreed figure; an unagreed target is recorded as an open decision rather than a number. |
+| The visibility rule is re-implemented by a consumer | Two surfaces disagree about who may see whom, and the more permissive one wins. | One derivation serves the batch filter, the roster, the profile gate and the tree reads; consumers are given the filter rather than the rule. |
+| The evidence source changes what it emits | New attributes are silently ignored, or an existing one stops arriving and its value silently ages. | The projection is derived, not stored, so a missing attribute reads as absent rather than stale; the rebuild journal records what each run wrote. |
+| Operator corrections and an automatic rebuild disagree | A correction is undone by the next scheduled run and reappears in the queue. | Corrections are recorded as observations in the same journal the rebuild reads, so a later run preserves rather than overwrites them. |

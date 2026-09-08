@@ -11,7 +11,7 @@
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Hard DELETE with 422 in-use guard (chosen)](#hard-delete-with-422-in-use-guard-chosen)
-  - [Add valid_to to roles, do soft-delete](#add-validto-to-roles-do-soft-delete)
+  - [Give roles a validity interval and soft-delete instead](#give-roles-a-validity-interval-and-soft-delete-instead)
   - [Cascade soft-delete all assignments](#cascade-soft-delete-all-assignments)
 - [More Information](#more-information)
 - [Traceability](#traceability)
@@ -20,7 +20,11 @@
 
 **ID**: `cpt-insightspec-adr-0013-roles-hard-delete-with-in-use-guard`
 
-**Status:** Accepted
+**Status:** Accepted — the decision stands; its **wire mapping is superseded by
+ADR-0016**. This document describes the in-use refusal as `422` with a
+`urn:insight:error:role_in_use` type; the service returns the host framework's
+canonical problem envelope with `409 Conflict`, the same mapping the other
+data-invariant guards use.
 
 ## Context and Problem Statement
 
@@ -130,7 +134,7 @@ deletes successfully).
 - **Con:** no history of deleted roles; recreating a role with the
   same name yields a new UUID.
 
-### Add valid_to to roles, do soft-delete
+### Give roles a validity interval and soft-delete instead
 
 - **Pro:** symmetric with `visibility` / `person_roles`.
 - **Con:** loses strict-minimum shape — `roles` becomes SCD2 for a

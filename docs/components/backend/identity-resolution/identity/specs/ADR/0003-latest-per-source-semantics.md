@@ -106,6 +106,6 @@ person it used to bind.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#resolve-email-to-person_id)
-- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#hydrate-person-attributes)
+- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#address-matching-uses-the-current-value-per-source)
+- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#compose-attributes-from-every-source)
 - [`cpt-insightspec-principle-identity-centralised-sql`](../DESIGN.md#centralised-sql)

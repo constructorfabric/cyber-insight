@@ -120,6 +120,6 @@ returns the assembled record.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#resolve-email-to-person_id)
-- [`cpt-insightspec-nfr-identity-latency`](../PRD.md#p95-lookup-latency)
+- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#address-matching-uses-the-current-value-per-source)
+- [`cpt-insightspec-nfr-identity-latency`](../PRD.md#profile-resolution-latency)
 - [`cpt-insightspec-adr-0011-persons-relax-uniqueness-and-collation`](0011-persons-relax-uniqueness-and-collation.md) — supersedes this ADR.

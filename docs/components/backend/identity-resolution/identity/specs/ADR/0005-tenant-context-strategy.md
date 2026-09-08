@@ -118,5 +118,5 @@ all-null path.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-400-tenant`](../PRD.md#missing-tenant-returns-rfc-7807)
-- [`cpt-insightspec-principle-identity-tenant-composite`](../DESIGN.md#composite-tenant-resolver-header-first)
+- [`cpt-insightspec-fr-identity-lookup-400-tenant`](../PRD.md#an-unresolved-tenant-is-refused-never-defaulted)
+- [`cpt-insightspec-principle-identity-tenant-composite`](../DESIGN.md#tenant-from-the-verified-token-only)

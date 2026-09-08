@@ -65,12 +65,12 @@ behaviour into the oracle.
 
 **Requirements**:
 `cpt-insightspec-fr-identity-profile-resolve`,
-`cpt-insightspec-fr-identity-profile-ambiguous-422`,
+`cpt-insightspec-fr-identity-profile-ambiguous`,
 `cpt-insightspec-fr-identity-profile-ids-list`,
-`cpt-insightspec-fr-identity-profile-org-tree`,
+`cpt-insightspec-fr-identity-subchart-bounded`,
 `cpt-insightspec-fr-identity-profile-validation`,
 `cpt-insightspec-fr-identity-lookup-hydrate`,
-`cpt-insightspec-fr-identity-lookup-404`,
+`cpt-insightspec-fr-identity-lookup-unmatched`,
 `cpt-insightspec-fr-identity-lookup-parent`,
 `cpt-insightspec-fr-identity-lookup-subordinates`,
 `cpt-insightspec-fr-identity-routing-name-split`,
@@ -78,7 +78,7 @@ behaviour into the oracle.
 `cpt-insightspec-nfr-identity-memory`,
 `cpt-insightspec-nfr-identity-logging-pii`,
 `cpt-insightspec-nfr-identity-uuid-roundtrip`,
-`cpt-identity-svc-nfr-profile-source-coverage`,
+`cpt-insightspec-nfr-identity-source-versatility`,
 `cpt-ir-nfr-tenant-isolation`,
 `cpt-ir-nfr-alias-lookup-latency`.
 
@@ -110,7 +110,7 @@ acceptance baseline. Role owners below are proposed responsibilities for review.
 
 | Decision | Finding and proposed disposition | Owner / resolution point |
 |----------|----------------------------------|--------------------------|
-| D-1: Ambiguity contract | PRD section 5.2 and ADR-0009 require 422 and structured ambiguity members; the committed contract exposes 409 and `Problem`. Scenario 4 covers refusal without selecting an arbitrary person; no scenario asserts the exact wire oracle until this is reconciled across PRD, DESIGN, ADR and contract. | Identity service API owner, before approval of this FEATURE. |
+| D-1: Ambiguity contract | PRD section 5.2 and ADR-0009 require 422 and structured ambiguity members; the committed contract exposes 409 and `Problem`. Resolved: ADR-0016 settles the canonical error envelope and conflict status, and the PRD, DESIGN and contract were reconciled against the implementation. Scenario 4 now asserts the wire oracle. | Identity service API owner, before approval of this FEATURE. |
 | D-2: Legacy latency | The local NFR names the old GET lookup, which is absent from the current route table. Do not transfer its 50 ms p95 target or unreferenced 200 ms fallback to POST. The inherited profile target remains applicable independently. | Identity service maintainer and product owner, before a replacement or retirement is specified; no scenario asserts the legacy operation. |
 | D-3: Measurement conditions | Memory specifies 50 000 observation rows, 100 RPS and 24 hours; domain latency specifies p99 < 50 ms at 1000 requests/s without a fixture. Both are now read from operational telemetry rather than run, so no synthetic fixture or load harness is required. What remains to agree is the window and environment each reading is taken over, and whether traffic from load runs is excluded from it. | Identity service maintainer and QA, before either reading is cited as evidence. |
 | D-4: Source coverage | The new PRD NFR formalises the existing multi-source goal. Inventory supported identity-emitting sources and pin representative fixtures, including two instances of a source. A unit fixture alone does not prove every connector's output. | Identity service and connector maintainers with QA, before source coverage is claimed. |
@@ -278,15 +278,15 @@ test when mapped. All implementation mappings and passing evidence remain open.
   **Test**: Not yet mapped to this complete scenario.
 
 - [ ] 3. **No matching person** — Reliability · identity-e2e — query an empty synthetic identity store and an unknown value in a populated one as a valid caller → each returns 404 and the published problem schema.
-  **Requirements**: `cpt-insightspec-fr-identity-lookup-404`.
+  **Requirements**: `cpt-insightspec-fr-identity-lookup-unmatched`.
   **Test**: Not yet mapped to this complete scenario.
 
-- [ ] 4. **Ambiguity refusal** — Reliability · identity-e2e — give one lookup two permitted candidate persons → resolution refuses without choosing either profile; the exact status and diagnostic fields await D-1.
-  **Requirements**: `cpt-insightspec-fr-identity-profile-ambiguous-422`.
+- [ ] 4. **Ambiguity refusal** — Reliability · identity-e2e — give one lookup two permitted candidate persons → resolution refuses with the canonical conflict status and problem body, without choosing either profile.
+  **Requirements**: `cpt-insightspec-fr-identity-profile-ambiguous`.
   **Test**: Not yet mapped to this complete scenario.
 
 - [ ] 5. **Bounded organisation tree** — Reliability · identity-e2e — seed competing edge sources, stale parent observations, a cycle, a missing child and a tree beyond the configured depth → only the selected source's valid parent and bounded, non-repeated descendants appear.
-  **Requirements**: `cpt-insightspec-fr-identity-profile-org-tree`, `cpt-insightspec-fr-identity-lookup-parent`, `cpt-insightspec-fr-identity-lookup-subordinates`.
+  **Requirements**: `cpt-insightspec-fr-identity-subchart-bounded`, `cpt-insightspec-fr-identity-lookup-parent`, `cpt-insightspec-fr-identity-lookup-subordinates`.
   **Test**: Not yet mapped to this complete scenario.
 
 - [ ] 6. **Invalid lookup shapes** — Reliability · stand-api — send malformed JSON, empty values, unsupported lookup types, native IDs without either source coordinate, and email lookups with source coordinates → every invalid request returns 400 with the published problem schema.

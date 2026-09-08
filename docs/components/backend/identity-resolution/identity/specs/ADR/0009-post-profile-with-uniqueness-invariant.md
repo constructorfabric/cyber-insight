@@ -2,7 +2,12 @@
 
 **ID**: `cpt-insightspec-adr-0009-post-profile-with-uniqueness-invariant`
 
-**Status:** Accepted
+**Status:** Accepted — the decision stands; its **wire mapping is superseded by
+ADR-0016**. This document describes the refusal as `422 Unprocessable Entity`
+with a `urn:insight:error:*` type and a structured payload. The service returns
+the host framework's canonical problem envelope, and an ambiguous profile is a
+`409 Conflict` carrying the matched identifiers in its detail. Read the status
+codes and type strings below as history.
 
 <!-- toc -->
 
@@ -186,7 +191,7 @@ fields, missing tenant).
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-profile-resolve`](../PRD.md#resolve-profile-by-email-or-source-native-id)
-- [`cpt-insightspec-fr-identity-profile-ambiguous-422`](../PRD.md#surface-single-result-invariant-via-422)
-- [`cpt-insightspec-fr-identity-profile-ids-list`](../PRD.md#project-full-alias-list-on-response)
-- [`cpt-insightspec-fr-identity-profile-validation`](../PRD.md#validate-the-request-body)
+- [`cpt-insightspec-fr-identity-profile-resolve`](../PRD.md#resolve-a-profile-by-address-account-id-or-person-key)
+- [`cpt-insightspec-fr-identity-profile-ambiguous`](../PRD.md#refuse-an-ambiguous-lookup-rather-than-choosing)
+- [`cpt-insightspec-fr-identity-profile-ids-list`](../PRD.md#report-every-account-the-person-holds)
+- [`cpt-insightspec-fr-identity-profile-validation`](../PRD.md#reject-a-malformed-lookup-before-querying)

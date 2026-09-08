@@ -15,7 +15,7 @@
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Combined fix in one migration (chosen)](#combined-fix-in-one-migration-chosen)
   - [Drop UNIQUE entirely, no replacement](#drop-unique-entirely-no-replacement)
-  - [Keep value_hash UNIQUE, add LOWER index for case-insensitive lookup](#keep-valuehash-unique-add-lower-index-for-case-insensitive-lookup)
+  - [Keep the value-digest uniqueness and add a lowercased index](#keep-the-value-digest-uniqueness-and-add-a-lowercased-index)
 - [More Information](#more-information)
 - [Traceability](#traceability)
 
@@ -211,7 +211,7 @@ the persons-schema integration tests:
   would need a wipe-then-reseed protocol or in-code dedup logic in
   the seeder.
 
-### Keep value_hash UNIQUE, add LOWER index for case-insensitive lookup
+### Keep the value-digest uniqueness and add a lowercased index
 
 - Good, because nothing about the storage changes; rollback is
   trivial.
@@ -238,5 +238,5 @@ the persons-schema integration tests:
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-schema-relax-uniqueness`](../PRD.md#schema-allows-recording-state-transitions)
-- [`cpt-insightspec-fr-identity-schema-case-insensitive-value-id`](../PRD.md#value-comparisons-are-case-insensitive)
+- [`cpt-insightspec-fr-identity-schema-relax-uniqueness`](../PRD.md#record-every-state-transition)
+- [`cpt-insightspec-fr-identity-schema-case-insensitive-value-id`](../PRD.md#compare-identifier-values-case-insensitively)

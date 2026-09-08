@@ -124,6 +124,6 @@ ADR-0007 table.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#hydrate-person-attributes)
-- [`cpt-insightspec-fr-identity-lookup-parent`](../PRD.md#surface-parent-attributes-when-present)
-- [`cpt-insightspec-actor-seed-pipeline`](../PRD.md#seed-pipeline)
+- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#compose-attributes-from-every-source)
+- [`cpt-insightspec-fr-identity-lookup-parent`](../PRD.md#report-the-supervisor-from-the-org-chart)
+- [`cpt-insightspec-actor-seed-pipeline`](../PRD.md#connector-pipeline)

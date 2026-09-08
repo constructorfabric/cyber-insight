@@ -13,9 +13,9 @@
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Three-column routing by `value_type` family (chosen)](#three-column-routing-by-valuetype-family-chosen)
+  - [Three-column routing by value-type family (chosen)](#three-column-routing-by-value-type-family-chosen)
   - [Single `value` column](#single-value-column)
-  - [Per-`value_type` table](#per-valuetype-table)
+  - [A table per value type](#a-table-per-value-type)
 - [More Information](#more-information)
 - [Traceability](#traceability)
 
@@ -92,7 +92,7 @@ the persons-seed.
 
 ## Pros and Cons of the Options
 
-### Three-column routing by `value_type` family (chosen)
+### Three-column routing by value-type family (chosen)
 
 - Good, because identifier-shaped lookups stay on a covered byte
   index.
@@ -111,7 +111,7 @@ the persons-seed.
 - Bad, because catch-all `TEXT` cannot be fully indexed without a
   prefix limit that creates collision risk for long values.
 
-### Per-`value_type` table
+### A table per value type
 
 - Good, because each attribute family gets a purpose-built schema.
 - Bad, because adding a `value_type` means adding a table — schema
@@ -126,7 +126,7 @@ the persons-seed.
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#resolve-email-to-person_id)
-- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#hydrate-person-attributes)
-- [`cpt-insightspec-fr-identity-lookup-parent`](../PRD.md#surface-parent-attributes-when-present)
-- [`cpt-insightspec-actor-seed-pipeline`](../PRD.md#seed-pipeline)
+- [`cpt-insightspec-fr-identity-lookup-resolve-by-email`](../PRD.md#address-matching-uses-the-current-value-per-source)
+- [`cpt-insightspec-fr-identity-lookup-hydrate`](../PRD.md#compose-attributes-from-every-source)
+- [`cpt-insightspec-fr-identity-lookup-parent`](../PRD.md#report-the-supervisor-from-the-org-chart)
+- [`cpt-insightspec-actor-seed-pipeline`](../PRD.md#connector-pipeline)

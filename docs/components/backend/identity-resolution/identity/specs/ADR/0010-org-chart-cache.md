@@ -14,8 +14,8 @@
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
   - [Materialized SCD2 edge table, two-source rebuild, no stubs (chosen)](#materialized-scd2-edge-table-two-source-rebuild-no-stubs-chosen)
-  - [Single-source rebuild from parent_person_id only](#single-source-rebuild-from-parentpersonid-only)
-  - [Synthesise stub persons for unresolved parent_emails](#synthesise-stub-persons-for-unresolved-parentemails)
+  - [Single-source rebuild from the resolved supervisor reference only](#single-source-rebuild-from-the-resolved-supervisor-reference-only)
+  - [Synthesise stub persons for unresolved supervisor addresses](#synthesise-stub-persons-for-unresolved-supervisor-addresses)
   - [Live recursive CTE against persons](#live-recursive-cte-against-persons)
   - [AFTER INSERT trigger maintaining edges in real time](#after-insert-trigger-maintaining-edges-in-real-time)
 - [More Information](#more-information)
@@ -347,7 +347,7 @@ historical edges (deactivated and not re-activated).
 - Bad, because the cache lags reality between rebuilds — acceptable
   for org-chart data that changes slowly (days/weeks).
 
-### Single-source rebuild from parent_person_id only
+### Single-source rebuild from the resolved supervisor reference only
 
 - Good, because the rebuild SQL is simpler — no JOIN, no
   deduplication, no NOT EXISTS.
@@ -356,7 +356,7 @@ historical edges (deactivated and not re-activated).
   cache is permanently empty until that service is built. No
   org-chart in the meantime.
 
-### Synthesise stub persons for unresolved parent_emails
+### Synthesise stub persons for unresolved supervisor addresses
 
 - Good, because every `parent_email` would yield an edge — no
   missing parents in the org-chart.
@@ -409,6 +409,6 @@ historical edges (deactivated and not re-activated).
 
 ## Traceability
 
-- [`cpt-insightspec-fr-identity-org-chart-table`](../PRD.md#materialised-parentchild-edge-cache)
-- [`cpt-insightspec-fr-identity-org-chart-rebuild`](../PRD.md#rebuild-edges-from-persons-deterministically)
-- [`cpt-insightspec-fr-identity-org-chart-read`](../PRD.md#read-current-parent-and-children-edges)
+- [`cpt-insightspec-fr-identity-org-chart-table`](../PRD.md#maintain-the-parent-and-child-edge-cache)
+- [`cpt-insightspec-fr-identity-org-chart-rebuild`](../PRD.md#rebuild-edges-deterministically-from-the-journal)
+- [`cpt-insightspec-fr-identity-org-chart-read`](../PRD.md#read-current-edges-by-person)
