@@ -10,8 +10,10 @@ proxy serves the same rows from a bare clone.
 Repository discovery still uses the Bitbucket API — one call per page of
 repositories, not per commit.
 
-Auth: an Atlassian API token used as HTTP basic `username:token`, both for the
-API and (forwarded per request, never stored) for the clone the proxy performs.
+Auth: an Atlassian API token as HTTP basic `username:token`, or a workspace /
+project / repository access token as `Bearer` with the username left empty —
+both for the API and (forwarded per request, never stored) for the clone the
+proxy performs.
 
 ## Prerequisites
 
@@ -45,7 +47,7 @@ metadata:
     insight.cyberfabric.com/source-id: bitbucket-cloud-main
 type: Opaque
 stringData:
-  bitbucket_username: "CHANGE_ME"
+  bitbucket_username: "CHANGE_ME"   # account email for an API token; empty for an access token
   bitbucket_token: "CHANGE_ME"
   bitbucket_workspaces: '["acme"]'
   bitbucket_start_date: "2026-01-01"
@@ -62,7 +64,7 @@ repository nobody has touched since it is never listed, so never cloned.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `bitbucket_username` | No | Atlassian account email/username. Set for personal API tokens (Basic `username:token`); leave empty for workspace/repository access tokens (Bearer). The clone username the proxy presents is derived from the same choice |
+| `bitbucket_username` | No | Atlassian account email/username. Set for personal API tokens (Basic `username:token`); leave empty for workspace, project and repository access tokens (Bearer). The clone username the proxy presents is derived from the same choice |
 | `bitbucket_token` | Yes | API token or access token; see Prerequisites for the permissions each family names |
 | `bitbucket_workspaces` | Yes | JSON array of workspace slugs |
 | `bitbucket_api_base_url` | No | API base URL (default `https://api.bitbucket.org/2.0`) |
@@ -167,10 +169,10 @@ weeks back, and no row below the cutoff.
 That filtering is also why an empty repository listing is ordinary rather than
 alarming, and why the one listing that must mean something is exempt from it:
 `repository_visibility` asks for a single repository with no `q`, so its empty
-answer has exactly one cause — the token reaches nothing. A token that has lost
-repository access is served `200` with an empty page, not an error code, so
-without that probe every stream lands zero rows and the sync still reports
-success.
+answer means one thing to the connector — no repository is reachable. A token
+that has lost repository access is served `200` with an empty page, not an
+error code, so without that probe every stream lands zero rows and the sync
+still reports success.
 
 One stream cannot comply. The deployments endpoint rejects `sort=created_on`
 (400) and **accepts a `q` on `created_on` while silently ignoring it** — a
@@ -218,7 +220,8 @@ source that shares it.
 | `pull_request_commits` | `bitbucket_cloud__pull_requests_commits` | `class_git_pull_requests_commits` |
 
 `pipelines`, `deployments` and `workspace_members` land in bronze only; no class
-consumes them yet.
+consumes them yet. `repository_visibility` is diagnostic and stays that way: one
+row per workspace recording that the token reached something, fed to no class.
 
 ## Not in git
 
