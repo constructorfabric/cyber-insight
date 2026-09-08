@@ -35,6 +35,13 @@ fn app(mock: &Mock, openapi: &OpenApiRegistryImpl) -> axum::Router {
         )),
         ChatClient::canned(),
         crate::identity::IdentityClient::fixed(true),
+        crate::catalog::Catalog::new(
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                "http://catalogue.invalid",
+                "insight",
+            )),
+            "insight".to_owned(),
+        ),
     ));
 
     register_routes(

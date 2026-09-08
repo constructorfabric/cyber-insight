@@ -50,6 +50,13 @@ impl TestHarness {
             )),
             ChatClient::canned(),
             crate::identity::IdentityClient::fixed(is_admin),
+            crate::catalog::Catalog::new(
+                insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                    "http://catalogue.invalid",
+                    "insight",
+                )),
+                "insight".to_owned(),
+            ),
         ));
         let router = register_routes(Router::new(), &openapi, state);
 

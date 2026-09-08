@@ -14,6 +14,7 @@ pub(crate) mod tables;
 
 use admission::IngestAdmission;
 
+use crate::catalog::Catalog;
 use crate::chat::ChatClient;
 use crate::definitions::Definitions;
 use crate::identity::IdentityClient;
@@ -83,6 +84,7 @@ pub(crate) struct AppState {
     metrics: MetricRunner,
     chat: ChatClient,
     identity: IdentityClient,
+    catalog: Catalog,
 }
 
 impl AppState {
@@ -93,6 +95,7 @@ impl AppState {
         metrics: MetricRunner,
         chat: ChatClient,
         identity: IdentityClient,
+        catalog: Catalog,
     ) -> Self {
         Self {
             raw_data,
@@ -101,6 +104,7 @@ impl AppState {
             metrics,
             chat,
             identity,
+            catalog,
         }
     }
 
@@ -110,6 +114,10 @@ impl AppState {
 
     pub(crate) fn tables(&self) -> &TableStore {
         &self.tables
+    }
+
+    pub(crate) fn catalog(&self) -> &Catalog {
+        &self.catalog
     }
 
     pub(crate) fn definitions(&self) -> &dyn Definitions {

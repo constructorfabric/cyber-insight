@@ -140,6 +140,12 @@ impl ValidatedConfig {
     pub(crate) fn identity_url(&self) -> &str {
         &self.identity_url
     }
+
+    /// The database gold materialises into — `dbt_project.yml` sets
+    /// `gold_database` to the same one this service reads and writes.
+    pub(crate) fn clickhouse_database(&self) -> String {
+        self.clickhouse_database.clone()
+    }
 }
 
 impl GearConfig {

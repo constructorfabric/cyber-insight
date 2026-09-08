@@ -1,9 +1,6 @@
 //! The stand's table catalogue: every database the connected user can see,
 //! with each table's columns and the layer it belongs to.
 
-// Nothing reads the catalogue yet.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::time::{Duration, Instant};
 

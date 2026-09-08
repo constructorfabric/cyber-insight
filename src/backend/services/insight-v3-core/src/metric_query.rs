@@ -101,6 +101,25 @@ impl Field {
         Source::resolve(self.json.as_deref(), self.column.as_deref())
             .ok_or_else(|| MetricQueryError::FieldSource(format!("field `{}`", self.as_name)))
     }
+
+    /// What this field selects.
+    ///
+    /// Counting rows reads no value at all, so `count` alone is `count()` —
+    /// the most natural aggregate there is, and one the language could not
+    /// express while every field had to name a source. Every other
+    /// aggregate, and every plain field, still reads exactly one.
+    fn expression(&self) -> Result<String, MetricQueryError> {
+        if self.agg == Some(Agg::Count) && self.json.is_none() && self.column.is_none() {
+            return Ok("count()".to_owned());
+        }
+
+        let read = self.source()?.sql(self.r#type)?;
+
+        Ok(match self.agg {
+            Some(agg) => format!("{}({read})", agg.sql()),
+            None => read,
+        })
+    }
 }
 
 /// Where a value is read from: a key inside the `raw_data` payload, or a
@@ -266,12 +285,35 @@ pub(crate) enum MetricQueryError {
 }
 
 impl MetricQuery {
+    /// The table alone, with any database it was written with stripped off.
     pub(crate) fn table(&self) -> &str {
-        &self.table
+        self.split().1
     }
 
+    /// The database, whether it came in its own field or qualified the table.
     pub(crate) fn database(&self) -> Option<&str> {
-        self.database.as_deref()
+        self.split().0
+    }
+
+    /// A table written `database.table` is read as both.
+    ///
+    /// The map the model is shown, and the lookup tool it calls, both address
+    /// a table as `database.table` - so it writes the qualified name in the
+    /// table field, and refusing that only spends a round trip teaching it a
+    /// distinction the wire format makes and nothing else does. Split only on
+    /// a single dot with an identifier either side; anything else stays whole
+    /// and is refused by the identifier check as before.
+    fn split(&self) -> (Option<&str>, &str) {
+        if self.database.is_some() {
+            return (self.database.as_deref(), &self.table);
+        }
+
+        match self.table.split_once('.') {
+            Some((database, table)) if is_identifier(database) && is_identifier(table) => {
+                (Some(database), table)
+            }
+            _ => (None, &self.table),
+        }
     }
 
     /// The columns a result carries, in order — each field's `as_name`. What
@@ -284,7 +326,8 @@ impl MetricQuery {
     }
 
     pub(crate) fn compile(&self) -> Result<CompiledQuery, MetricQueryError> {
-        if !is_identifier(&self.table) {
+        let (database, table) = self.split();
+        if !is_identifier(table) {
             return Err(MetricQueryError::Identifier(self.table.clone()));
         }
         if let Some(database) = self.database()
@@ -300,18 +343,13 @@ impl MetricQuery {
         let mut as_names = HashSet::with_capacity(self.fields.len());
         let mut column_types = HashMap::with_capacity(self.fields.len());
         for field in &self.fields {
-            let read = field.source()?.sql(field.r#type)?;
             if !is_identifier(&field.as_name) {
                 return Err(MetricQueryError::Identifier(field.as_name.clone()));
             }
             as_names.insert(field.as_name.as_str());
             column_types.insert(field.as_name.clone(), field.r#type);
 
-            let expression = match field.agg {
-                Some(agg) => format!("{}({read})", agg.sql()),
-                None => read,
-            };
-            select_parts.push(format!("{expression} AS `{}`", field.as_name));
+            select_parts.push(format!("{} AS `{}`", field.expression()?, field.as_name));
         }
 
         for group in &self.group_by {
@@ -332,9 +370,9 @@ impl MetricQuery {
             binds.push(filter.bind(source)?);
         }
 
-        let from = match self.database() {
-            Some(database) => format!("`{database}`.`{}`", self.table),
-            None => format!("`{}`", self.table),
+        let from = match database {
+            Some(database) => format!("`{database}`.`{table}`"),
+            None => format!("`{table}`"),
         };
         let mut sql = format!("SELECT {} FROM {from}", select_parts.join(", "));
         if !where_parts.is_empty() {
@@ -657,6 +695,119 @@ mod tests {
         assert!(matches!(
             metric.compile(),
             Err(MetricQueryError::OrderBy(_))
+        ));
+    }
+
+    #[test]
+    fn counting_rows_needs_no_column() {
+        // "How many rows are in this table" is the first thing anyone asks,
+        // and it reads no value.
+        let metric = query(json!({
+            "table": "bronze_github.commits",
+            "fields": [{ "agg": "count", "type": "int", "as_name": "rows" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("the query compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("count() AS `rows`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn counting_one_column_still_names_it() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "agg": "count", "column": "author", "type": "string", "as_name": "n" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("the query compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("count(`author`) AS `n`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn an_aggregate_that_is_not_count_still_needs_a_source() {
+        // sum() of nothing is not a question.
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "agg": "sum", "type": "int", "as_name": "total" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::FieldSource(_))
+        ));
+    }
+
+    #[test]
+    fn a_table_written_with_its_database_is_read_as_both() {
+        // The map and the lookup tool both address a table as
+        // `database.table`, so the model writes it that way.
+        let metric = query(json!({
+            "table": "bronze_github.commits",
+            "fields": [{ "column": "sha", "type": "string", "as_name": "sha" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile()
+            .unwrap_or_else(|error| panic!("the query compiles: {error}"));
+
+        assert!(
+            compiled.sql.contains("FROM `bronze_github`.`commits`"),
+            "{}",
+            compiled.sql
+        );
+        assert_eq!(metric.database(), Some("bronze_github"));
+        assert_eq!(metric.table(), "commits");
+    }
+
+    #[test]
+    fn a_database_field_wins_over_a_qualified_table() {
+        let metric = query(json!({
+            "database": "silver",
+            "table": "class_git_commits",
+            "fields": [{ "column": "sha", "type": "string", "as_name": "sha" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert_eq!(metric.database(), Some("silver"));
+        assert_eq!(metric.table(), "class_git_commits");
+    }
+
+    #[test]
+    fn a_table_with_two_dots_is_still_refused() {
+        // Splitting only rescues the one shape the model writes; anything
+        // else stays whole and fails the identifier check.
+        let metric = query(json!({
+            "table": "a.b.c",
+            "fields": [{ "column": "x", "type": "string", "as_name": "x" }],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            metric.compile(),
+            Err(MetricQueryError::Identifier(_))
         ));
     }
 

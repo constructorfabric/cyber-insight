@@ -60,6 +60,13 @@ fn state(mock: &Mock) -> Arc<AppState> {
         )),
         ChatClient::canned(),
         crate::identity::IdentityClient::fixed(true),
+        crate::catalog::Catalog::new(
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                "http://catalogue.invalid",
+                "insight",
+            )),
+            "insight".to_owned(),
+        ),
     ))
 }
 

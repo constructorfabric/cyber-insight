@@ -1,6 +1,7 @@
 //! The chat endpoint: answers a question from the data, or writes
 //! metric/widget/dashboard definitions.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::extract::Extension;
@@ -13,7 +14,8 @@ use toolkit_canonical_errors::{CanonicalError, resource_error};
 use utoipa::ToSchema;
 
 use super::AppState;
-use crate::chat::{Catalogue, ChatError, KnownTable, Proposal, Turn};
+use crate::catalog::{Catalog, Layer, TableSchema};
+use crate::chat::{Ask, Catalogue, ChatError, KnownTable, Proposal, Schemas, Turn};
 use crate::definitions::{DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError};
 use crate::metric_query::{MetricQueryError, RunResult};
 use crate::tables::TableName;
@@ -90,9 +92,22 @@ async fn handle_chat(
 
     let tables = known_tables(&state).await;
     let catalogue = catalogue(&state).await;
+    let map = layer_map(state.catalog()).await;
+    let allowed = queryable_tables(state.catalog(), &tables).await;
+    let schemas = CatalogSchemas {
+        catalog: state.catalog(),
+    };
     let proposal = state
         .chat()
-        .propose(&request.message, &request.history, &tables, &catalogue)
+        .propose(&Ask {
+            message: &request.message,
+            turns: &request.history,
+            tables: &tables,
+            catalogue: &catalogue,
+            map: &map,
+            allowed: &allowed,
+            schemas: &schemas,
+        })
         .await
         .map_err(chat_error)?;
 
@@ -181,6 +196,117 @@ async fn handle_chat(
             })
             .into_response())
         }
+    }
+}
+
+/// Every table a query may name, as it must name it: `database.table` for a
+/// table in a layer, and the bare name for one ingested here, which a stored
+/// metric has always addressed without a database.
+///
+/// This is what stops the model querying a table it invented - it reached for
+/// `information_schema` when it had nothing else - while letting it reach
+/// every real table on the stand.
+async fn queryable_tables(catalog: &Catalog, ingested: &[KnownTable]) -> Vec<String> {
+    let mut allowed: Vec<String> = ingested.iter().map(|table| table.name.clone()).collect();
+
+    match catalog.tables().await {
+        Ok(tables) => allowed.extend(
+            tables
+                .iter()
+                .map(|table| format!("{}.{}", table.database, table.table)),
+        ),
+        Err(error) => {
+            tracing::warn!(error = ?error, "could not list the stand's tables for the chat");
+        }
+    }
+
+    allowed
+}
+
+/// Every table on the stand, grouped by layer, names only.
+///
+/// The map is what lets the model reach bronze, silver, gold and identity
+/// without a hardcoded list: it is read from the stand each time, so a
+/// database added on another stand appears with no code change. Columns are
+/// left out on purpose - they run to tens of thousands of tokens - and the
+/// model asks for the ones it needs through `look_up`.
+async fn layer_map(catalog: &Catalog) -> String {
+    let tables = match catalog.tables().await {
+        Ok(tables) => tables,
+        Err(error) => {
+            tracing::warn!(error = ?error, "could not map the stand for the chat");
+            return String::new();
+        }
+    };
+
+    let mut rendered = String::new();
+    for (layer, label) in [
+        (Layer::Gold, "Gold (published metrics)"),
+        (Layer::Silver, "Silver (cleaned per-source models)"),
+        (Layer::Identity, "Identity (who people are)"),
+        (Layer::Bronze, "Bronze (raw provider payloads)"),
+        (Layer::Ingest, "Ingested here (one JSON payload column)"),
+    ] {
+        let of_layer: Vec<&TableSchema> =
+            tables.iter().filter(|table| table.layer == layer).collect();
+        if of_layer.is_empty() {
+            continue;
+        }
+
+        rendered.push_str(label);
+        rendered.push('\n');
+        // Grouped by database, because that is what a query has to name.
+        let mut database = "";
+        for table in of_layer {
+            if table.database != database {
+                database = &table.database;
+                let _ = writeln!(rendered, "  {database}:");
+            }
+            let _ = writeln!(rendered, "    {}", table.table);
+        }
+        rendered.push('\n');
+    }
+
+    rendered
+}
+
+/// The columns of the tables the model asked about, read from the same
+/// listing the map came from.
+struct CatalogSchemas<'a> {
+    catalog: &'a Catalog,
+}
+
+#[async_trait::async_trait]
+impl Schemas for CatalogSchemas<'_> {
+    async fn describe(&self, tables: &[String]) -> String {
+        let found = match self.catalog.describe(tables).await {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::warn!(error = ?error, "a schema lookup failed");
+                return "The schema could not be read. Answer from the map alone.".to_owned();
+            }
+        };
+
+        let mut rendered = String::new();
+        for table in &found {
+            let _ = writeln!(rendered, "{}.{}", table.database, table.table);
+            for (column, kind) in &table.columns {
+                let _ = writeln!(rendered, "  {column} {kind}");
+            }
+        }
+
+        // A name that resolved to nothing is said so rather than left out:
+        // silence reads as "no columns" and the model invents them.
+        for asked in tables {
+            let matched = found.iter().any(|table| {
+                asked == &format!("{}.{}", table.database, table.table) || asked == &table.table
+            });
+            if !matched {
+                let _ = writeln!(rendered, "{asked}: no such table on this stand");
+            }
+        }
+
+        rendered
     }
 }
 
@@ -294,6 +420,10 @@ fn chat_error(error: ChatError) -> CanonicalError {
         ChatError::UnknownTable { .. } => ChatApiError::invalid_argument()
             .with_field_violation("query", error.to_string(), "INVALID")
             .create(),
+        ChatError::TooManyLookups => {
+            tracing::warn!("the model exhausted its schema lookups without answering");
+            CanonicalError::internal("the model did not answer").create()
+        }
         ChatError::EmptyCreate => ChatApiError::invalid_argument()
             .with_field_violation("reply", ChatError::EmptyCreate.to_string(), "INVALID")
             .create(),
