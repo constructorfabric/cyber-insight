@@ -69,7 +69,7 @@ back differ.
 | | GitHub issue | FEATURE artifact |
 |---|---|---|
 | Location | `## Testing` in the issue body | `## 7. Testing` in `FEATURE.md` |
-| Criterion ids | issue-native (`BR-n`, `REQ-n`), else `AC-n` | the feature's own `cpt-{system}-dod-{feature-slug}-{slug}` ids, else `AC-n` over `## 6. Acceptance Criteria` |
+| Criterion ids | issue-native (`BR-n`, `REQ-n`), else `AC-n` | `AC-n` over `## 6. Acceptance Criteria`, numbered in reading order; a DoD id may be named additionally |
 | Write-back | `gh issue edit --body-file` (step 6) | edit the file, then `cfs toc` and `cfs validate` (step 6) |
 | Gap audit | GitHub's checked/total counter | the unchecked boxes, plus `cfs spec-coverage` |
 
@@ -103,9 +103,13 @@ yet is marked **deferred** with a reason and owner in the Testing section — ne
 Three mechanics that make the tags resolvable:
 
 - **Artifact-native criterion ids win.** When the issue defines its own ids (`BR-n`, `REQ-n`),
-  cite those verbatim. In a FEATURE artifact the native ids are the Definitions of Done —
-  `cpt-{system}-dod-{feature-slug}-{slug}` — and a scenario cites the DoD it proves; `AC-n`
-  over `## 6. Acceptance Criteria` is the fallback in both targets for unlabelled checkboxes.
+  cite those verbatim. In a FEATURE artifact the criterion is an **acceptance criterion, not a
+  Definition of Done**: number `## 6. Acceptance Criteria` as `AC-1..N` in reading order and cite
+  those. A scenario MAY additionally name the DoD it proves where that adds something, but the
+  coverage denominator is the AC list — DoDs are implementation tasks carrying `to_code = true`,
+  and anchoring coverage to what someone decided to build rather than to what the feature promises
+  is the same description→code leak 2a exists to prevent. `AC-n` is also the fallback in an issue
+  whose checkbox criteria are unlabelled.
 - **File the numbering back.** The same edit that lands the Testing section prefixes each
   acceptance criterion with its id (`AC-1.` …) — a numbering-only change that needs no
   confirmation — otherwise the section cites ids no reader can resolve.
