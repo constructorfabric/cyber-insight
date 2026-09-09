@@ -18,17 +18,17 @@ type: DeclarativeSource
 #   commits                    -> proxy /v1/commits              incremental (committed_date), per project
 #   file_changes               -> proxy /v1/file-changes         incremental (committed_date), per project
 #   branches                   -> proxy /v1/branches             full refresh, per project
-#   commit_authors             -> GitLab /users?search=<e-mail>  per distinct author the proxy enumerates
 #   pull_requests              -> GitLab merge requests           incremental (updated_at), monthly steps
 #   pull_request_diff_stats    -> GraphQL diffStatsSummary        incremental (updatedAfter), per project
 #   pull_request_notes         -> /merge_requests/{iid}/notes     windowed MR parent
 #   pull_request_commits       -> /merge_requests/{iid}/commits   windowed MR parent
 #   pull_request_state_events  -> /merge_requests/{iid}/resource_state_events
 #   pull_request_label_events  -> /merge_requests/{iid}/resource_label_events
+#   group_members              -> /groups/{g}/members/all         full refresh, per configured scope
 #   pipelines                  -> GraphQL project.pipelines       incremental (updatedAfter), per project
 #   deployments                -> /projects/{id}/deployments      incremental (updated_at), per project
-#   group_members              -> /groups/{g}/members/all         full refresh, per configured scope
 #   users                      -> /users (keyset)                 full refresh, opt-in, instance-wide
+#   commit_authors             -> GitLab /users?search=<e-mail>  per distinct author the proxy enumerates
 #
 # Scope. Every vendor stream partitions over the configured scopes: each
 # `gitlab_groups` entry (subgroups included), each `gitlab_projects` entry,
@@ -957,274 +957,6 @@ streams:
             value: >-
               {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['id'] }}:{{ record['name'] | replace(':', '%3A') }}
 
-  # ── Commit authors (git-cli-proxy + GitLab API) ─────────────────────────
-  # A commit names an e-mail and no account, so it reaches a person only once
-  # something claims that e-mail for one. GitLab has no commit-to-account
-  # endpoint at all. The proxy enumerates a project's distinct authors from
-  # the clone it already holds, and this stream asks the user search for each
-  # of them — one call per AUTHOR, not per commit. The search matches a
-  # private e-mail only for an administrator's token; for anyone else it
-  # matches the address a user chose to publish (`public_email`), so a match
-  # here is the vendor naming the account, not a guess.
-  #
-  # Only an exact address match becomes a row: the search also matches names
-  # and usernames, and a partial hit is not evidence about the address.
-  - type: DeclarativeStream
-    name: commit_authors
-    primary_key:
-      - unique_key
-    schema_loader:
-      type: InlineSchemaLoader
-      schema:
-        type: object
-        $schema: http://json-schema.org/schema#
-        properties:
-          unique_key: {type: string}
-          tenant_id: {type: [string, "null"]}
-          source_id: {type: [string, "null"]}
-          data_source: {type: [string, "null"]}
-          collected_at: {type: [string, "null"]}
-          project_id: {type: [integer, "null"]}
-          repo_path: {type: [string, "null"]}
-          author_email: {type: [string, "null"]}
-          author_account_id: {type: [integer, "null"]}
-          author_username: {type: [string, "null"]}
-          author_name: {type: [string, "null"]}
-          author_state: {type: [string, "null"]}
-          matched_field: {type: [string, "null"]}
-          sample_sha: {type: [string, "null"]}
-          last_committed_date: {type: [string, "null"]}
-        required:
-          - unique_key
-        additionalProperties: true
-    retriever:
-      type: SimpleRetriever
-      requester:
-        <<: *vendor_requester
-        path: /users
-        request_parameters:
-          search: "{{ stream_partition.author_email }}"
-          per_page: "20"
-        error_handler: *discovery_error_handler
-      record_selector:
-        type: RecordSelector
-        extractor:
-          type: DpathExtractor
-          field_path: []
-        record_filter:
-          type: RecordFilter
-          # Case-insensitive on both sides: git idents and profile addresses
-          # are typed by humans. Compared against the partition's address so
-          # a search hit on the name never claims the e-mail.
-          condition: >-
-            {{ ((record.get('email') or '') | lower) == (stream_partition.author_email | lower)
-               or ((record.get('public_email') or '') | lower) == (stream_partition.author_email | lower) }}
-      paginator: *link_paginator
-      partition_router:
-        type: SubstreamPartitionRouter
-        parent_stream_configs:
-          - type: ParentStreamConfig
-            parent_key: author_email
-            partition_field: author_email
-            extra_fields:
-              - [project_id]
-              - [repo_path]
-              - [sample_sha]
-              - [last_committed_date]
-            incremental_dependency: true
-            stream:
-              type: DeclarativeStream
-              name: repository_authors
-              primary_key:
-                - author_email
-              schema_loader:
-                type: InlineSchemaLoader
-                schema:
-                  type: object
-                  $schema: http://json-schema.org/schema#
-                  properties:
-                    author_email: {type: [string, "null"]}
-                    author_name: {type: [string, "null"]}
-                    sample_sha: {type: [string, "null"]}
-                    last_committed_date: {type: [string, "null"]}
-                    commit_count: {type: [integer, "null"]}
-                    project_id: {type: [integer, "null"]}
-                    repo_path: {type: [string, "null"]}
-                  additionalProperties: true
-              retriever:
-                type: SimpleRetriever
-                requester:
-                  <<: *proxy_requester
-                  path: /v1/authors
-                  request_parameters:
-                    repo: "{{ stream_partition.repo_clone_url }}"
-                    page_size: "500"
-                record_selector:
-                  type: RecordSelector
-                  extractor:
-                    type: DpathExtractor
-                    field_path: [items]
-                paginator: *proxy_paginator
-                pagination_reset:
-                  type: PaginationReset
-                  action: RESET
-                partition_router:
-                  type: SubstreamPartitionRouter
-                  parent_stream_configs:
-                    - type: ParentStreamConfig
-                      parent_key: http_url_to_repo
-                      partition_field: repo_clone_url
-                      extra_fields:
-                        - [id]
-                        - [path_with_namespace]
-                      incremental_dependency: true
-                      stream: *projects_active_parent
-              incremental_sync:
-                # Per project, "authors who committed since": after one
-                # completed pass a sync asks each project only for authors
-                # with newer commits, and the vendor lookups below run for
-                # those alone.
-                type: DatetimeBasedCursor
-                cursor_field: last_committed_date
-                datetime_format: "%Y-%m-%dT%H:%M:%S%z"
-                cursor_datetime_formats:
-                  - "%Y-%m-%dT%H:%M:%S%z"
-                  - "%Y-%m-%dT%H:%M:%SZ"
-                start_datetime:
-                  type: MinMaxDatetime
-                  datetime: "{{ config['gitlab_start_date'] }}"
-                  datetime_format: "%Y-%m-%d"
-                start_time_option:
-                  type: RequestOption
-                  field_name: since
-                  inject_into: request_parameter
-              transformations:
-                - type: AddFields
-                  fields:
-                    - type: AddedFieldDefinition
-                      path: [project_id]
-                      value: "{{ stream_slice.extra_fields['id'] }}"
-                    - type: AddedFieldDefinition
-                      path: [repo_path]
-                      value: "{{ stream_slice.extra_fields['path_with_namespace'] }}"
-                      value_type: string
-    # The stamped parent date is the cursor: it carries the author walk's state
-    # (and, through it, the roster's) along with this stream's own.
-    incremental_sync:
-      type: DatetimeBasedCursor
-      cursor_field: last_committed_date
-      datetime_format: "%Y-%m-%dT%H:%M:%S%z"
-      cursor_datetime_formats:
-        - "%Y-%m-%dT%H:%M:%S%z"
-        - "%Y-%m-%dT%H:%M:%SZ"
-      start_datetime:
-        type: MinMaxDatetime
-        datetime: "{{ config['gitlab_start_date'] }}"
-        datetime_format: "%Y-%m-%d"
-    transformations:
-      - type: AddFields
-        fields: *standard_fields
-      - type: AddFields
-        fields:
-          - type: AddedFieldDefinition
-            path: [project_id]
-            value: "{{ stream_slice.extra_fields['project_id'] }}"
-          - type: AddedFieldDefinition
-            path: [repo_path]
-            value: "{{ stream_slice.extra_fields['repo_path'] }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [author_email]
-            value: "{{ stream_partition.author_email }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [sample_sha]
-            value: "{{ stream_slice.extra_fields['sample_sha'] }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [last_committed_date]
-            value: "{{ stream_slice.extra_fields['last_committed_date'] }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [author_account_id]
-            value: "{{ record.get('id') }}"
-          - type: AddedFieldDefinition
-            path: [author_username]
-            value: "{{ record.get('username') or '' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [author_name]
-            value: "{{ record.get('name') or '' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [author_state]
-            value: "{{ record.get('state') or '' }}"
-            value_type: string
-          # Which profile field named the address — an administrator's token
-          # sees the private one, everyone else only the published one.
-          - type: AddedFieldDefinition
-            path: [matched_field]
-            value: "{{ 'email' if ((record.get('email') or '') | lower) == (stream_partition.author_email | lower) else 'public_email' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [unique_key]
-            value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.author_email | lower | replace(':', '%3A') }}
-      - type: RemoveFields
-        # The search returns whole user profiles; only the pairing is kept.
-        field_pointers:
-          - [id]
-          - [username]
-          - [name]
-          - [state]
-          - [locked]
-          - [avatar_url]
-          - [web_url]
-          - [email]
-          - [public_email]
-          - [created_at]
-          - [bio]
-          - [location]
-          - [skype]
-          - [linkedin]
-          - [twitter]
-          - [discord]
-          - [website_url]
-          - [organization]
-          - [job_title]
-          - [pronouns]
-          - [bot]
-          - [work_information]
-          - [followers]
-          - [following]
-          - [local_time]
-          - [last_sign_in_at]
-          - [confirmed_at]
-          - [last_activity_on]
-          - [theme_id]
-          - [color_scheme_id]
-          - [projects_limit]
-          - [current_sign_in_at]
-          - [identities]
-          - [can_create_group]
-          - [can_create_project]
-          - [two_factor_enabled]
-          - [external]
-          - [private_profile]
-          - [commit_email]
-          - [is_admin]
-          - [note]
-          - [namespace_id]
-          - [created_by]
-          - [email_reset_offered_at]
-          - [is_auditor]
-          - [using_license_seat]
-          - [shared_runners_minutes_limit]
-          - [extra_shared_runners_minutes_limit]
-          - [scim_identities]
-          - [plan]
-          - [trial]
-
   # ── Merge requests (GitLab API) ─────────────────────────────────────────
   # One listing per scope, all states, ascending by updated_at with the stored
   # cursor as `updated_after`. Monthly steps keep each listing's offset
@@ -2050,6 +1782,85 @@ streams:
           - [resource_type]
           - [resource_id]
 
+  # ── Members (GitLab API) ────────────────────────────────────────────────
+  # Everyone with access to a configured group (inherited and direct, the
+  # `/all` form) or project. This is the roster the identity layer resolves
+  # usernames against on instances where `/users` is not open to the token.
+  # No instance-wide form: with nothing configured the stream has no
+  # partitions and `users` (opt-in) covers the instance.
+  - type: DeclarativeStream
+    name: group_members
+    primary_key:
+      - unique_key
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        type: object
+        $schema: http://json-schema.org/schema#
+        properties:
+          unique_key: {type: string}
+          tenant_id: {type: [string, "null"]}
+          source_id: {type: [string, "null"]}
+          data_source: {type: [string, "null"]}
+          collected_at: {type: [string, "null"]}
+          scope: {type: [string, "null"]}
+          id: {type: [integer, "null"]}
+          username: {type: [string, "null"]}
+          name: {type: [string, "null"]}
+          state: {type: [string, "null"]}
+          access_level: {type: [integer, "null"]}
+          email: {type: [string, "null"]}
+          public_email: {type: [string, "null"]}
+          membership_state: {type: [string, "null"]}
+          created_at: {type: [string, "null"]}
+          expires_at: {type: [string, "null"]}
+        required:
+          - unique_key
+        additionalProperties: true
+    retriever:
+      type: SimpleRetriever
+      requester:
+        <<: *vendor_requester
+        path: "{{ ('/projects/' ~ (stream_partition.scope | replace('/', '%2F')) if stream_partition.scope in (config.get('gitlab_projects') or []) else '/groups/' ~ (stream_partition.scope | replace('/', '%2F'))) ~ '/members/all' }}"
+        request_parameters:
+          per_page: "100"
+        error_handler: *discovery_error_handler
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: []
+      paginator: *link_paginator
+      partition_router: *configured_scope_router
+    transformations:
+      - type: AddFields
+        fields: *standard_fields
+      - type: AddFields
+        fields:
+          - type: AddedFieldDefinition
+            path: [scope]
+            value: "{{ stream_partition.scope }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [email]
+            value: "{{ record.get('email') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [public_email]
+            value: "{{ record.get('public_email') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [unique_key]
+            value: >-
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_partition.scope }}:{{ record['id'] }}
+      - type: RemoveFields
+        field_pointers:
+          - [avatar_url]
+          - [web_url]
+          - [created_by]
+          - [group_saml_identity]
+          - [locked]
+
   # ── Pipelines (GitLab GraphQL) ──────────────────────────────────────────
   # REST `/pipelines` filters by `updated_after` too, but gives no source,
   # no queued duration and no merge-request link without a second call per
@@ -2395,85 +2206,6 @@ streams:
           - [deployable]
           - [user]
 
-  # ── Members (GitLab API) ────────────────────────────────────────────────
-  # Everyone with access to a configured group (inherited and direct, the
-  # `/all` form) or project. This is the roster the identity layer resolves
-  # usernames against on instances where `/users` is not open to the token.
-  # No instance-wide form: with nothing configured the stream has no
-  # partitions and `users` (opt-in) covers the instance.
-  - type: DeclarativeStream
-    name: group_members
-    primary_key:
-      - unique_key
-    schema_loader:
-      type: InlineSchemaLoader
-      schema:
-        type: object
-        $schema: http://json-schema.org/schema#
-        properties:
-          unique_key: {type: string}
-          tenant_id: {type: [string, "null"]}
-          source_id: {type: [string, "null"]}
-          data_source: {type: [string, "null"]}
-          collected_at: {type: [string, "null"]}
-          scope: {type: [string, "null"]}
-          id: {type: [integer, "null"]}
-          username: {type: [string, "null"]}
-          name: {type: [string, "null"]}
-          state: {type: [string, "null"]}
-          access_level: {type: [integer, "null"]}
-          email: {type: [string, "null"]}
-          public_email: {type: [string, "null"]}
-          membership_state: {type: [string, "null"]}
-          created_at: {type: [string, "null"]}
-          expires_at: {type: [string, "null"]}
-        required:
-          - unique_key
-        additionalProperties: true
-    retriever:
-      type: SimpleRetriever
-      requester:
-        <<: *vendor_requester
-        path: "{{ ('/projects/' ~ (stream_partition.scope | replace('/', '%2F')) if stream_partition.scope in (config.get('gitlab_projects') or []) else '/groups/' ~ (stream_partition.scope | replace('/', '%2F'))) ~ '/members/all' }}"
-        request_parameters:
-          per_page: "100"
-        error_handler: *discovery_error_handler
-      record_selector:
-        type: RecordSelector
-        extractor:
-          type: DpathExtractor
-          field_path: []
-      paginator: *link_paginator
-      partition_router: *configured_scope_router
-    transformations:
-      - type: AddFields
-        fields: *standard_fields
-      - type: AddFields
-        fields:
-          - type: AddedFieldDefinition
-            path: [scope]
-            value: "{{ stream_partition.scope }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [email]
-            value: "{{ record.get('email') or '' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [public_email]
-            value: "{{ record.get('public_email') or '' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [unique_key]
-            value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_partition.scope }}:{{ record['id'] }}
-      - type: RemoveFields
-        field_pointers:
-          - [avatar_url]
-          - [web_url]
-          - [created_by]
-          - [group_saml_identity]
-          - [locked]
-
   # ── Users (GitLab API) ──────────────────────────────────────────────────
   # The instance directory, keyset-paged so an instance past the offset cap
   # still lists fully. On by default; a token that may not read it leaves it
@@ -2600,6 +2332,274 @@ streams:
           - [provisioned_by_group_id]
           - [enterprise_group_id]
           - [enterprise_group_associated_at]
+
+  # ── Commit authors (git-cli-proxy + GitLab API) ─────────────────────────
+  # A commit names an e-mail and no account, so it reaches a person only once
+  # something claims that e-mail for one. GitLab has no commit-to-account
+  # endpoint at all. The proxy enumerates a project's distinct authors from
+  # the clone it already holds, and this stream asks the user search for each
+  # of them — one call per AUTHOR, not per commit. The search matches a
+  # private e-mail only for an administrator's token; for anyone else it
+  # matches the address a user chose to publish (`public_email`), so a match
+  # here is the vendor naming the account, not a guess.
+  #
+  # Only an exact address match becomes a row: the search also matches names
+  # and usernames, and a partial hit is not evidence about the address.
+  - type: DeclarativeStream
+    name: commit_authors
+    primary_key:
+      - unique_key
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        type: object
+        $schema: http://json-schema.org/schema#
+        properties:
+          unique_key: {type: string}
+          tenant_id: {type: [string, "null"]}
+          source_id: {type: [string, "null"]}
+          data_source: {type: [string, "null"]}
+          collected_at: {type: [string, "null"]}
+          project_id: {type: [integer, "null"]}
+          repo_path: {type: [string, "null"]}
+          author_email: {type: [string, "null"]}
+          author_account_id: {type: [integer, "null"]}
+          author_username: {type: [string, "null"]}
+          author_name: {type: [string, "null"]}
+          author_state: {type: [string, "null"]}
+          matched_field: {type: [string, "null"]}
+          sample_sha: {type: [string, "null"]}
+          last_committed_date: {type: [string, "null"]}
+        required:
+          - unique_key
+        additionalProperties: true
+    retriever:
+      type: SimpleRetriever
+      requester:
+        <<: *vendor_requester
+        path: /users
+        request_parameters:
+          search: "{{ stream_partition.author_email }}"
+          per_page: "20"
+        error_handler: *discovery_error_handler
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: []
+        record_filter:
+          type: RecordFilter
+          # Case-insensitive on both sides: git idents and profile addresses
+          # are typed by humans. Compared against the partition's address so
+          # a search hit on the name never claims the e-mail.
+          condition: >-
+            {{ ((record.get('email') or '') | lower) == (stream_partition.author_email | lower)
+               or ((record.get('public_email') or '') | lower) == (stream_partition.author_email | lower) }}
+      paginator: *link_paginator
+      partition_router:
+        type: SubstreamPartitionRouter
+        parent_stream_configs:
+          - type: ParentStreamConfig
+            parent_key: author_email
+            partition_field: author_email
+            extra_fields:
+              - [project_id]
+              - [repo_path]
+              - [sample_sha]
+              - [last_committed_date]
+            incremental_dependency: true
+            stream:
+              type: DeclarativeStream
+              name: repository_authors
+              primary_key:
+                - author_email
+              schema_loader:
+                type: InlineSchemaLoader
+                schema:
+                  type: object
+                  $schema: http://json-schema.org/schema#
+                  properties:
+                    author_email: {type: [string, "null"]}
+                    author_name: {type: [string, "null"]}
+                    sample_sha: {type: [string, "null"]}
+                    last_committed_date: {type: [string, "null"]}
+                    commit_count: {type: [integer, "null"]}
+                    project_id: {type: [integer, "null"]}
+                    repo_path: {type: [string, "null"]}
+                  additionalProperties: true
+              retriever:
+                type: SimpleRetriever
+                requester:
+                  <<: *proxy_requester
+                  path: /v1/authors
+                  request_parameters:
+                    repo: "{{ stream_partition.repo_clone_url }}"
+                    page_size: "500"
+                record_selector:
+                  type: RecordSelector
+                  extractor:
+                    type: DpathExtractor
+                    field_path: [items]
+                paginator: *proxy_paginator
+                pagination_reset:
+                  type: PaginationReset
+                  action: RESET
+                partition_router:
+                  type: SubstreamPartitionRouter
+                  parent_stream_configs:
+                    - type: ParentStreamConfig
+                      parent_key: http_url_to_repo
+                      partition_field: repo_clone_url
+                      extra_fields:
+                        - [id]
+                        - [path_with_namespace]
+                      incremental_dependency: true
+                      stream: *projects_active_parent
+              incremental_sync:
+                # Per project, "authors who committed since": after one
+                # completed pass a sync asks each project only for authors
+                # with newer commits, and the vendor lookups below run for
+                # those alone.
+                type: DatetimeBasedCursor
+                cursor_field: last_committed_date
+                datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+                cursor_datetime_formats:
+                  - "%Y-%m-%dT%H:%M:%S%z"
+                  - "%Y-%m-%dT%H:%M:%SZ"
+                start_datetime:
+                  type: MinMaxDatetime
+                  datetime: "{{ config['gitlab_start_date'] }}"
+                  datetime_format: "%Y-%m-%d"
+                start_time_option:
+                  type: RequestOption
+                  field_name: since
+                  inject_into: request_parameter
+              transformations:
+                - type: AddFields
+                  fields:
+                    - type: AddedFieldDefinition
+                      path: [project_id]
+                      value: "{{ stream_slice.extra_fields['id'] }}"
+                    - type: AddedFieldDefinition
+                      path: [repo_path]
+                      value: "{{ stream_slice.extra_fields['path_with_namespace'] }}"
+                      value_type: string
+    # The stamped parent date is the cursor: it carries the author walk's state
+    # (and, through it, the roster's) along with this stream's own.
+    incremental_sync:
+      type: DatetimeBasedCursor
+      cursor_field: last_committed_date
+      datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      cursor_datetime_formats:
+        - "%Y-%m-%dT%H:%M:%S%z"
+        - "%Y-%m-%dT%H:%M:%SZ"
+      start_datetime:
+        type: MinMaxDatetime
+        datetime: "{{ config['gitlab_start_date'] }}"
+        datetime_format: "%Y-%m-%d"
+    transformations:
+      - type: AddFields
+        fields: *standard_fields
+      - type: AddFields
+        fields:
+          - type: AddedFieldDefinition
+            path: [project_id]
+            value: "{{ stream_slice.extra_fields['project_id'] }}"
+          - type: AddedFieldDefinition
+            path: [repo_path]
+            value: "{{ stream_slice.extra_fields['repo_path'] }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [author_email]
+            value: "{{ stream_partition.author_email }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [sample_sha]
+            value: "{{ stream_slice.extra_fields['sample_sha'] }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [last_committed_date]
+            value: "{{ stream_slice.extra_fields['last_committed_date'] }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [author_account_id]
+            value: "{{ record.get('id') }}"
+          - type: AddedFieldDefinition
+            path: [author_username]
+            value: "{{ record.get('username') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [author_name]
+            value: "{{ record.get('name') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [author_state]
+            value: "{{ record.get('state') or '' }}"
+            value_type: string
+          # Which profile field named the address — an administrator's token
+          # sees the private one, everyone else only the published one.
+          - type: AddedFieldDefinition
+            path: [matched_field]
+            value: "{{ 'email' if ((record.get('email') or '') | lower) == (stream_partition.author_email | lower) else 'public_email' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [unique_key]
+            value: >-
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.author_email | lower | replace(':', '%3A') }}
+      - type: RemoveFields
+        # The search returns whole user profiles; only the pairing is kept.
+        field_pointers:
+          - [id]
+          - [username]
+          - [name]
+          - [state]
+          - [locked]
+          - [avatar_url]
+          - [web_url]
+          - [email]
+          - [public_email]
+          - [created_at]
+          - [bio]
+          - [location]
+          - [skype]
+          - [linkedin]
+          - [twitter]
+          - [discord]
+          - [website_url]
+          - [organization]
+          - [job_title]
+          - [pronouns]
+          - [bot]
+          - [work_information]
+          - [followers]
+          - [following]
+          - [local_time]
+          - [last_sign_in_at]
+          - [confirmed_at]
+          - [last_activity_on]
+          - [theme_id]
+          - [color_scheme_id]
+          - [projects_limit]
+          - [current_sign_in_at]
+          - [identities]
+          - [can_create_group]
+          - [can_create_project]
+          - [two_factor_enabled]
+          - [external]
+          - [private_profile]
+          - [commit_email]
+          - [is_admin]
+          - [note]
+          - [namespace_id]
+          - [created_by]
+          - [email_reset_offered_at]
+          - [is_auditor]
+          - [using_license_seat]
+          - [shared_runners_minutes_limit]
+          - [extra_shared_runners_minutes_limit]
+          - [scim_identities]
+          - [plan]
+          - [trial]
 
 concurrency_level:
   type: ConcurrencyLevel
