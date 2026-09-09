@@ -156,7 +156,13 @@ printf 'ok\\n'
             check=False,
         )
 
-    def _apply(self, connector: str, tenant: str, **env: str) -> subprocess.CompletedProcess[str]:
+    def _apply(
+        self,
+        connector: str,
+        tenant: str,
+        source_id: str = "example-source",
+        **env: str,
+    ) -> subprocess.CompletedProcess[str]:
         return self._run_argo(
             """source \"$ARGO_SCRIPT\"
 argo_render_cronworkflow() {
@@ -168,14 +174,26 @@ argo_apply_cronworkflow \"$@\"
             "example-connection",
             "0 4 * * *",
             tenant,
-            "example-source",
+            source_id,
             "",
             "",
             **env,
         )
 
-    def _delete(self, connector: str, tenant: str) -> subprocess.CompletedProcess[str]:
-        return self._run_argo('source "$ARGO_SCRIPT"\nargo_delete_cronworkflow "$@"', connector, tenant)
+    def _delete(
+        self, connector: str, tenant: str, source_id: str = "example-source"
+    ) -> subprocess.CompletedProcess[str]:
+        return self._run_argo(
+            'source "$ARGO_SCRIPT"\nargo_delete_cronworkflow "$@"',
+            connector,
+            tenant,
+            source_id,
+        )
+
+    def _name(self, connector: str, tenant: str, source_id: str) -> subprocess.CompletedProcess[str]:
+        return self._run_argo(
+            'source "$ARGO_SCRIPT"\nargo_cron_workflow_name "$@"', connector, tenant, source_id
+        )
 
     def _kubectl_calls(self) -> list[str]:
         if not self.kubectl_log.exists():
@@ -183,30 +201,75 @@ argo_apply_cronworkflow \"$@\"
         return self.kubectl_log.read_text(encoding="utf-8").splitlines()
 
     def test_a_52_character_name_is_accepted(self) -> None:
-        connector = "c" * 38
-        result = self._run_argo('source "$ARGO_SCRIPT"\nargo_cron_workflow_name "$@"', connector, "tenantid")
+        connector = "c" * 36
+        result = self._name(connector, "tenantid", f"{connector}-i")
 
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"{connector}-tenantid-sync"
+        assert result.stdout.strip() == f"{connector}-i-tenantid-sync"
         assert len(result.stdout.strip()) == 52
 
     def test_a_53_character_name_is_rejected_before_kubectl(self) -> None:
-        result = self._run_argo(
-            'source "$ARGO_SCRIPT"\nargo_apply_cronworkflow "$@"',
-            "c" * 39,
-            "example-connection",
-            "0 4 * * *",
-            "tenantid",
-            "example-source",
-            "",
-            "",
-        )
+        connector = "c" * 37
+        result = self._apply(connector, "tenantid", f"{connector}-i")
 
         assert result.returncode == 1, result.stderr
         assert "Argo accepts at most 52" in result.stderr
         assert self._kubectl_calls() == []
 
-    def test_apply_removes_the_legacy_full_tenant_name(self) -> None:
+    def test_the_name_drops_a_source_id_that_repeats_the_connector(self) -> None:
+        """The convention is `<connector>-<suffix>`, and the name already
+        carries the connector — repeating it spends the 52-character budget
+        twice and reads as a stutter."""
+        result = self._name("claude-team-invoices", "tenantid", "claude-team-invoices-main")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "claude-team-invoices-main-tenantid-sync"
+
+    def test_a_source_id_outside_the_convention_is_used_whole(self) -> None:
+        """It does not start with the connector's name, so there is nothing to
+        drop. Shortening it by some other rule would be inventing one."""
+        result = self._name("claude-team", "tenantid", "reports-only")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "claude-team-reports-only-tenantid-sync"
+
+    def test_a_partial_prefix_is_not_treated_as_the_convention(self) -> None:
+        """`claude-team` is a prefix of `claude-teamwork` as text but not as the
+        convention, which is the whole name followed by a separator."""
+        result = self._name("claude-team", "tenantid", "claude-teamwork")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "claude-team-claude-teamwork-tenantid-sync"
+
+    def test_two_instances_that_would_share_a_name_are_refused(self) -> None:
+        """Applied, the second would replace the first's schedule under one
+        object: the connector still looks scheduled while one of its instances
+        has silently stopped syncing. Checked across the whole set before
+        anything is applied."""
+        result = self._run_argo(
+            'source "$ARGO_SCRIPT"\nargo_assert_distinct_cron_names "$@"',
+            "claude-team",
+            "tenantid",
+            "claude-team-main",
+            "main",
+        )
+
+        assert result.returncode == 1
+        assert "both name their CronWorkflow" in result.stderr
+        assert self._kubectl_calls() == [], "nothing may be applied once they collide"
+
+    def test_distinct_instances_pass_the_guard(self) -> None:
+        result = self._run_argo(
+            'source "$ARGO_SCRIPT"\nargo_assert_distinct_cron_names "$@"',
+            "claude-team",
+            "tenantid",
+            "claude-team-main",
+            "claude-team-second",
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_apply_removes_both_superseded_names(self) -> None:
         tenant = "tenant-identifier"
         result = self._apply("example-connector", tenant)
 
@@ -214,6 +277,7 @@ argo_apply_cronworkflow \"$@\"
         assert self._kubectl_calls() == [
                 "apply -f -",
                 f"-n insight delete cronworkflow.argoproj.io/example-connector-{tenant}-sync --ignore-not-found",
+                "-n insight delete cronworkflow.argoproj.io/example-connector-tenant-i-sync --ignore-not-found",
             ]
 
     def test_apply_returns_2_when_legacy_cleanup_fails(self) -> None:
@@ -225,12 +289,17 @@ argo_apply_cronworkflow \"$@\"
         assert f"{legacy_name}: kubectl delete failed: delete rejected" in result.stderr
 
     def test_apply_for_a_short_tenant_does_not_delete_the_same_name_twice(self) -> None:
+        """Both superseded shapes coincide once the tenant fits the bound, and
+        one object removed twice reads in the log as two."""
         result = self._apply("example-connector", "short")
 
         assert result.returncode == 0, result.stderr
-        assert self._kubectl_calls() == ["apply -f -"]
+        assert self._kubectl_calls() == [
+                "apply -f -",
+                "-n insight delete cronworkflow.argoproj.io/example-connector-short-sync --ignore-not-found",
+            ]
 
-    def test_delete_removes_full_tenant_and_bounded_names(self) -> None:
+    def test_delete_removes_the_superseded_names_and_the_one_in_use(self) -> None:
         tenant = "tenant-identifier"
         result = self._delete("example-connector", tenant)
 
@@ -238,6 +307,8 @@ argo_apply_cronworkflow \"$@\"
         assert self._kubectl_calls() == [
                 f"-n insight delete cronworkflow.argoproj.io/example-connector-{tenant}-sync --ignore-not-found",
                 "-n insight delete cronworkflow.argoproj.io/example-connector-tenant-i-sync --ignore-not-found",
+                "-n insight delete cronworkflow.argoproj.io/"
+                "example-connector-example-source-tenant-i-sync --ignore-not-found",
             ]
 
 
