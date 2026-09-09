@@ -154,7 +154,7 @@ jobs:
           # Ignored because nothing this stand raises or runs reads these paths.
           # INVARIANT: */helm/Chart.yaml is NOT ignored — dev-compose.sh takes
           # the image the stand pulls from its appVersion.
-          IGNORED_PATHS='^src/(backend/services/[^/]+|frontend)/helm/|^src/backend/(services|tools)/[^/]+/tests/|^src/ingestion/tools/seed/tests/|^tests/datapath/|\.md$'
+          IGNORED_PATHS='^src/(backend/services/[^/]+|frontend)/helm/|^src/ingestion/tools/seed/tests/|^tests/datapath/|\.md$'
           IMAGE_PIN_PATHS='^src/(backend/services/[^/]+|frontend)/helm/Chart\.yaml$'
           # `|| true`: a grep selecting nothing exits 1 — set -e fails the step.
           changes_to_test="$(printf '%s\n' "$changed" | grep -vE "$IGNORED_PATHS" || true)"
@@ -184,10 +184,13 @@ jobs:
           if echo "$changes_to_test" | grep -q '^src/backend/'; then backend=true; fi
           if echo "$changes_to_test" | grep -q '^src/frontend/'; then frontend=true; fi
           if echo "$changes_to_test" | grep -qE '^(src/backend/services/analytics/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then analytics=true; fi
-          if echo "$changes_to_test" | grep -qE '^(src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then authenticator=true; fi
+          # INVARIANT: these three cross into gateway.yml, which lints the chart
+          # and runs its own e2e suite from these trees — so they read the raw
+          # diff, not the stand's filtered list.
+          if echo "$changed" | grep -qE '^(src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then authenticator=true; fi
           if echo "$changes_to_test" | grep -qE '^(src/backend/services/identity-resolution/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then identity_resolution=true; fi
-          if echo "$changes_to_test" | grep -qE '^(src/backend/services/gateway/|src/backend/tools/routegen/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then gateway=true; fi
-          if echo "$changes_to_test" | grep -qE '^(src/backend/tools/routegen/|src/backend/services/gateway/|src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|src/ingestion/tools/seed/insight_seed/|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/(prebuilt_images|test_prebuilt_images)\.py$)'; then gateway_checks=true; fi
+          if echo "$changed" | grep -qE '^(src/backend/services/gateway/|src/backend/tools/routegen/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then gateway=true; fi
+          if echo "$changed" | grep -qE '^(src/backend/tools/routegen/|src/backend/services/gateway/|src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|src/ingestion/tools/seed/insight_seed/|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/(prebuilt_images|test_prebuilt_images)\.py$)'; then gateway_checks=true; fi
           if [[ "$GITHUB_EVENT_NAME" == merge_group ]] && \
              [[ "$analytics" == true || "$authenticator" == true || "$identity_resolution" == true || "$gateway" == true ]]; then
             backend_artifacts=true
