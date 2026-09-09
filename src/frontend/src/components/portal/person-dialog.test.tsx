@@ -162,6 +162,17 @@ describe("PersonDialog", () => {
     expect(screen.getByText("Profile source")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /for profile/i })).not.toBeInTheDocument();
   });
+
+  it("cancels profile-source selection without changing the account", async () => {
+    hooks.accounts.data = { person_id: ANN, accounts: [entry({ profile_source: "eligible" })] };
+    open();
+    await userEvent.click(screen.getByRole("button", { name: /^use ann@example\.com.*for profile/i }));
+
+    await userEvent.click(within(confirmation()).getByRole("button", { name: "Cancel" }));
+
+    expect(hooks.profileSource.mutate).not.toHaveBeenCalled();
+    expect(screen.queryByText(/replaces the person's complete roster profile/i)).not.toBeInTheDocument();
+  });
   it("names the person it is about, and their id", () => {
     hooks.accounts.data = { person_id: ANN, accounts: [entry()] };
     open({ person_id: ANN, display_name: "Ann Lee" });
