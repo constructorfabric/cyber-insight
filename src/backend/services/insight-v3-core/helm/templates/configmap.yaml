@@ -14,6 +14,14 @@ data:
         console_level: {{ ((((.Values.global).observability).logs).level) | default "info" }}
         console_format: {{ ((((.Values.global).observability).logs).format) | default "json" }}
 
+    opentelemetry:
+      resource:
+        service_name: "insight-v3-core"
+        attributes:
+          # The release the pod runs; the log_ctx span and the OTel resource
+          # both read it (semconv service.version).
+          service.version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+
     gears:
       api-gateway:
         config:
