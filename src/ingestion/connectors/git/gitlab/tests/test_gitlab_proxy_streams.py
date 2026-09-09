@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 import freezegun
+from airbyte_cdk.models import FailureType
 from config import API_URL, GITLAB_URL, PROXY_URL, GitlabConfigBuilder
 from connector_tests import ANY_QUERY_PARAMS, HttpMocker, HttpRequest, HttpResponse, assert_records_conform, read_stream
 
@@ -31,6 +32,7 @@ def _project(**overrides: Any) -> dict[str, Any]:
         "http_url_to_repo": _CLONE_URL,
         "default_branch": "main",
         "archived": False,
+        "statistics": {"repository_size": 734003200},
         "last_activity_at": "2026-06-20T10:00:00.000+00:00",
         **overrides,
     }
@@ -91,6 +93,8 @@ def test_commits_paginate_and_key_on_the_project_id(http_mocker: HttpMocker) -> 
     calls = _proxy_calls(http_mocker, "commits")
     assert "page_token=t1" in calls[1]
     assert "since=2026-06-01" in calls[0], "the start date floors the walk"
+    hints = {r.headers.get("X-Repo-Size-Hint") for r in http_mocker._mocker.request_history if "/v1/commits" in r.url}
+    assert hints == {"734003200"}, f"every proxy call carries the project's reported size: {hints}"
     assert_records_conform(output.records, _CONNECTOR, "commits", strict=True)
 
 
@@ -122,6 +126,20 @@ def test_a_resumed_commits_sync_clones_no_project_idle_since_the_stored_cursor(h
 
     cloned = _proxy_calls(http_mocker, "commits")
     assert not any("acme%2Fapi.git" in url or "acme/api.git" in url for url in cloned), cloned
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_proxy_401_is_the_proxy_token_and_fails_as_a_config_error(http_mocker: HttpMocker) -> None:
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/branches", query_params=ANY_QUERY_PARAMS), HttpResponse(body="", status_code=401)
+    )
+
+    output = read_stream(_CONNECTOR, "branches", config, expecting_exception=True)
+
+    assert output.errors
+    assert output.errors[-1].trace.error.failure_type == FailureType.config_error
 
 
 @freezegun.freeze_time(_FROZEN)

@@ -45,9 +45,11 @@ definitions:
   # ── Error handling ───────────────────────────────────────────────────────
   proxy_error_handler: &proxy_error_handler
     type: DefaultErrorHandler
-    # Generous on purpose: a cold blobless clone of a large repository runs
-    # for many Retry-After cycles before the first page can be served.
-    max_retries: 100
+    # The proxy holds a cold request in-connection while it clones, so a 429
+    # is the exception: cache headroom that stayed exhausted for the whole
+    # in-connection wait. 200 x the 30 s the proxy asks for outlasts a cold
+    # clone queue on a large installation.
+    max_retries: 200
     backoff_strategies:
       - type: WaitTimeFromHeader
         header: Retry-After
@@ -61,6 +63,11 @@ definitions:
     response_filters:
       # The repository is being cloned in the background: the proxy is
       # working, the caller waits.
+      - type: HttpResponseFilter
+        http_codes: [401]
+        action: FAIL
+        failure_type: config_error
+        error_message: The git-cli-proxy rejected git_proxy_token; it must match the token the proxy was started with
       - type: HttpResponseFilter
         http_codes: [429]
         action: RETRY
@@ -276,6 +283,9 @@ definitions:
       X-Source-Id: "{{ config['insight_source_id'] }}"
       X-Git-Username: oauth2
       X-Git-Token: "{{ config['gitlab_token'] }}"
+      # The proxy reserves cache headroom from the project's reported
+      # repository size instead of its per-repository cap.
+      X-Repo-Size-Hint: "{{ stream_slice.extra_fields.get('statistics.repository_size') or '' }}"
     error_handler: *proxy_error_handler
 
   # GitLab sends `Link: <…>; rel="next"` for offset and keyset pagination
@@ -716,6 +726,7 @@ streams:
             extra_fields:
               - [id]
               - [path_with_namespace]
+              - [statistics, repository_size]
             # `incremental_dependency` is what keeps the sync proportional to
             # activity: the parent is itself incremental, so only projects
             # active since the last sync are visited. The CDK persists parent
@@ -839,6 +850,7 @@ streams:
             extra_fields:
               - [id]
               - [path_with_namespace]
+              - [statistics, repository_size]
             incremental_dependency: true
             stream: *projects_active_parent
     incremental_sync:
@@ -935,6 +947,7 @@ streams:
             extra_fields:
               - [id]
               - [path_with_namespace]
+              - [statistics, repository_size]
             stream: *projects_active_parent
     transformations:
       - type: AddFields
@@ -2453,6 +2466,7 @@ streams:
                       extra_fields:
                         - [id]
                         - [path_with_namespace]
+                        - [statistics, repository_size]
                       incremental_dependency: true
                       stream: *projects_active_parent
               incremental_sync:

@@ -166,3 +166,30 @@ def test_the_operator_sets_the_worker_count_within_a_capped_range(configured: st
         parameters={},
     ).get_concurrency_level()
     assert resolved == expected, f"should resolve to {expected}: {configured!r}"
+
+
+def test_every_proxy_request_carries_the_repository_size_hint() -> None:
+    """The proxy reserves cache headroom from the hint instead of its per-repository
+    cap; a proxy requester without it, or a proxy parent that does not pass the
+    size along, silently falls back to the cap."""
+    proxy_requesters = [r for r in _requesters(_streams()) if "git_proxy_url" in r["url_base"]]
+    assert proxy_requesters
+    for requester in proxy_requesters:
+        hint = (requester.get("request_headers") or {}).get("X-Repo-Size-Hint", "")
+        assert "statistics.repository_size" in hint, requester["path"]
+
+    def proxy_parents(node, out):
+        if isinstance(node, dict):
+            if node.get("type") == "ParentStreamConfig" and node.get("partition_field") == "repo_clone_url":
+                out.append(node)
+            for value in node.values():
+                proxy_parents(value, out)
+        elif isinstance(node, list):
+            for item in node:
+                proxy_parents(item, out)
+        return out
+
+    parents = proxy_parents(_streams(), [])
+    assert parents
+    for parent in parents:
+        assert ["statistics", "repository_size"] in (parent.get("extra_fields") or []), parent["stream"]["name"]

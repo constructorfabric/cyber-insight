@@ -165,9 +165,14 @@ Three handlers, by what a status means at that endpoint:
 - **the user directory** (`/users`): a `403`/`404` leaves the directory
   empty and the sync green — it is enrichment, not a data path. A `401` is
   still the token and fails loudly.
-- **proxy**: `429` + `Retry-After` while a clone runs is waited out (up to
-  the CDK's ceiling), `404`/`413` skip the project, `409` (superseded
-  snapshot) fails the attempt so the next one starts fresh.
+- **proxy**: a request is held in-connection while the proxy clones or waits
+  for cache headroom, so `429` + `Retry-After` is the exception (headroom
+  exhausted for the whole wait) and is retried generously; every proxy
+  request carries `X-Repo-Size-Hint`, the project's reported repository
+  size, so the proxy reserves that much cache instead of its per-repository
+  cap. `404`/`413` skip the project, `409` (superseded snapshot) restarts the
+  walk from the last record already seen, `401` is the proxy token and fails
+  as a configuration error.
 
 `429` from GitLab itself is a rate limit and backs off on `Retry-After`.
 
