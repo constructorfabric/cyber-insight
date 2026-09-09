@@ -19,7 +19,6 @@ import {
 import {
   TEXT_BODY,
   TEXT_HEADING,
-  TEXT_LABEL,
   TEXT_TITLE,
 } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
@@ -95,9 +94,8 @@ function CustomDashboardBody({
 
   return (
     <>
-      <header className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <header className="mb-4">
         <h1 className={TEXT_TITLE}>{dashboard.title}</h1>
-        <span className={cn(TEXT_LABEL, "font-mono")}>{name}</span>
       </header>
       {dashboard.widgets.length === 0 ? (
         <ComingSoon
@@ -149,25 +147,13 @@ function DashboardWidgetSlot({ name }: { name: string }) {
   const heading = widgetState.data.title;
 
   return (
-    <Card className="group">
+    <Card>
       <CardHeader className="flex flex-row items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <CardTitle className={cn(TEXT_HEADING, heading ? "" : "font-mono")}>
-            {heading ?? name}
-          </CardTitle>
-          {/* The identifier is what a rename or a chat request names, so it
-              stays reachable — but it is noise until someone looks for it. */}
-          {heading ? (
-            <p
-              className={cn(
-                TEXT_LABEL,
-                "truncate font-mono opacity-0 transition-opacity group-hover:opacity-100"
-              )}
-            >
-              {name}
-            </p>
-          ) : null}
-        </div>
+        <CardTitle
+          className={cn(TEXT_HEADING, "min-w-0 flex-1", heading ? "" : "font-mono")}
+        >
+          {heading ?? name}
+        </CardTitle>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -199,6 +185,7 @@ function DashboardWidgetSlot({ name }: { name: string }) {
       </CardContent>
       <WidgetDrilldown
         widget={widgetState.data}
+        name={name}
         label={heading ?? name}
         open={drilldown}
         onOpenChange={setDrilldown}
