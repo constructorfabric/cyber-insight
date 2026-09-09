@@ -16,6 +16,15 @@ members = [
 ]
 resolver = "3"
 
+# Compose-stand builds (dev-compose.sh, CI e2e shards): the suites assert
+# behavior, not latency, so trade runtime speed for compile time. Shipped
+# images keep the stock `release` profile in their Dockerfiles.
+[profile.e2e]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+debug = false
+
 [workspace.package]
 edition = "2024"
 license = "Apache-2.0"
