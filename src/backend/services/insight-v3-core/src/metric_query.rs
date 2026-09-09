@@ -75,6 +75,19 @@ struct Field {
     /// What this column holds a person by, when it holds one.
     #[serde(default)]
     person: Option<PersonHandle>,
+    /// What this aggregate counts, when it counts only part of the rows.
+    ///
+    /// A rate's numerator and denominator live in the same column, told apart
+    /// by another - `gate_passed` and `gate_runs` are both `value` - so each
+    /// aggregate carries its own condition rather than the query carrying one.
+    #[serde(default)]
+    when: Vec<Filter>,
+    /// Two of this query's own fields, divided: `[numerator, denominator]`.
+    #[serde(default)]
+    divide: Option<Vec<String>>,
+    /// Whether that division reads as a percentage.
+    #[serde(default)]
+    percent: bool,
 }
 
 /// Which handle a person column carries.
@@ -193,12 +206,84 @@ impl Field {
     /// the most natural aggregate there is, and one the language could not
     /// express while every field had to name a source. Every other
     /// aggregate, and every plain field, still reads exactly one.
-    fn expression(&self, qualifier: Option<&str>) -> Result<String, MetricQueryError> {
+    fn expression(
+        &self,
+        qualifier: Option<&str>,
+        binds: &mut Vec<FilterBind>,
+    ) -> Result<String, MetricQueryError> {
+        let condition = self.condition(qualifier, binds)?;
+
         if self.agg == Some(Agg::Count) && self.json.is_none() && self.column.is_none() {
-            return Ok("count()".to_owned());
+            return Ok(match condition {
+                Some(condition) => format!("countIf({condition})"),
+                None => "count()".to_owned(),
+            });
         }
 
-        Ok(self.aggregated(self.source()?.sql(self.r#type, qualifier)?))
+        let read = self.source()?.sql(self.r#type, qualifier)?;
+
+        Ok(match (self.agg, condition) {
+            (Some(agg), Some(condition)) => format!("{}If({read}, {condition})", agg.sql()),
+            (Some(agg), None) => format!("{}({read})", agg.sql()),
+            (None, _) => read,
+        })
+    }
+
+    /// This field's own conditions, as one expression, binding their values.
+    fn condition(
+        &self,
+        qualifier: Option<&str>,
+        binds: &mut Vec<FilterBind>,
+    ) -> Result<Option<String>, MetricQueryError> {
+        if self.when.is_empty() {
+            return Ok(None);
+        }
+
+        let mut parts = Vec::with_capacity(self.when.len());
+        for one in &self.when {
+            let source = one.source()?;
+            let read = source.sql(one.r#type, qualifier)?;
+            parts.push(format!("{read} {} ?", one.op.sql()));
+            binds.push(one.bind(source)?);
+        }
+
+        Ok(Some(parts.join(" AND ")))
+    }
+
+    /// One field over another, when this field is a rate rather than a value.
+    ///
+    /// The two are this query's own `as_name`s, already selected: `ClickHouse`
+    /// resolves an alias inside the same select list, so a rate needs no
+    /// second pass over the table. `nullIf` keeps a zero denominator a
+    /// missing rate instead of an error.
+    fn ratio(&self, selected: &HashSet<&str>) -> Result<Option<String>, MetricQueryError> {
+        let Some(names) = &self.divide else {
+            return Ok(None);
+        };
+
+        let [numerator, denominator] = names.as_slice() else {
+            return Err(MetricQueryError::Ratio(format!(
+                "`{}` divides exactly two of this query's fields",
+                self.as_name
+            )));
+        };
+
+        for name in [numerator, denominator] {
+            if !selected.contains(name.as_str()) {
+                return Err(MetricQueryError::Ratio(format!(
+                    "`{}` divides `{name}`, which no earlier field of this query selects",
+                    self.as_name
+                )));
+            }
+        }
+
+        let division = format!("(`{numerator}` / nullIf(`{denominator}`, 0))");
+
+        Ok(Some(if self.percent {
+            format!("(100 * {division})")
+        } else {
+            division
+        }))
     }
 
     fn aggregated(&self, read: String) -> String {
@@ -367,6 +452,8 @@ struct Selection<'a> {
     /// The joins a person's name needs, if any field asked for one.
     joins: String,
     handles: Vec<PersonHandle>,
+    /// Values bound by the fields themselves, before any filter's.
+    binds: Vec<FilterBind>,
 }
 
 #[derive(Debug)]
@@ -390,6 +477,8 @@ pub(crate) enum MetricQueryError {
     FilterValue(String),
     #[error("{0} must name exactly one of `json` or `column`")]
     FieldSource(String),
+    #[error("{0}")]
+    Ratio(String),
 }
 
 impl MetricQuery {
@@ -450,16 +539,25 @@ impl MetricQuery {
             column_types: HashMap::with_capacity(self.fields.len()),
             joins: String::new(),
             handles: Vec::new(),
+            binds: Vec::new(),
         };
 
         for (index, field) in self.fields.iter().enumerate() {
             if !is_identifier(&field.as_name) {
                 return Err(MetricQueryError::Identifier(field.as_name.clone()));
             }
-            selection.as_names.insert(field.as_name.as_str());
             selection
                 .column_types
                 .insert(field.as_name.clone(), field.r#type);
+
+            if let Some(ratio) = field.ratio(&selection.as_names)? {
+                selection.as_names.insert(field.as_name.as_str());
+                selection
+                    .parts
+                    .push(format!("{ratio} AS `{}`", field.as_name));
+                continue;
+            }
+            selection.as_names.insert(field.as_name.as_str());
 
             let expression = match field.person {
                 Some(handle) => {
@@ -480,7 +578,7 @@ impl MetricQuery {
                         "coalesce(nullIf(`{alias}`.`display_name`, ''), {read})"
                     ))
                 }
-                None => field.expression(qualifier)?,
+                None => field.expression(qualifier, &mut selection.binds)?,
             };
             selection
                 .parts
@@ -518,6 +616,7 @@ impl MetricQuery {
             column_types,
             joins,
             handles,
+            mut binds,
         } = self.selection(qualifier)?;
 
         for group in &self.group_by {
@@ -530,7 +629,7 @@ impl MetricQuery {
         }
 
         let mut where_parts = Vec::with_capacity(self.filters.len());
-        let mut binds = Vec::with_capacity(self.filters.len());
+        binds.reserve(self.filters.len());
         for filter in &self.filters {
             let source = filter.source()?;
             let read = source.sql(filter.r#type, qualifier)?;
@@ -762,6 +861,210 @@ mod tests {
             "filters": [{ "column": "state", "type": "string", "op": "eq", "value": "MERGED" }],
             "order_by": { "field": "merged", "direction": "desc" }
         }))
+    }
+
+    #[test]
+    fn a_field_aggregates_only_what_its_own_condition_matches() {
+        // A rate's two halves live in one column, told apart by another: the
+        // numerator and the denominator cannot each have their own query.
+        let metric = query(json!({
+            "database": "insight",
+            "table": "ci_metric_observations",
+            "fields": [
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "passed",
+                  "when": [{ "column": "measure_key", "type": "string", "op": "eq",
+                             "value": "gate_passed" }] },
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "runs",
+                  "when": [{ "column": "measure_key", "type": "string", "op": "eq",
+                             "value": "gate_runs" }] }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled
+                .sql
+                .contains("sumIf(`value`, `measure_key` = ?) AS `passed`"),
+            "{}",
+            compiled.sql
+        );
+        assert_eq!(
+            compiled.binds,
+            vec!["gate_passed".to_owned(), "gate_runs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_condition_on_a_count_needs_no_column() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "agg": "count", "type": "int", "as_name": "merged",
+                  "when": [{ "json": "state", "type": "string", "op": "eq",
+                             "value": "MERGED" }] }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled
+                .sql
+                .contains("countIf(JSONExtractString(raw_data, 'state') = ?) AS `merged`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_ratio_divides_two_of_the_querys_own_fields() {
+        let metric = query(json!({
+            "database": "insight",
+            "table": "ci_metric_observations",
+            "fields": [
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "passed" },
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "runs" },
+                { "divide": ["passed", "runs"], "type": "float", "as_name": "pass_rate" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        // nullIf, so a denominator of zero is no rate rather than an error.
+        assert!(
+            compiled
+                .sql
+                .contains("(`passed` / nullIf(`runs`, 0)) AS `pass_rate`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_ratio_can_read_as_a_percentage() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "agg": "count", "type": "int", "as_name": "part" },
+                { "agg": "count", "type": "int", "as_name": "whole" },
+                { "divide": ["part", "whole"], "percent": true, "type": "float",
+                  "as_name": "share" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let compiled = metric
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert!(
+            compiled
+                .sql
+                .contains("(100 * (`part` / nullIf(`whole`, 0))) AS `share`"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_ratio_naming_a_field_that_is_not_there_is_refused() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "agg": "count", "type": "int", "as_name": "part" },
+                { "divide": ["part", "nothing_like_this"], "type": "float",
+                  "as_name": "share" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            metric.compile(&people()),
+            Err(MetricQueryError::Ratio(_))
+        ));
+    }
+
+    #[test]
+    fn a_ratio_reading_a_field_declared_after_it_is_refused() {
+        // The alias only exists once it has been selected, so the order in the
+        // field list is the order the SQL can resolve.
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "divide": ["part", "whole"], "type": "float", "as_name": "share" },
+                { "agg": "count", "type": "int", "as_name": "part" },
+                { "agg": "count", "type": "int", "as_name": "whole" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            metric.compile(&people()),
+            Err(MetricQueryError::Ratio(_))
+        ));
+    }
+
+    #[test]
+    fn a_ratio_needs_exactly_two_fields_to_divide() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [
+                { "agg": "count", "type": "int", "as_name": "part" },
+                { "divide": ["part"], "type": "float", "as_name": "share" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            metric.compile(&people()),
+            Err(MetricQueryError::Ratio(_))
+        ));
+    }
+
+    #[test]
+    fn a_field_condition_binds_before_the_query_wide_filters() {
+        // The select list comes before the WHERE clause, so its values bind
+        // first or every placeholder after it takes the wrong one.
+        let metric = query(json!({
+            "database": "insight",
+            "table": "ci_metric_observations",
+            "fields": [
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "passed",
+                  "when": [{ "column": "measure_key", "type": "string", "op": "eq",
+                             "value": "gate_passed" }] }
+            ],
+            "group_by": [],
+            "filters": [
+                { "column": "metric_date", "type": "string", "op": "gte",
+                  "value": "2026-08-09" }
+            ]
+        }));
+
+        let compiled = metric
+            .compile(&people())
+            .unwrap_or_else(|error| panic!("compiles: {error}"));
+
+        assert_eq!(
+            compiled.binds,
+            vec!["gate_passed".to_owned(), "2026-08-09".to_owned()]
+        );
     }
 
     #[test]

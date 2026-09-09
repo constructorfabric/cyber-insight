@@ -573,6 +573,7 @@ fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue, map: &str) -> Str
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"order_by\":{\"field\":<as_name>,\"direction\":\"asc\"|\"desc\"}|null,\"limit\":<int>|null}.\n\
          A question about the most, the largest or the top of something needs order_by on the aggregated field with direction desc, and a limit. Without it the rows come back in the grouping's order and the first row is not the largest.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
+         A rate is two fields and a third that divides them: give each half its own `when` condition, then a field with \"divide\":[numerator,denominator] and \"percent\":true where a percentage is what the question asked for. A gate pass rate is sum(value) when measure_key is gate_passed, sum(value) when measure_key is gate_runs, then those two divided.\n\
          A column holding a person carries `person`: \"email\" for an address, \"id\" for a person id. The rows then read the name that person is known by rather than the handle a source system wrote, so group by people that way in preference to any name column on the table itself.\n\
          A widget draws its metric's columns by their as_name, never by the raw json field: a metric whose as_name is total_lines is drawn as y total_lines.\n\
          A widget is one of: {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}; {\"type\":\"line\"|\"bar\"|\"area\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}; {\"type\":\"stat\",\"metric\":<metric name>,\"value\":<string>,\"label\":<string>}; {\"type\":\"pie\",\"metric\":<metric name>,\"label\":<string>,\"value\":<string>}.\n\
@@ -728,6 +729,31 @@ fn metric_query_schema() -> Value {
                         "person": {
                             "enum": ["email", "id"],
                             "description": "Set when this column holds a person: email for an address, id for a person id. The rows then carry the name they are known by.",
+                        },
+                        "when": {
+                            "type": "array",
+                            "description": "Conditions on this aggregate alone, for one half of a rate: a numerator and a denominator that live in the same column are told apart here.",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["type", "op", "value"],
+                                "properties": {
+                                    "column": plain,
+                                    "json": plain,
+                                    "type": field_type,
+                                    "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte"] },
+                                    "value": { "type": ["string", "number", "boolean"] },
+                                },
+                            },
+                        },
+                        "divide": {
+                            "type": "array",
+                            "description": "Two as_names of THIS query, [numerator, denominator], both selected before this field. The rate is their division.",
+                            "items": plain,
+                        },
+                        "percent": {
+                            "type": "boolean",
+                            "description": "Read that division as a percentage.",
                         },
                     },
                 },
@@ -1463,6 +1489,15 @@ mod tests {
         assert_eq!(query["database"]["type"], json!("string"));
         let field = &query["fields"]["items"]["properties"];
         assert_eq!(field["person"]["enum"], json!(["email", "id"]));
+        assert!(
+            field["when"]["items"].is_object(),
+            "a field can carry its own condition"
+        );
+        assert!(
+            field["divide"]["items"].is_object(),
+            "a field can divide two others"
+        );
+        assert_eq!(field["percent"]["type"], json!("boolean"));
         assert_eq!(field["column"]["type"], json!("string"));
         // Neither is required: exactly one of them is, which no JSON schema
         // this API accepts can express, so the compiler refuses it instead.
