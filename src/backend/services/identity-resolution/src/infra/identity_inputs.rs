@@ -19,8 +19,12 @@ use uuid::Uuid;
 /// A full input scan can outrun the client's 30s default; the seed run as a
 /// whole is bounded by `SEED_TIMEOUT`, so give the read generous headroom.
 const READ_TIMEOUT: Duration = Duration::from_mins(5);
+const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CORRECTION_ACCOUNTS: usize = 10_000;
+const MAX_CORRECTION_OBSERVATIONS: usize = 100_000;
+const ACCOUNT_READ_CHUNK: usize = 200;
 
-use crate::domain::seed::IdentityInputRow;
+use crate::domain::seed::{IdentityInputRow, SourceAccountKey};
 use crate::domain::seed_service::IdentityInputsReader;
 
 /// Verbatim shape from `ClickHouseIdentityInputsReader`: rows ordered so the
@@ -104,6 +108,46 @@ pub struct ClickHouseIdentityInputsReader {
 }
 
 impl ClickHouseIdentityInputsReader {
+    pub(crate) async fn accounts(
+        &self,
+        accounts: &[SourceAccountKey],
+    ) -> anyhow::Result<Vec<IdentityInputRow>> {
+        tokio::time::timeout(ACCOUNT_READ_TIMEOUT, self.read_accounts(accounts)).await?
+    }
+
+    async fn read_accounts(
+        &self,
+        accounts: &[SourceAccountKey],
+    ) -> anyhow::Result<Vec<IdentityInputRow>> {
+        anyhow::ensure!(
+            accounts.len() <= MAX_CORRECTION_ACCOUNTS,
+            "correction exceeds the account evidence limit"
+        );
+        let mut result = Vec::new();
+        for chunk in accounts.chunks(ACCOUNT_READ_CHUNK) {
+            let predicate = vec!["(insight_source_type = ? AND insight_source_id = toUUID(?) AND source_account_id = ?)"; chunk.len()].join(" OR ");
+            let sql = format!(
+                "SELECT ifNull(insight_source_type, '') AS source_type, ifNull(toString(insight_source_id), '') AS source_id, source_account_id AS account_id, ifNull(value_type, '') AS val_type, ifNull(value, '') AS val, toString(_synced_at) AS synced_at, ifNull(operation_type, '') AS op_type FROM identity.identity_inputs WHERE ({predicate}) ORDER BY _synced_at DESC, _version DESC, value_type, value LIMIT 1 BY insight_source_type, insight_source_id, source_account_id, value_type LIMIT 100001"
+            );
+            let mut query = self.client.query(&sql);
+            for account in chunk {
+                query = query
+                    .bind(&account.source_type)
+                    .bind(account.source_id.to_string())
+                    .bind(&account.account_id);
+            }
+            let rows: Vec<InputRow> = query.fetch_all().await?;
+            anyhow::ensure!(
+                result.len() + rows.len() <= MAX_CORRECTION_OBSERVATIONS,
+                "correction exceeds the observation limit"
+            );
+            for row in rows {
+                result.push(map_row(row)?);
+            }
+        }
+        Ok(result)
+    }
+
     #[must_use]
     pub fn new(client: Client) -> Self {
         Self { client }
@@ -164,6 +208,40 @@ fn parse_ch_datetime(s: &str) -> anyhow::Result<DateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn account_reads_scope_native_ids_and_keep_the_latest_explicit_clear()
+    -> anyhow::Result<()> {
+        let Ok(url) = std::env::var("INTEGRATION_TESTS_IDENTITY_INPUTS_URL") else {
+            return Ok(());
+        };
+        let reader = ClickHouseIdentityInputsReader::connect(&url, "default", "", "");
+        reader
+            .client
+            .query("CREATE DATABASE IF NOT EXISTS identity")
+            .execute()
+            .await?;
+        reader.client.query("CREATE TABLE IF NOT EXISTS identity.identity_inputs (insight_source_type String, insight_source_id UUID, source_account_id Nullable(String), value_type String, value Nullable(String), _synced_at DateTime64(6), operation_type String, _version UInt64) ENGINE = MergeTree ORDER BY (insight_source_type, insight_source_id)").execute().await?;
+        let source_id = Uuid::now_v7();
+        for (kind, operation, value, version) in [
+            ("directory", "UPSERT", "Old Name", 1_u64),
+            ("directory", "DELETE", "", 2),
+            ("activity", "UPSERT", "Other source", 3),
+        ] {
+            reader.client.query("INSERT INTO identity.identity_inputs VALUES (?, toUUID(?), 'shared-id', 'person_display_name', ?, toDateTime64('2026-01-01 00:00:00', 6), ?, ?)")
+                .bind(kind).bind(source_id.to_string()).bind(value).bind(operation).bind(version).execute().await?;
+        }
+        let account = SourceAccountKey {
+            source_type: "directory".to_owned(),
+            source_id,
+            account_id: "shared-id".to_owned(),
+        };
+        let rows = reader.accounts(&[account]).await?;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_delete);
+        assert!(rows[0].value.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn stream_sql_keeps_empty_value_delete_rows() {

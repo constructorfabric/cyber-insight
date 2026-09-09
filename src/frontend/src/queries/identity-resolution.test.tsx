@@ -151,6 +151,8 @@ describe("useBindAccount cache behavior", () => {
     expect(keys).toContainEqual(["identity", "resolution"]);
     expect(keys).toContainEqual(["identity", "persons", "search"]);
     expect(keys).toContainEqual(["identity", "people", "search"]);
+    expect(keys).toContainEqual(["identity", "person"]);
+    expect(keys).toContainEqual(["identity", "visible-roster"]);
   });
 });
 
