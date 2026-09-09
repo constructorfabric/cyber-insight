@@ -167,7 +167,7 @@ fn an_https_origin_and_a_loopback_origin_are_both_allowed() {
 
 #[test]
 fn a_challenge_names_this_server_s_own_metadata_document_and_scope() {
-    let Ok(verifier) = TokenVerifier::new("https://insight.example.invalid", false) else {
+    let Ok(verifier) = TokenVerifier::new("https://insight.example.invalid", "", false) else {
         panic!("a plain https origin is a valid public URL");
     };
 
@@ -187,4 +187,38 @@ fn a_challenge_names_this_server_s_own_metadata_document_and_scope() {
     );
     assert!(header.contains(MCP_SCOPE), "{header}");
     assert!(header.contains("invalid_token"), "{header}");
+}
+
+#[test]
+fn the_keys_can_be_fetched_from_somewhere_the_advertised_origin_is_not() {
+    // A local stand advertises `localhost` because the MCP client will not send
+    // credentials over http to anything else — and inside this process
+    // `localhost` is this container, not the gateway.
+    let Ok(verifier) = TokenVerifier::new(
+        "http://localhost:8080",
+        "http://gateway:8080/.well-known/jwks.json",
+        true,
+    ) else {
+        panic!("a private-network origin with its own keys URL builds");
+    };
+
+    assert_eq!(
+        verifier.inner.jwks_url,
+        "http://gateway:8080/.well-known/jwks.json"
+    );
+    // The token still has to name the origin the client saw.
+    assert_eq!(verifier.inner.audience, "http://localhost:8080/mcp/v3");
+    assert_eq!(verifier.inner.issuer, "http://localhost:8080");
+}
+
+#[test]
+fn without_its_own_keys_url_the_advertised_origin_serves_them() {
+    let Ok(verifier) = TokenVerifier::new("https://insight.example.invalid", "", false) else {
+        panic!("a public origin builds");
+    };
+
+    assert_eq!(
+        verifier.inner.jwks_url,
+        "https://insight.example.invalid/.well-known/jwks.json"
+    );
 }

@@ -75,7 +75,7 @@ impl Issuer {
     }
 
     pub(crate) fn verifier(&self) -> TokenVerifier {
-        let Ok(verifier) = TokenVerifier::new(&self.origin, true) else {
+        let Ok(verifier) = TokenVerifier::new(&self.origin, "", true) else {
             panic!("a loopback origin is an allowed public URL");
         };
 

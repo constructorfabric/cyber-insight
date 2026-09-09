@@ -477,6 +477,10 @@ services:
       APP__gears__insight_v3_core__config__mcp__enabled: "${MCP_ENABLED:-false}"
       APP__gears__insight_v3_core__config__mcp__bind_addr: "0.0.0.0:8087"
       APP__gears__insight_v3_core__config__mcp__public_url: "${MCP_PUBLIC_URL:-}"
+      # The advertised origin is what the MCP client sees; it will not send
+      # credentials over http to anything but localhost, and localhost inside
+      # this container is not the gateway. Keys come over the compose network.
+      APP__gears__insight_v3_core__config__mcp__jwks_url: "http://gateway:8080/.well-known/jwks.json"
       APP__gears__insight_v3_core__config__mcp__allow_insecure_private_network: "true"
     command:
       - "/app/insight-v3-core" # <watched path>

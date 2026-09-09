@@ -41,8 +41,11 @@ pub(crate) fn router(
                 .with_cancellation_token(cancellation),
         );
 
-    let verifier =
-        auth::TokenVerifier::new(&config.public_url, config.allow_insecure_private_network)?;
+    let verifier = auth::TokenVerifier::new(
+        &config.public_url,
+        &config.jwks_url,
+        config.allow_insecure_private_network,
+    )?;
 
     Ok(Router::new()
         .nest_service(auth::MCP_PATH, service)

@@ -32,6 +32,15 @@ pub(crate) struct McpConfig {
     pub(crate) enabled: bool,
     pub(crate) bind_addr: String,
     pub(crate) public_url: String,
+    /// Where to fetch the signing keys, when the advertised origin is not
+    /// reachable from in here.
+    ///
+    /// The public URL is the client's view: the audience its token carries and
+    /// the resource it discovers. It is not always routable from inside this
+    /// process — on a local stand it is `localhost`, which names this container
+    /// and not the gateway. Blank derives it from the public URL, which is what
+    /// a deployment whose origin routes internally wants.
+    pub(crate) jwks_url: String,
     /// Permits an `http` origin on a private network, for a stand without TLS.
     pub(crate) allow_insecure_private_network: bool,
 }
@@ -42,6 +51,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_addr: DEFAULT_MCP_BIND_ADDR.to_owned(),
             public_url: String::new(),
+            jwks_url: String::new(),
             allow_insecure_private_network: false,
         }
     }
@@ -570,6 +580,7 @@ mod tests {
             enabled,
             bind_addr: bind_addr.to_owned(),
             public_url: public_url.to_owned(),
+            jwks_url: String::new(),
             allow_insecure_private_network: false,
         }
     }

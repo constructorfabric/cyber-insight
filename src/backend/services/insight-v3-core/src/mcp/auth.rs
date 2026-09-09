@@ -83,10 +83,18 @@ struct JwksRefresh {
 impl TokenVerifier {
     pub(crate) fn new(
         public_url: &str,
+        jwks_url: &str,
         allow_insecure_private_network: bool,
     ) -> anyhow::Result<Self> {
         validate_public_url(public_url, allow_insecure_private_network)?;
         let issuer = public_url.trim_end_matches('/').to_owned();
+        // Only where the keys come from. The token still has to name the
+        // advertised origin, which is checked below against `issuer`.
+        let jwks_url = if jwks_url.trim().is_empty() {
+            format!("{issuer}/.well-known/jwks.json")
+        } else {
+            jwks_url.trim().to_owned()
+        };
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(5))
@@ -98,7 +106,7 @@ impl TokenVerifier {
                 resource_metadata: format!(
                     "{issuer}/.well-known/oauth-protected-resource{MCP_PATH}"
                 ),
-                jwks_url: format!("{issuer}/.well-known/jwks.json"),
+                jwks_url,
                 issuer,
                 client,
                 jwks: RwLock::new(None),

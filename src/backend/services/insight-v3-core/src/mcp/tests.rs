@@ -52,6 +52,7 @@ fn enabled() -> McpConfig {
         enabled: true,
         bind_addr: "127.0.0.1:0".to_owned(),
         public_url: "http://localhost:3000".to_owned(),
+        jwks_url: String::new(),
         allow_insecure_private_network: false,
     }
 }
@@ -207,6 +208,7 @@ async fn an_authorized_client_initializes_and_lists_the_tools_over_http() -> R {
         enabled: true,
         bind_addr: "127.0.0.1:0".to_owned(),
         public_url: issuer.origin.clone(),
+        jwks_url: String::new(),
         allow_insecure_private_network: true,
     };
     let router = router(&config, surfaces(), CancellationToken::new())?;
@@ -289,6 +291,7 @@ async fn a_token_for_the_read_only_server_does_not_open_this_one_over_http() -> 
         enabled: true,
         bind_addr: "127.0.0.1:0".to_owned(),
         public_url: issuer.origin.clone(),
+        jwks_url: String::new(),
         allow_insecure_private_network: true,
     };
     let router = router(&config, surfaces(), CancellationToken::new())?;
