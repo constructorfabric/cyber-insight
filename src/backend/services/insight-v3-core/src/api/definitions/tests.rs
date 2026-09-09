@@ -257,7 +257,12 @@ async fn list_returns_the_stored_names_in_order() {
     assert_eq!(got.status(), StatusCode::OK);
     assert_eq!(
         got.json().await,
-        json!({ "names": ["commits_per_day", "lines_per_day"] })
+        json!({
+            "names": ["commits_per_day", "lines_per_day"],
+            "total": 2,
+            "limit": 50,
+            "offset": 0
+        })
     );
 }
 
@@ -337,7 +342,10 @@ async fn a_definition_nothing_uses_is_removed() {
     assert_eq!(removed.status(), StatusCode::NO_CONTENT);
 
     let listed = harness.list_json("/v1/metrics").await;
-    assert_eq!(listed.json().await, json!({ "names": [] }));
+    assert_eq!(
+        listed.json().await,
+        json!({ "names": [], "total": 0, "limit": 50, "offset": 0 })
+    );
 }
 
 #[tokio::test]
@@ -584,4 +592,90 @@ async fn renaming_needs_the_admin_role() {
         .await;
 
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_search_matches_a_name() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let found = harness.get_json("/v1/metrics?q=per_day").await;
+
+    assert_eq!(found.status(), StatusCode::OK);
+    assert_eq!(found.json().await["names"], json!(["commits_per_day"]));
+}
+
+#[tokio::test]
+async fn a_search_matches_what_the_body_says() {
+    // "Which metrics read this table" is the question a catalogue is asked,
+    // and a name cannot answer it.
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+    harness
+        .put_json(
+            "/v1/metrics/lines_per_day",
+            json!({
+                "database": "silver",
+                "table": "class_git_commits",
+                "fields": [{ "column": "lines_added", "type": "int", "as_name": "lines" }]
+            }),
+        )
+        .await;
+
+    let found = harness.get_json("/v1/metrics?q=class_git_commits").await;
+
+    assert_eq!(found.json().await["names"], json!(["lines_per_day"]));
+}
+
+#[tokio::test]
+async fn an_empty_search_is_not_a_search_for_nothing() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let all = harness.get_json("/v1/widgets?q=").await;
+
+    assert_eq!(all.json().await["names"], json!(["commits_table"]));
+}
+
+#[tokio::test]
+async fn a_search_that_matches_nothing_is_an_empty_list() {
+    let harness = TestHarness::new().await;
+    harness.seed_chain().await;
+
+    let none = harness.get_json("/v1/dashboards?q=nothing_like_this").await;
+
+    assert_eq!(none.status(), StatusCode::OK);
+    assert_eq!(none.json().await["names"], json!([]));
+}
+
+#[tokio::test]
+async fn a_list_answers_one_page_and_how_many_there_are() {
+    let harness = TestHarness::new().await;
+    for name in ["a_one", "b_two", "c_three"] {
+        harness
+            .put_json(&format!("/v1/metrics/{name}"), json!({ "table": "events" }))
+            .await;
+    }
+
+    let page = harness.list_json("/v1/metrics?limit=2&offset=1").await;
+
+    assert_eq!(page.status(), StatusCode::OK);
+    assert_eq!(
+        page.json().await,
+        json!({
+            "names": ["b_two", "c_three"],
+            "total": 3,
+            "limit": 2,
+            "offset": 1
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_page_bigger_than_the_cap_is_refused() {
+    let harness = TestHarness::new().await;
+
+    let refused = harness.list_json("/v1/metrics?limit=5000").await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
 }

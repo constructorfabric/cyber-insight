@@ -34,10 +34,10 @@ beforeEach(() => {
 
 describe("/portal/custom", () => {
   it("lists every dashboard as a link", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
       "delivery",
-    ]);
+    ], total: 2 });
     vi.mocked(customClient.fetchDashboard).mockRejectedValue(
       new Error("no title today")
     );
@@ -55,9 +55,9 @@ describe("/portal/custom", () => {
   });
 
   it("titles a card by the dashboard, keeping the identifier beneath it", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "lines_of_code_dashboard",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchDashboard).mockResolvedValue({
       title: "Lines of Code",
       widgets: [],
@@ -73,7 +73,7 @@ describe("/portal/custom", () => {
   });
 
   it("says so when there are no dashboards yet", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([]);
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [], total: 0 });
 
     render(<Component />, { wrapper });
 

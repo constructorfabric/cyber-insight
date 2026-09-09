@@ -7,7 +7,8 @@ import {
 } from "@/components/custom/definition-list";
 import { WidgetSummary } from "@/components/custom/definition-summary";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
-import { widgetNamesQuery, widgetQuery } from "@/queries/custom";
+import { useDefinitionCatalogue } from "@/hooks/use-definition-catalogue";
+import { widgetQuery } from "@/queries/custom";
 import { TEXT_BODY } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -17,18 +18,18 @@ export const Route = createFileRoute("/portal/custom/widgets")({
 });
 
 function WidgetsCatalogue() {
-  const { data: names, isLoading, isError, refetch } = useQuery(
-    widgetNamesQuery()
-  );
+  const catalogue = useDefinitionCatalogue("widgets");
 
   return (
     <DefinitionList
       title="Widgets"
       blurb="Every stored visual. Each draws one metric; a dashboard holds them."
-      names={names}
-      isLoading={isLoading}
-      isError={isError}
-      onRetry={() => void refetch()}
+      names={catalogue.names}
+      isLoading={catalogue.isLoading}
+      isError={catalogue.isError}
+      onRetry={catalogue.refetch}
+      search={{ label: "Search widgets", ...catalogue.search }}
+      paging={catalogue.paging}
       emptyLabel="No widgets yet. Ask the assistant for one."
       renderRow={(name) => <WidgetRow name={name} />}
     />

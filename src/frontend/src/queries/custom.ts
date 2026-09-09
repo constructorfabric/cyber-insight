@@ -1,11 +1,17 @@
 import {
+  infiniteQueryOptions,
   queryOptions,
   useMutation,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
 
-import type { ChatTurn, DefinitionKind } from "@/api/custom-client";
+import type {
+  ChatTurn,
+  DefinitionKind,
+  NamePage,
+  PageRequest,
+} from "@/api/custom-client";
 import {
   deleteDefinition,
   fetchDashboard,
@@ -20,11 +26,49 @@ import {
 } from "@/api/custom-client";
 
 const WIDGET_QUERY_PREFIX = ["custom", "widget"] as const;
+const NAME_PAGES_PREFIX = ["custom", "names"] as const;
 
-export function dashboardNamesQuery() {
+/** How many names a catalogue asks for at a time. */
+const PAGE_SIZE = 50;
+
+/** The most the service will answer with, for the lists that want everything. */
+const MAX_PAGE = 200;
+
+const FETCH_NAMES: Record<
+  DefinitionKind,
+  (page: PageRequest) => Promise<NamePage>
+> = {
+  metrics: fetchMetricNames,
+  widgets: fetchWidgetNames,
+  dashboards: fetchDashboardNames,
+};
+
+/**
+ * A catalogue, a page at a time.
+ *
+ * `total` counts the matches rather than the page, so the list can say what
+ * is behind it and stop asking once it has them all.
+ */
+export function definitionPagesQuery(kind: DefinitionKind, search = "") {
+  return infiniteQueryOptions({
+    // The needle is part of the key, so a search is its own cached answer
+    // rather than overwriting the list everyone else is reading.
+    queryKey: [...NAME_PAGES_PREFIX, kind, search],
+    queryFn: ({ pageParam }) =>
+      FETCH_NAMES[kind]({ search, limit: PAGE_SIZE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last: NamePage, pages: NamePage[]) => {
+      const read = pages.reduce((count, page) => count + page.names.length, 0);
+      return read < last.total ? read : undefined;
+    },
+  });
+}
+
+/** Every dashboard in one answer, for the rail that lists them all. */
+export function dashboardNamesQuery(search = "") {
   return queryOptions({
-    queryKey: ["custom", "dashboard-names"],
-    queryFn: () => fetchDashboardNames(),
+    queryKey: ["custom", "dashboard-names", search],
+    queryFn: () => fetchDashboardNames({ search, limit: MAX_PAGE }),
   });
 }
 
@@ -35,24 +79,10 @@ export function dashboardQuery(name: string) {
   });
 }
 
-export function metricNamesQuery() {
-  return queryOptions({
-    queryKey: ["custom", "metric-names"],
-    queryFn: () => fetchMetricNames(),
-  });
-}
-
 export function metricQuery(name: string) {
   return queryOptions({
     queryKey: ["custom", "metric", name],
     queryFn: () => fetchMetric(name),
-  });
-}
-
-export function widgetNamesQuery() {
-  return queryOptions({
-    queryKey: ["custom", "widget-names"],
-    queryFn: () => fetchWidgetNames(),
   });
 }
 
@@ -109,11 +139,12 @@ export function useSendChat() {
 
 export function invalidateDashboardList(queryClient: QueryClient) {
   return Promise.all([
-    queryClient.invalidateQueries({ queryKey: dashboardNamesQuery().queryKey }),
-    // The catalogue pages read these, and a chat that built a dashboard
+    queryClient.invalidateQueries({
+      queryKey: ["custom", "dashboard-names"],
+    }),
+    // Every catalogue page reads these, and a chat that built a dashboard
     // built its metric and widgets too.
-    queryClient.invalidateQueries({ queryKey: metricNamesQuery().queryKey }),
-    queryClient.invalidateQueries({ queryKey: widgetNamesQuery().queryKey }),
+    queryClient.invalidateQueries({ queryKey: NAME_PAGES_PREFIX }),
   ]);
 }
 

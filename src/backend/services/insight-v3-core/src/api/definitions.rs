@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -14,8 +14,19 @@ use utoipa::ToSchema;
 use super::AppState;
 use crate::custom::{CustomError, held_by};
 use crate::definitions::{
-    Change, DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError,
+    Change, DefinitionError, DefinitionKind, DefinitionName, DefinitionStoreError, MAX_PAGE_LIMIT,
+    Page, PageError,
 };
+
+/// The query string on a list: what to look for, in a name or in a body, and
+/// which page of the matches to answer with.
+#[derive(Debug, Default, Deserialize)]
+struct Search {
+    #[serde(default)]
+    q: String,
+    limit: Option<u64>,
+    offset: Option<u64>,
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct RenameRequest {
@@ -65,6 +76,49 @@ pub(crate) fn register_routes(
         DefinitionKind::Dashboard,
         "dashboards",
     )
+}
+
+fn query_param(name: &str, param_type: &str, description: &str) -> ParamSpec {
+    ParamSpec {
+        name: name.to_owned(),
+        location: ParamLocation::Query,
+        required: false,
+        description: Some(description.to_owned()),
+        param_type: param_type.to_owned(),
+        array: false,
+    }
+}
+
+fn register_list(
+    openapi: &dyn OpenApiRegistry,
+    state: &Arc<AppState>,
+    kind: DefinitionKind,
+    segment: &str,
+) -> Router {
+    OperationBuilder::get(format!("/v1/{segment}"))
+        .operation_id(format!("insight_v3_core.{segment}.list"))
+        .summary("List definition names, or the ones matching ?q=")
+        .anonymous()
+        .exposed()
+        .param(query_param(
+            "q",
+            "string",
+            "Text to look for in a name or in a stored body",
+        ))
+        .param(query_param(
+            "limit",
+            "integer",
+            &format!("Page size, 1 to {MAX_PAGE_LIMIT}"),
+        ))
+        .param(query_param("offset", "integer", "Names to skip"))
+        .json_response(StatusCode::OK, "One page of names, and how many match")
+        .error_400(openapi)
+        .error_500(openapi)
+        .error_504(openapi)
+        .handler(list_definitions)
+        .register(Router::new(), openapi)
+        .layer(Extension(state.clone()))
+        .layer(Extension(kind))
 }
 
 fn register_kind(
@@ -118,18 +172,7 @@ fn register_kind(
         .layer(Extension(state.clone()))
         .layer(Extension(kind));
 
-    let list = OperationBuilder::get(format!("/v1/{segment}"))
-        .operation_id(format!("insight_v3_core.{segment}.list"))
-        .summary("List definition names")
-        .anonymous()
-        .exposed()
-        .json_response(StatusCode::OK, "Definition names")
-        .error_500(openapi)
-        .error_504(openapi)
-        .handler(list_definitions)
-        .register(Router::new(), openapi)
-        .layer(Extension(state.clone()))
-        .layer(Extension(kind));
+    let list = register_list(openapi, &state, kind, segment);
 
     let remove = OperationBuilder::delete(format!("/v1/{segment}/{{name}}"))
         .operation_id(format!("insight_v3_core.{segment}.delete"))
@@ -403,6 +446,7 @@ async fn list_definitions(
     Extension(state): Extension<Arc<AppState>>,
     Extension(kind): Extension<DefinitionKind>,
     headers: axum::http::HeaderMap,
+    Query(search): Query<Search>,
 ) -> Result<Response, CanonicalError> {
     crate::api::require_admin(&state, &headers, || {
         DefinitionApiError::permission_denied()
@@ -411,9 +455,26 @@ async fn list_definitions(
     })
     .await?;
 
-    let names = state.surfaces().list(kind).await.map_err(custom_error)?;
+    let page = Page::parse(search.limit, search.offset).map_err(page_error)?;
+    let found = state
+        .surfaces()
+        .page(kind, &search.q, page)
+        .await
+        .map_err(custom_error)?;
 
-    Ok(Json(serde_json::json!({ "names": names })).into_response())
+    Ok(Json(serde_json::json!({
+        "names": found.names,
+        "total": found.total,
+        "limit": page.limit(),
+        "offset": page.offset(),
+    }))
+    .into_response())
+}
+
+fn page_error(error: PageError) -> CanonicalError {
+    DefinitionApiError::invalid_argument()
+        .with_field_violation("limit", error.to_string(), "INVALID")
+        .create()
 }
 
 fn definition_error(error: DefinitionError) -> CanonicalError {

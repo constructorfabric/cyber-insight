@@ -4,7 +4,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::catalog::{Catalog, CatalogError, TableSchema};
-use crate::definitions::{DefinitionKind, DefinitionName, DefinitionStoreError, Definitions};
+use crate::definitions::{
+    DefinitionKind, DefinitionName, DefinitionStoreError, Definitions, NamePage, Page,
+};
 use crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError, MetricRunner, RunResult};
 use crate::widget::{Widget, WidgetError};
 
@@ -64,6 +66,21 @@ impl<'a> Surfaces<'a> {
             metrics,
             catalog,
         }
+    }
+
+    /// One page of the names of this kind matching `needle`, or of all of
+    /// them when it is blank — a search box that is empty is not a search for
+    /// nothing.
+    pub(crate) async fn page(
+        &self,
+        kind: DefinitionKind,
+        needle: &str,
+        page: Page,
+    ) -> Result<NamePage, CustomError> {
+        self.definitions
+            .page(kind, needle.trim(), page)
+            .await
+            .map_err(CustomError::Store)
     }
 
     pub(crate) async fn list(&self, kind: DefinitionKind) -> Result<Vec<String>, CustomError> {

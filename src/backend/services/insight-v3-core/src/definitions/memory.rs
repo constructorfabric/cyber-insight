@@ -10,7 +10,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use super::{Change, DefinitionKind, DefinitionName, DefinitionStoreError, Definitions};
+use super::{
+    Change, DefinitionKind, DefinitionName, DefinitionStoreError, Definitions, NamePage, Page,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct MemoryDefinitions {
@@ -77,6 +79,34 @@ impl Definitions for MemoryDefinitions {
             .filter(|(table, _)| *table == kind.table())
             .map(|(_, name)| name.clone())
             .collect())
+    }
+
+    async fn page(
+        &self,
+        kind: DefinitionKind,
+        needle: &str,
+        page: Page,
+    ) -> Result<NamePage, DefinitionStoreError> {
+        let needle = needle.to_lowercase();
+        let matched: Vec<String> = self
+            .lock()
+            .iter()
+            .filter(|((table, _), _)| *table == kind.table())
+            .filter(|((_, name), body)| {
+                name.to_lowercase().contains(&needle)
+                    || body.to_string().to_lowercase().contains(&needle)
+            })
+            .map(|((_, name), _)| name.clone())
+            .collect();
+
+        let total = matched.len() as u64;
+        let names = matched
+            .into_iter()
+            .skip(usize::try_from(page.offset()).unwrap_or(usize::MAX))
+            .take(usize::try_from(page.limit()).unwrap_or(usize::MAX))
+            .collect();
+
+        Ok(NamePage { names, total })
     }
 
     async fn delete(

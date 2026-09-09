@@ -60,6 +60,23 @@ fn put(name: &str, body: Value) -> Parameters<PutRequest> {
     })
 }
 
+fn listing(kind: ToolKind) -> Parameters<KindRequest> {
+    Parameters(KindRequest {
+        kind,
+        limit: None,
+        offset: None,
+    })
+}
+
+fn finding(kind: ToolKind, query: &str) -> Parameters<SearchRequest> {
+    Parameters(SearchRequest {
+        kind,
+        query: query.to_owned(),
+        limit: None,
+        offset: None,
+    })
+}
+
 fn named(kind: ToolKind, name: &str) -> Parameters<NamedRequest> {
     Parameters(NamedRequest {
         kind,
@@ -99,7 +116,7 @@ fn assert_accepted(result: &CallToolResult) -> Value {
 }
 
 #[test]
-fn the_server_announces_exactly_the_eight_custom_surface_tools() {
+fn the_server_announces_exactly_the_nine_custom_surface_tools() {
     let tools = CustomSurfaces::tool_router().list_all();
 
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -116,6 +133,7 @@ fn the_server_announces_exactly_the_eight_custom_surface_tools() {
             "put_metric",
             "put_widget",
             "run_metric",
+            "search_definitions",
         ]
     );
 }
@@ -150,14 +168,8 @@ async fn a_stored_metric_is_listed_and_read_back() -> R {
 
     assert_accepted(&surfaces.put_metric(put("per-actor", metric_body())).await);
 
-    let listed = assert_accepted(
-        &surfaces
-            .list_definitions(Parameters(KindRequest {
-                kind: ToolKind::Metric,
-            }))
-            .await,
-    );
-    assert_eq!(listed, json!({"names": ["per-actor"]}));
+    let listed = assert_accepted(&surfaces.list_definitions(listing(ToolKind::Metric)).await);
+    assert_eq!(listed["names"], json!(["per-actor"]));
 
     let read = assert_accepted(
         &surfaces
@@ -256,12 +268,10 @@ async fn a_dashboard_is_stored_and_then_removed() -> R {
 
     let listed = assert_accepted(
         &surfaces
-            .list_definitions(Parameters(KindRequest {
-                kind: ToolKind::Dashboard,
-            }))
+            .list_definitions(listing(ToolKind::Dashboard))
             .await,
     );
-    assert_eq!(listed, json!({"names": []}));
+    assert_eq!(listed["names"], json!([]));
 
     Ok(())
 }
@@ -291,4 +301,122 @@ async fn a_catalogue_that_cannot_be_read_is_a_tool_error_rather_than_a_panic() {
     let result = surfaces().list_tables().await;
 
     assert_eq!(result.is_error, Some(true), "{result:?}");
+}
+
+#[tokio::test]
+async fn search_definitions_matches_a_name_and_a_body() {
+    // "Which metrics read this table" is the question a catalogue is asked,
+    // and a name cannot answer it.
+    let surfaces = surfaces();
+    assert_accepted(
+        &surfaces
+            .put_metric(put(
+                "lines_per_day",
+                json!({
+                    "database": "silver",
+                    "table": "class_git_commits",
+                    "fields": [{"column": "lines_added", "type": "int", "as_name": "lines"}]
+                }),
+            ))
+            .await,
+    );
+    assert_accepted(&surfaces.put_metric(put("actors", metric_body())).await);
+
+    let by_body = assert_accepted(
+        &surfaces
+            .search_definitions(finding(ToolKind::Metric, "class_git_commits"))
+            .await,
+    );
+    assert_eq!(by_body["names"], json!(["lines_per_day"]));
+
+    let by_name = assert_accepted(
+        &surfaces
+            .search_definitions(finding(ToolKind::Metric, "actors"))
+            .await,
+    );
+    assert_eq!(by_name["names"], json!(["actors"]));
+}
+
+#[tokio::test]
+async fn an_empty_search_returns_everything_of_that_kind() {
+    let surfaces = surfaces();
+    assert_accepted(&surfaces.put_metric(put("actors", metric_body())).await);
+
+    let all = assert_accepted(
+        &surfaces
+            .search_definitions(finding(ToolKind::Metric, "   "))
+            .await,
+    );
+
+    assert_eq!(all["names"], json!(["actors"]));
+}
+
+#[tokio::test]
+async fn a_page_answers_its_own_slice_and_the_whole_count() {
+    let surfaces = surfaces();
+    for name in ["a_one", "b_two", "c_three"] {
+        assert_accepted(&surfaces.put_metric(put(name, metric_body())).await);
+    }
+
+    let first = assert_accepted(
+        &surfaces
+            .list_definitions(Parameters(KindRequest {
+                kind: ToolKind::Metric,
+                limit: Some(2),
+                offset: None,
+            }))
+            .await,
+    );
+    assert_eq!(first["names"], json!(["a_one", "b_two"]));
+    assert_eq!(first["total"], json!(3));
+
+    let second = assert_accepted(
+        &surfaces
+            .list_definitions(Parameters(KindRequest {
+                kind: ToolKind::Metric,
+                limit: Some(2),
+                offset: Some(2),
+            }))
+            .await,
+    );
+    assert_eq!(second["names"], json!(["c_three"]));
+    assert_eq!(second["total"], json!(3));
+}
+
+#[tokio::test]
+async fn a_search_pages_the_matches_and_counts_all_of_them() {
+    let surfaces = surfaces();
+    for name in ["git_one", "git_two", "wiki_one"] {
+        assert_accepted(&surfaces.put_metric(put(name, metric_body())).await);
+    }
+
+    let page = assert_accepted(
+        &surfaces
+            .search_definitions(Parameters(SearchRequest {
+                kind: ToolKind::Metric,
+                query: "git_".to_owned(),
+                limit: Some(1),
+                offset: Some(1),
+            }))
+            .await,
+    );
+
+    assert_eq!(page["names"], json!(["git_two"]));
+    assert_eq!(page["total"], json!(2));
+}
+
+#[tokio::test]
+async fn a_page_beyond_the_cap_is_refused_rather_than_served() {
+    let surfaces = surfaces();
+
+    assert_refused(
+        &surfaces
+            .list_definitions(Parameters(KindRequest {
+                kind: ToolKind::Metric,
+                limit: Some(5_000),
+                offset: None,
+            }))
+            .await,
+        "limit must be between 1 and 200",
+    );
 }

@@ -100,7 +100,8 @@ function DashboardRow({ name, active }: { name: string; active: boolean }) {
 
 function DashboardRows() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { data: names, isPending, isError } = useQuery(dashboardNamesQuery());
+  const { data, isPending, isError } = useQuery(dashboardNamesQuery());
+  const names = data?.names;
 
   return (
     <SidebarGroup>

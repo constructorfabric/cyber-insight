@@ -174,10 +174,34 @@ export async function renameDefinition(
   return (await res.json()) as Renamed;
 }
 
-export async function fetchDashboardNames(): Promise<string[]> {
-  const res = await fetchWithAuth(`${BASE}/dashboards`);
-  const body = await readJson<{ names: string[] }>(res);
-  return body.names;
+/** One page of a catalogue, and how many names it is a page of. */
+export interface NamePage {
+  names: string[];
+  total: number;
+}
+
+/** Which slice of a catalogue to ask for. The service caps limit at 200. */
+export interface PageRequest {
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function pageQuery({ search = "", limit, offset }: PageRequest): string {
+  const query = new URLSearchParams();
+  if (search) query.set("q", search);
+  if (limit !== undefined) query.set("limit", String(limit));
+  if (offset) query.set("offset", String(offset));
+  const asked = query.toString();
+
+  return asked ? `?${asked}` : "";
+}
+
+export async function fetchDashboardNames(
+  page: PageRequest = {}
+): Promise<NamePage> {
+  const res = await fetchWithAuth(`${BASE}/dashboards${pageQuery(page)}`);
+  return readJson<NamePage>(res);
 }
 
 export async function fetchDashboard(name: string): Promise<Dashboard> {
@@ -187,10 +211,11 @@ export async function fetchDashboard(name: string): Promise<Dashboard> {
   return readJson<Dashboard>(res);
 }
 
-export async function fetchMetricNames(): Promise<string[]> {
-  const res = await fetchWithAuth(`${BASE}/metrics`);
-  const body = await readJson<{ names: string[] }>(res);
-  return body.names;
+export async function fetchMetricNames(
+  page: PageRequest = {}
+): Promise<NamePage> {
+  const res = await fetchWithAuth(`${BASE}/metrics${pageQuery(page)}`);
+  return readJson<NamePage>(res);
 }
 
 export async function fetchMetric(name: string): Promise<MetricDefinition> {
@@ -200,10 +225,11 @@ export async function fetchMetric(name: string): Promise<MetricDefinition> {
   return readJson<MetricDefinition>(res);
 }
 
-export async function fetchWidgetNames(): Promise<string[]> {
-  const res = await fetchWithAuth(`${BASE}/widgets`);
-  const body = await readJson<{ names: string[] }>(res);
-  return body.names;
+export async function fetchWidgetNames(
+  page: PageRequest = {}
+): Promise<NamePage> {
+  const res = await fetchWithAuth(`${BASE}/widgets${pageQuery(page)}`);
+  return readJson<NamePage>(res);
 }
 
 export async function fetchWidget(name: string): Promise<Widget> {

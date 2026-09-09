@@ -70,6 +70,47 @@ impl DefinitionName {
     }
 }
 
+/// The largest page a caller may ask for, and what it gets by default.
+pub(crate) const DEFAULT_PAGE_LIMIT: u64 = 50;
+pub(crate) const MAX_PAGE_LIMIT: u64 = 200;
+
+/// How much of a catalogue to read.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Page {
+    limit: u64,
+    offset: u64,
+}
+
+impl Page {
+    pub(crate) fn parse(limit: Option<u64>, offset: Option<u64>) -> Result<Self, PageError> {
+        let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
+        if limit == 0 || limit > MAX_PAGE_LIMIT {
+            return Err(PageError::Limit(MAX_PAGE_LIMIT));
+        }
+
+        Ok(Self {
+            limit,
+            offset: offset.unwrap_or(0),
+        })
+    }
+
+    pub(crate) fn limit(self) -> u64 {
+        self.limit
+    }
+
+    pub(crate) fn offset(self) -> u64 {
+        self.offset
+    }
+}
+
+/// One page of a catalogue, and how many definitions it is a page of.
+#[derive(Debug)]
+pub(crate) struct NamePage {
+    pub(crate) names: Vec<String>,
+    /// Every match, not the page — so a reader can say what is behind it.
+    pub(crate) total: u64,
+}
+
 /// One write in a batch.
 ///
 /// A rename is a put under the new name, a delete of the old one, and a put
@@ -100,7 +141,24 @@ pub(crate) trait Definitions: Send + Sync + fmt::Debug {
         name: &DefinitionName,
     ) -> Result<Option<serde_json::Value>, DefinitionStoreError>;
 
+    /// Every name of this kind.
+    ///
+    /// For the dependency scans, which have to see the definitions a page
+    /// would leave out.
     async fn list(&self, kind: DefinitionKind) -> Result<Vec<String>, DefinitionStoreError>;
+
+    /// One page of the names of this kind whose name or body holds `needle`.
+    ///
+    /// The body too, because "which metrics read `class_git_commits`" is the
+    /// question a catalogue of a few hundred definitions is actually asked,
+    /// and a name cannot answer it. An empty needle is every definition of
+    /// that kind.
+    async fn page(
+        &self,
+        kind: DefinitionKind,
+        needle: &str,
+        page: Page,
+    ) -> Result<NamePage, DefinitionStoreError>;
 
     /// Removes the definition, reporting whether there was one.
     async fn delete(
@@ -127,10 +185,32 @@ const DELETE_ONE: &str = "DELETE FROM {table} WHERE name = ?";
 const SELECT_BODY: &str = "SELECT body FROM {table} WHERE name = ?";
 const SELECT_NAMES: &str = "SELECT name FROM {table} ORDER BY name";
 
+/// No ESCAPE clause: backslash is already the default LIKE escape here, and
+/// spelling it out needs a lone backslash in a string literal, which MariaDB
+/// reads as escaping the closing quote (error 1064).
+const PAGE_NAMES: &str = "SELECT name FROM {table}
+WHERE name LIKE ? OR body LIKE ?
+ORDER BY name
+LIMIT ? OFFSET ?";
+
+const COUNT_MATCHES: &str = "SELECT COUNT(*) AS total FROM {table}
+WHERE name LIKE ? OR body LIKE ?";
+
 /// `{table}` is substituted from [`DefinitionKind::table`], which returns one
 /// of three literals — never anything a request carries. Every value is bound.
 fn sql(template: &str, kind: DefinitionKind) -> String {
     template.replace("{table}", kind.table())
+}
+
+/// A needle as a literal inside `LIKE`.
+///
+/// `%` and `_` are wildcards there, so a search for `pr_merged` would match
+/// `prXmerged` — the caller typed a name, not a pattern.
+fn like_escaped(needle: &str) -> String {
+    needle
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -141,6 +221,11 @@ struct BodyRow {
 #[derive(Debug, FromQueryResult)]
 struct NameRow {
     name: String,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct TotalRow {
+    total: i64,
 }
 
 pub(crate) struct MariaDefinitions {
@@ -207,6 +292,40 @@ impl Definitions for MariaDefinitions {
         Ok(rows.into_iter().map(|row| row.name).collect())
     }
 
+    async fn page(
+        &self,
+        kind: DefinitionKind,
+        needle: &str,
+        page: Page,
+    ) -> Result<NamePage, DefinitionStoreError> {
+        let pattern = format!("%{}%", like_escaped(needle));
+        let rows = NameRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::MySql,
+            sql(PAGE_NAMES, kind),
+            [
+                pattern.clone().into(),
+                pattern.clone().into(),
+                page.limit.into(),
+                page.offset.into(),
+            ],
+        ))
+        .all(&self.db)
+        .await?;
+
+        let counted = TotalRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::MySql,
+            sql(COUNT_MATCHES, kind),
+            [pattern.clone().into(), pattern.into()],
+        ))
+        .one(&self.db)
+        .await?;
+
+        Ok(NamePage {
+            names: rows.into_iter().map(|row| row.name).collect(),
+            total: counted.map_or(0, |row| u64::try_from(row.total).unwrap_or(0)),
+        })
+    }
+
     async fn delete(
         &self,
         kind: DefinitionKind,
@@ -255,6 +374,12 @@ impl fmt::Debug for MariaDefinitions {
 pub(crate) enum DefinitionError {
     #[error("definition names use letters, digits, underscore and dash, up to 128 characters")]
     Name,
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+pub(crate) enum PageError {
+    #[error("limit must be between 1 and {0}")]
+    Limit(u64),
 }
 
 #[derive(Debug, Error)]

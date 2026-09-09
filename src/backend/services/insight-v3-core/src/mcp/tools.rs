@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::api::AppState;
 use crate::catalog::{Layer, TableSchema};
 use crate::custom::{CustomError, Surfaces};
-use crate::definitions::{DefinitionKind, DefinitionName};
+use crate::definitions::{DefinitionKind, DefinitionName, Page};
 
 #[cfg(test)]
 mod tests;
@@ -38,6 +38,23 @@ impl ToolKind {
 pub(crate) struct KindRequest {
     /// Which kind of definition to list.
     pub(crate) kind: ToolKind,
+    /// How many names to answer with: 1 to 200, 50 by default.
+    pub(crate) limit: Option<u64>,
+    /// How many names to skip, for the page after the first.
+    pub(crate) offset: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct SearchRequest {
+    /// Which kind of definition to look through.
+    pub(crate) kind: ToolKind,
+    /// Text to look for in a name or in a stored body — a table name finds
+    /// every metric that reads it. Blank returns everything of that kind.
+    pub(crate) query: String,
+    /// How many names to answer with: 1 to 200, 50 by default.
+    pub(crate) limit: Option<u64>,
+    /// How many names to skip, for the page after the first.
+    pub(crate) offset: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -101,6 +118,30 @@ impl CustomSurfaces {
         self.state.surfaces()
     }
 
+    /// One page of names, with how many there are to page through.
+    async fn read_page(
+        &self,
+        kind: ToolKind,
+        needle: &str,
+        limit: Option<u64>,
+        offset: Option<u64>,
+    ) -> CallToolResult {
+        let page = match Page::parse(limit, offset) {
+            Ok(page) => page,
+            Err(error) => return refuse(&error.to_string()),
+        };
+
+        match self.surfaces().page(kind.kind(), needle, page).await {
+            Ok(found) => CallToolResult::structured(json!({
+                "names": found.names,
+                "total": found.total,
+                "limit": page.limit(),
+                "offset": page.offset(),
+            })),
+            Err(error) => tool_error(&error),
+        }
+    }
+
     async fn write(&self, kind: ToolKind, request: PutRequest) -> CallToolResult {
         let name = match parse_name(&request.name) {
             Ok(name) => name,
@@ -118,16 +159,29 @@ impl CustomSurfaces {
 impl CustomSurfaces {
     #[tool(
         name = "list_definitions",
-        description = "Names every stored metric, widget or dashboard. Start here before writing one, so an existing definition is replaced deliberately rather than by accident."
+        description = "Names the stored metrics, widgets or dashboards, one page at a time. Start here before writing one, so an existing definition is replaced deliberately rather than by accident. Answers `total`: when it exceeds the page, ask again with `offset`."
     )]
     async fn list_definitions(
         &self,
-        Parameters(KindRequest { kind }): Parameters<KindRequest>,
+        Parameters(KindRequest {
+            kind,
+            limit,
+            offset,
+        }): Parameters<KindRequest>,
     ) -> CallToolResult {
-        match self.surfaces().list(kind.kind()).await {
-            Ok(names) => CallToolResult::structured(json!({"names": names})),
-            Err(error) => tool_error(&error),
-        }
+        self.read_page(kind, "", limit, offset).await
+    }
+
+    /// Find definitions by name or by what their body says.
+    #[tool(
+        description = "Search metrics, widgets or dashboards. Matches the name and the stored body, so a table or column name finds every definition that reads it. Paged like list_definitions, and answers the same `total`."
+    )]
+    async fn search_definitions(
+        &self,
+        Parameters(request): Parameters<SearchRequest>,
+    ) -> CallToolResult {
+        self.read_page(request.kind, &request.query, request.limit, request.offset)
+            .await
     }
 
     #[tool(

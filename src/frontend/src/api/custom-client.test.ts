@@ -30,16 +30,22 @@ beforeEach(() => {
 });
 
 describe("fetchDashboardNames", () => {
-  it("reads the names out of the wrapper object", async () => {
-    mockFetch.mockResolvedValueOnce(
-      response({ names: ["engineering", "delivery"] }),
-    );
+  it("reads the page and how many names it is a page of", async () => {
+    const page = { names: ["engineering", "delivery"], total: 2 };
+    mockFetch.mockResolvedValueOnce(response(page));
 
-    await expect(fetchDashboardNames()).resolves.toEqual([
-      "engineering",
-      "delivery",
-    ]);
+    await expect(fetchDashboardNames()).resolves.toEqual(page);
     expect(mockFetch).toHaveBeenCalledWith("/api/v3/v1/dashboards");
+  });
+
+  it("puts the needle and the window in the query string", async () => {
+    mockFetch.mockResolvedValueOnce(response({ names: [], total: 0 }));
+
+    await fetchDashboardNames({ search: "git ops", limit: 50, offset: 50 });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v3/v1/dashboards?q=git+ops&limit=50&offset=50",
+    );
   });
 
   it("surfaces a failure as an API error", async () => {

@@ -34,9 +34,9 @@ beforeEach(() => {
 
 describe("/portal/custom/widgets", () => {
   it("shows a table widget's columns and links its metric", async () => {
-    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue([
+    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue({ names: [
       "commits_table",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchWidget).mockResolvedValue({
       type: "table",
       metric: "commits_per_day",
@@ -54,9 +54,9 @@ describe("/portal/custom/widgets", () => {
   });
 
   it("shows a line widget's axes instead of columns", async () => {
-    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue([
+    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue({ names: [
       "commits_graph",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchWidget).mockResolvedValue({
       type: "line",
       metric: "commits_per_day",
@@ -72,7 +72,7 @@ describe("/portal/custom/widgets", () => {
   });
 
   it("says so when there are no widgets yet", async () => {
-    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue([]);
+    vi.mocked(customClient.fetchWidgetNames).mockResolvedValue({ names: [], total: 0 });
 
     render(<Component />, { wrapper });
 

@@ -272,6 +272,7 @@ async fn an_authorized_client_initializes_and_lists_the_tools_over_http() -> R {
             "put_metric",
             "put_widget",
             "run_metric",
+            "search_definitions",
         ],
         "{listed}"
     );

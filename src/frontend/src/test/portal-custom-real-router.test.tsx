@@ -20,7 +20,7 @@ import {
   createMemoryHistory,
   createRouter,
 } from "@tanstack/react-router";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -90,28 +90,33 @@ afterEach(() => {
 
 describe("the /portal/custom routes, through the real router", () => {
   it("renders the dashboard list at /portal/custom, inside the portal shell", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
-    ]);
+    ], total: 1 });
 
     renderAt("/portal/custom");
 
-    const links = await screen.findAllByRole("link", { name: "engineering" });
+    // The card on the page and the row in the context pane: the pane is the
+    // nav the reader picks dashboards from, so it has to be one of them. They
+    // read the catalogue through different queries — a page of names, and all
+    // of them — so they arrive one after the other.
+    const links = await waitFor(() => {
+      const found = screen.getAllByRole("link", { name: "engineering" });
+      expect(found.length).toBeGreaterThan(1);
+      return found;
+    });
     for (const link of links) {
       expect(link).toHaveAttribute("href", "/portal/custom/engineering");
     }
-    // The card on the page and the row in the context pane: the pane is the
-    // nav the reader picks dashboards from, so it has to be one of them.
-    expect(links.length).toBeGreaterThan(1);
     expect(
       document.querySelector('[data-slot="sidebar-wrapper"]')
     ).toBeInTheDocument();
   });
 
   it("renders a dashboard at /portal/custom/$name, inside the portal shell", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchDashboard).mockResolvedValue({
       title: "Engineering",
       widgets: [],
@@ -128,9 +133,9 @@ describe("the /portal/custom routes, through the real router", () => {
   });
 
   it("keeps the thread when creating a dashboard navigates to it", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchDashboard).mockResolvedValue({
       title: "Delivery",
       widgets: [],
@@ -164,9 +169,9 @@ describe("the /portal/custom routes, through the real router", () => {
   });
 
   it("shows a widget the chat adds to the open dashboard, without a reload", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
-    ]);
+    ], total: 1 });
     vi.mocked(customClient.fetchDashboard)
       .mockResolvedValueOnce({ title: "Engineering", widgets: [] })
       .mockResolvedValue({ title: "Engineering", widgets: ["revenue_table"] });
@@ -200,9 +205,9 @@ describe("the /portal/custom routes, through the real router", () => {
 
   it("refuses the zone to a caller without the admin role", async () => {
     signedInAs({ admin: false });
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({ names: [
       "engineering",
-    ]);
+    ], total: 1 });
 
     renderAt("/portal/custom");
 

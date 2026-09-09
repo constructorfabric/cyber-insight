@@ -7,22 +7,79 @@ import * as customClient from "@/api/custom-client";
 import {
   dashboardNamesQuery,
   dashboardQuery,
+  definitionPagesQuery,
   metricResultQuery,
   widgetQuery,
 } from "./custom";
 
 describe("dashboardNamesQuery", () => {
+  it("passes a needle through, and keys the cache by it", async () => {
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue({
+      names: ["engineering"],
+      total: 1,
+    });
+
+    const searched = dashboardNamesQuery("git");
+
+    await searched.queryFn?.(undefined as never);
+    expect(customClient.fetchDashboardNames).toHaveBeenCalledWith({
+      search: "git",
+      limit: 200,
+    });
+    expect(searched.queryKey).not.toEqual(dashboardNamesQuery().queryKey);
+  });
+
   it("asks fetchDashboardNames for its data", async () => {
-    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue([
-      "engineering",
-    ]);
+    const page = { names: ["engineering"], total: 1 };
+    vi.mocked(customClient.fetchDashboardNames).mockResolvedValue(page);
 
     const options = dashboardNamesQuery();
 
-    await expect(options.queryFn?.(undefined as never)).resolves.toEqual([
-      "engineering",
-    ]);
-    expect(customClient.fetchDashboardNames).toHaveBeenCalledWith();
+    await expect(options.queryFn?.(undefined as never)).resolves.toEqual(page);
+    expect(customClient.fetchDashboardNames).toHaveBeenCalledWith({
+      search: "",
+      limit: 200,
+    });
+  });
+});
+
+describe("definitionPagesQuery", () => {
+  it("asks for one page at a time, and stops once it has them all", async () => {
+    vi.mocked(customClient.fetchMetricNames).mockResolvedValue({
+      names: ["a", "b"],
+      total: 3,
+    });
+
+    const options = definitionPagesQuery("metrics", "git");
+
+    await options.queryFn?.({ pageParam: 0 } as never);
+    expect(customClient.fetchMetricNames).toHaveBeenCalledWith({
+      search: "git",
+      limit: 50,
+      offset: 0,
+    });
+
+    // Two of three read, so the next page starts at the third.
+    expect(
+      options.getNextPageParam({ names: ["a", "b"], total: 3 }, [
+        { names: ["a", "b"], total: 3 },
+      ], 0, [0]),
+    ).toBe(2);
+    expect(
+      options.getNextPageParam({ names: ["c"], total: 3 }, [
+        { names: ["a", "b"], total: 3 },
+        { names: ["c"], total: 3 },
+      ], 2, [0, 2]),
+    ).toBeUndefined();
+  });
+
+  it("keys the cache by kind and needle", () => {
+    expect(definitionPagesQuery("metrics", "git").queryKey).not.toEqual(
+      definitionPagesQuery("widgets", "git").queryKey,
+    );
+    expect(definitionPagesQuery("metrics", "git").queryKey).not.toEqual(
+      definitionPagesQuery("metrics", "").queryKey,
+    );
   });
 });
 

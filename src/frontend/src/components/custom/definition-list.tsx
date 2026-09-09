@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 
 import type { DefinitionKind } from "@/api/custom-client";
+import {
+  DefinitionCount,
+  MoreDefinitions,
+  type Paging,
+} from "@/components/custom/definition-paging";
+import { DefinitionSearch } from "@/components/custom/definition-search";
 import { RemoveDefinition } from "@/components/custom/remove-definition";
 import { RenameDefinition } from "@/components/custom/rename-definition";
 
@@ -25,6 +31,8 @@ export function DefinitionList({
   onRetry,
   emptyLabel,
   renderRow,
+  search,
+  paging,
 }: {
   title: string;
   blurb: string;
@@ -34,13 +42,33 @@ export function DefinitionList({
   onRetry: () => void;
   emptyLabel: string;
   renderRow: (name: string) => ReactNode;
+  search?: { label: string; value: string; onChange: (needle: string) => void };
+  paging?: Paging;
 }) {
   return (
     <>
-      <header className="mb-4">
+      <header className="mb-3">
         <h1 className={TEXT_TITLE}>{title}</h1>
         <p className={cn(TEXT_BODY, "text-muted-foreground")}>{blurb}</p>
       </header>
+      {search || paging ? (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {search ? (
+            <DefinitionSearch
+              label={search.label}
+              value={search.value}
+              onChange={search.onChange}
+            />
+          ) : null}
+          {paging ? (
+            <DefinitionCount
+              total={paging.total}
+              noun={title.toLowerCase()}
+              searching={paging.searching}
+            />
+          ) : null}
+        </div>
+      ) : null}
       {isLoading ? (
         <CenteredSpinner className="min-h-40" />
       ) : isError ? (
@@ -53,11 +81,14 @@ export function DefinitionList({
       ) : !names ? null : names.length === 0 ? (
         <ComingSoon variant="card" state="empty" label={emptyLabel} />
       ) : (
-        <ul className="grid gap-4 @3xl:grid-cols-2">
-          {names.map((name) => (
-            <li key={name}>{renderRow(name)}</li>
-          ))}
-        </ul>
+        <>
+          <ul className="grid gap-4 @3xl:grid-cols-2">
+            {names.map((name) => (
+              <li key={name}>{renderRow(name)}</li>
+            ))}
+          </ul>
+          {paging ? <MoreDefinitions {...paging} /> : null}
+        </>
       )}
     </>
   );

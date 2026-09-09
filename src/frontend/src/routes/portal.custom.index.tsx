@@ -2,12 +2,19 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, LayoutDashboard } from "lucide-react";
 
+import {
+  DefinitionCount,
+  MoreDefinitions,
+  type Paging,
+} from "@/components/custom/definition-paging";
+import { DefinitionSearch } from "@/components/custom/definition-search";
 import { RemoveDefinition } from "@/components/custom/remove-definition";
 import { RenameDefinition } from "@/components/custom/rename-definition";
 import { Card, CardContent } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
-import { dashboardNamesQuery, dashboardQuery } from "@/queries/custom";
+import { useDefinitionCatalogue } from "@/hooks/use-definition-catalogue";
+import { dashboardQuery } from "@/queries/custom";
 import { TEXT_BODY, TEXT_LABEL, TEXT_NAME, TEXT_TITLE } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -16,26 +23,34 @@ export const Route = createFileRoute("/portal/custom/")({
 });
 
 function CustomDashboardIndex() {
-  const {
-    data: names,
-    isLoading,
-    isError,
-    refetch,
-  } = useQuery(dashboardNamesQuery());
+  const catalogue = useDefinitionCatalogue("dashboards");
 
   return (
     <>
-      <header className="mb-4">
+      <header className="mb-3">
         <h1 className={TEXT_TITLE}>Custom</h1>
         <p className={cn(TEXT_BODY, "text-muted-foreground")}>
           Dashboards built from your own data. Ask the assistant for a new one.
         </p>
       </header>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <DefinitionSearch
+          label="Search dashboards"
+          value={catalogue.search.value}
+          onChange={catalogue.search.onChange}
+        />
+        <DefinitionCount
+          total={catalogue.paging.total}
+          noun="dashboards"
+          searching={catalogue.paging.searching}
+        />
+      </div>
       <CustomDashboardList
-        names={names}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={() => void refetch()}
+        names={catalogue.names}
+        isLoading={catalogue.isLoading}
+        isError={catalogue.isError}
+        onRetry={catalogue.refetch}
+        paging={catalogue.paging}
       />
     </>
   );
@@ -88,11 +103,13 @@ function CustomDashboardList({
   isLoading,
   isError,
   onRetry,
+  paging,
 }: {
   names: string[] | undefined;
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
+  paging: Paging;
 }) {
   if (isLoading) return <CenteredSpinner className="min-h-40" />;
   if (isError) {
@@ -119,12 +136,15 @@ function CustomDashboardList({
   }
 
   return (
-    <ul className="grid gap-3 @xl:grid-cols-2 @5xl:grid-cols-3">
-      {names.map((name) => (
-        <li key={name}>
-          <DashboardCard name={name} />
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="grid gap-3 @xl:grid-cols-2 @5xl:grid-cols-3">
+        {names.map((name) => (
+          <li key={name}>
+            <DashboardCard name={name} />
+          </li>
+        ))}
+      </ul>
+      <MoreDefinitions {...paging} />
+    </>
   );
 }

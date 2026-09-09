@@ -7,7 +7,8 @@ import {
 } from "@/components/custom/definition-list";
 import { MetricSummary } from "@/components/custom/definition-summary";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
-import { metricNamesQuery, metricQuery } from "@/queries/custom";
+import { useDefinitionCatalogue } from "@/hooks/use-definition-catalogue";
+import { metricQuery } from "@/queries/custom";
 import { TEXT_BODY } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -21,18 +22,18 @@ export const Route = createFileRoute("/portal/custom/metrics")({
 });
 
 function MetricsCatalogue() {
-  const { data: names, isLoading, isError, refetch } = useQuery(
-    metricNamesQuery()
-  );
+  const catalogue = useDefinitionCatalogue("metrics");
 
   return (
     <DefinitionList
       title="Metrics"
       blurb="Every stored query. A widget draws one of these; the assistant can build more."
-      names={names}
-      isLoading={isLoading}
-      isError={isError}
-      onRetry={() => void refetch()}
+      names={catalogue.names}
+      isLoading={catalogue.isLoading}
+      isError={catalogue.isError}
+      onRetry={catalogue.refetch}
+      search={{ label: "Search metrics", ...catalogue.search }}
+      paging={catalogue.paging}
       emptyLabel="No metrics yet. Ask the assistant for one."
       renderRow={(name) => <MetricRow name={name} />}
     />
