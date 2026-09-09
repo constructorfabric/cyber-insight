@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 
 /// Git credentials for one invocation. They exist only in the child process
@@ -113,6 +114,7 @@ pub struct GitRunner {
     /// PEM bundle for origins whose TLS chain is not in the system store
     /// (a self-hosted vendor behind a private CA). Empty = system store only.
     ca_cert_path: Option<String>,
+    git_binary: std::path::PathBuf,
 }
 
 const STDERR_TAIL_BYTES: usize = 4096;
@@ -139,6 +141,10 @@ const HEAVY_OP_TIMEOUT: Duration = Duration::from_mins(30);
 /// overshot by one interval's worth of download; the post-hoc check is what
 /// catches that remainder.
 const CAP_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a killed git child may take to be reaped before the runner gives
+/// up waiting for it. SIGKILL is not refusable, so this only ever elapses for
+/// a process stuck in the kernel.
+const KILL_GRACE: Duration = Duration::from_secs(5);
 
 impl Default for GitRunner {
     fn default() -> Self {
@@ -146,6 +152,7 @@ impl Default for GitRunner {
             timeouts: Timeouts::default(),
             cap_poll: CAP_POLL_INTERVAL,
             ca_cert_path: None,
+            git_binary: std::path::PathBuf::from("git"),
         }
     }
 }
@@ -165,6 +172,12 @@ impl GitRunner {
     #[cfg(test)]
     fn with_cap_poll(mut self, interval: Duration) -> Self {
         self.cap_poll = interval;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_git_binary(mut self, binary: std::path::PathBuf) -> Self {
+        self.git_binary = binary;
         self
     }
 
@@ -237,11 +250,12 @@ impl GitRunner {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let waited = tokio::time::timeout(budget, command.output()).await;
-        let output = match waited {
-            Ok(result) => result?,
-            Err(_elapsed) => return Err(GitError::TimedOut(budget)),
-        };
+        let child = command.spawn()?;
+        let groups = [process_group_of(&child)];
+        let output = within_budget(budget, &groups, async {
+            child.wait_with_output().await.map_err(GitError::Io)
+        })
+        .await?;
 
         if output.status.success() {
             return Ok(output);
@@ -321,6 +335,7 @@ impl GitRunner {
             .kill_on_drop(true);
 
         let child = command.spawn()?;
+        let groups = [process_group_of(&child)];
         let watch = watch.to_path_buf();
         let cap_poll = self.cap_poll;
 
@@ -349,10 +364,7 @@ impl GitRunner {
             }
         };
 
-        let output = match tokio::time::timeout(budget, capped).await {
-            Ok(result) => result?,
-            Err(_elapsed) => return Err(GitError::TimedOut(budget)),
-        };
+        let output = within_budget(budget, &groups, capped).await?;
 
         if output.status.success() {
             return Ok(output);
@@ -400,6 +412,10 @@ impl GitRunner {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let right_child = right.spawn()?;
+        let groups = [
+            process_group_of(&left_child),
+            process_group_of(&right_child),
+        ];
 
         // INVARIANT: both sides are drained concurrently. Awaiting the consumer
         // to completion first would deadlock the producer once it writes past
@@ -409,13 +425,11 @@ impl GitRunner {
                 right_child.wait_with_output(),
                 left_child.wait_with_output()
             )
+            .map_err(GitError::Io)
         };
 
         let budget = self.timeouts.read;
-        let (right_output, left_output) = match tokio::time::timeout(budget, joined).await {
-            Ok(result) => result?,
-            Err(_elapsed) => return Err(GitError::TimedOut(budget)),
-        };
+        let (right_output, left_output) = within_budget(budget, &groups, joined).await?;
 
         if !left_output.status.success() {
             return Err(classify_failure(&left_output));
@@ -427,7 +441,11 @@ impl GitRunner {
     }
 
     fn base_command(&self, creds: Option<&GitCredentials>) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new("git");
+        let mut command = tokio::process::Command::new(&self.git_binary);
+        // Its own group, so a budget overrun can take git's own children (a
+        // repack's pack-objects) down with it instead of killing the parent
+        // alone and leaving them writing into the entry.
+        command.process_group(0);
         command.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             command.env("PATH", path);
@@ -547,6 +565,39 @@ fn classify_failure(output: &Output) -> GitError {
         cut += 1;
     }
     GitError::Failed(stderr[cut..].trim().to_owned())
+}
+
+/// The process group a child was spawned into, which is its own pid because
+/// `base_command` sets `process_group(0)`. `None` once the child has already
+/// been reaped.
+fn process_group_of(child: &tokio::process::Child) -> Option<Pid> {
+    child
+        .id()
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(Pid::from_raw)
+}
+
+/// Drive `work` to completion within `budget`. On expiry every listed process
+/// group is killed and `work` is awaited to reap what it owns, so a caller that
+/// sees `TimedOut` knows no git from this launch is still writing.
+async fn within_budget<T>(
+    budget: Duration,
+    groups: &[Option<Pid>],
+    work: impl Future<Output = Result<T, GitError>>,
+) -> Result<T, GitError> {
+    tokio::pin!(work);
+    tokio::select! {
+        finished = &mut work => finished,
+        () = tokio::time::sleep(budget) => {
+            for group in groups.iter().flatten() {
+                let _ = kill_process_group(*group, Signal::KILL);
+            }
+            if tokio::time::timeout(KILL_GRACE, &mut work).await.is_err() {
+                tracing::warn!(budget = ?budget, "a timed-out git child did not exit after SIGKILL");
+            }
+            Err(GitError::TimedOut(budget))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -981,6 +1032,57 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_launch_leaves_no_process_behind() {
+        // A fake `git` that backgrounds a child and then blocks: the budget
+        // expires, and afterwards neither the script nor the child it started
+        // may still exist — the whole process group goes with the timeout.
+        let dir = std::env::temp_dir().join(format!(
+            "git-cli-proxy-fake-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            panic!("fake git dir: {e}");
+        }
+        let pid_file = dir.join("pid");
+        let script = dir.join("git");
+        let body = format!(
+            "#!/bin/sh\necho $$ > {}\nsleep 30 &\nexec sleep 30\n",
+            pid_file.display()
+        );
+        if let Err(e) = std::fs::write(&script, body) {
+            panic!("write fake git: {e}");
+        }
+        let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        if let Err(e) = std::fs::set_permissions(&script, executable) {
+            panic!("chmod fake git: {e}");
+        }
+
+        let runner = GitRunner::new()
+            .with_git_binary(script)
+            .with_timeouts(Timeouts {
+                read: Duration::from_millis(300),
+                ..Timeouts::default()
+            });
+        match runner.run(None, &["anything"], None).await {
+            Err(GitError::TimedOut(_)) => {}
+            other => panic!("expected the budget to expire, got {other:?}"),
+        }
+
+        let raw = std::fs::read_to_string(&pid_file).unwrap_or_default();
+        let Some(group) = raw.trim().parse::<i32>().ok().and_then(Pid::from_raw) else {
+            panic!("the fake git must have recorded its pid: {raw:?}")
+        };
+        assert!(
+            rustix::process::test_kill_process_group(group).is_err(),
+            "every process of the timed-out launch must be dead; group {group:?} still answers"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

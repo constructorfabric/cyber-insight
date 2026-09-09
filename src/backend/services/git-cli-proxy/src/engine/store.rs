@@ -736,6 +736,14 @@ impl RepoStore {
         }
 
         std::fs::create_dir_all(entry_dir).map_err(GitError::Io)?;
+        // INVARIANT: the write lock is held and `refresh` found no usable entry,
+        // so anything at git_dir now is debris a killed operation left behind.
+        if git_dir.is_dir() {
+            tracing::warn!(dir = %git_dir.display(), "removing a leftover repository before installing the clone");
+            remove_tree_off_reactor(git_dir.to_path_buf())
+                .await
+                .map_err(GitError::Io)?;
+        }
         std::fs::rename(&tmp, git_dir).map_err(GitError::Io)?;
 
         self.build_page_index(git_dir, 1, creds).await;
