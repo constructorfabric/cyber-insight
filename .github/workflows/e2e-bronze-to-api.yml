@@ -20,7 +20,8 @@ name: E2E — Bronze to API
 # matrix, one leg per metric class plus one for identity: each leg raises a
 # MINIMAL compose stand of its own (`dev-compose.sh test-stand minimal` —
 # identity and the realm seeded, the warehouse empty), pulls the chart-pinned
-# backend images or compiles the backend when the diff touched it, runs its
+# backend images or, when the diff touched the backend, mounts the binaries
+# `build-backend` compiled once for every shard, runs its
 # directories of the suite host-side with uv, and the metric legs upload that
 # session's `.artifacts/` for `metric-coverage-gate`, a pure-Python check over
 # two JSON files: the builtin metric catalogue the run read from analytics, and
@@ -142,14 +143,41 @@ jobs:
             echo "backend=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # ─── Build the backend once, shared by every shard ────────────────────────
+  # One `cargo build` for all three binaries; the shards mount them via
+  # `--prebuilt` semantics (`--build-backend --skip-build`) instead of each
+  # compiling the same workspace. Five identical compiles per queue entry is
+  # what pushed backend-touching entries past the merge queue's check timeout.
+  build-backend:
+    name: Build backend binaries
+    needs: changes
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compile the Rust services
+        run: ./dev-compose.sh build rust
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-binaries
+          path: deploy/compose/build/
+          retention-days: 1
+          if-no-files-found: error
+
   e2e-datapath:
     name: data path (shard ${{ matrix.shard }})
-    needs: changes
-    if: ${{ needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request' }}
+    needs: [changes, build-backend]
+    # `!cancelled()` so a skipped build-backend (backend untouched → pinned
+    # images) does not skip the shards along with it; the result check keeps a
+    # FAILED build from letting them run against stale binaries.
+    if: ${{ !cancelled() && needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request' && (needs.build-backend.result == 'success' || needs.build-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
-    # Compiling the backend from this tree is the slow path; pulling the
-    # pinned images is not. Same split e2e-stand.yml makes.
-    timeout-minutes: ${{ needs.changes.outputs.backend == 'true' && 75 || 45 }}
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
@@ -189,6 +217,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        with:
+          name: backend-binaries
+          path: deploy/compose/build
+
+      # Artifact transport strips the execute bit; the containers exec these
+      # bind-mounted files directly.
+      - name: Restore execute bits on the binaries
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        run: find deploy/compose/build -type f -exec chmod 0755 {} +
+
       # `minimal` seeds identity and the realm and leaves the warehouse empty:
       # the suite writes its own bronze and clears it between specs, and the
       # guard at its door refuses an instance whose seed shares those tables.
@@ -199,7 +239,7 @@ jobs:
         run: |
           set -euo pipefail
           flags=()
-          if [ "$BUILD_BACKEND" = "true" ]; then flags+=(--build-backend); fi
+          if [ "$BUILD_BACKEND" = "true" ]; then flags+=(--build-backend --skip-build); fi
           ./dev-compose.sh test-stand minimal "${flags[@]}"
 
       # A reused workspace could carry a previous run's ledger; the gate must
@@ -334,6 +374,7 @@ jobs:
     #
     needs:
       - changes
+      - build-backend
       - e2e-datapath
       - metric-coverage-gate
     if: ${{ !cancelled() }}
@@ -351,6 +392,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           CHANGES: ${{ needs.changes.result }}
           RELEVANT: ${{ needs.changes.outputs.relevant }}
+          BACKEND: ${{ needs.changes.outputs.backend }}
+          BUILD: ${{ needs.build-backend.result }}
           # Matrix aggregate: 'success' only when EVERY shard passed.
           SUITE: ${{ needs.e2e-datapath.result }}
           # A metric the catalogue serves and no spec asserts is a red check,
@@ -358,7 +401,7 @@ jobs:
           GATE: ${{ needs.metric-coverage-gate.result }}
         run: |
           set -euo pipefail
-          echo "event=$EVENT changes=$CHANGES relevant=$RELEVANT suite=$SUITE gate=$GATE"
+          echo "event=$EVENT changes=$CHANGES relevant=$RELEVANT backend=$BACKEND build=$BUILD suite=$SUITE gate=$GATE"
 
           # Fail closed. A `changes` job that did not succeed leaves `relevant`
           # empty, which would otherwise read as "irrelevant" and green a
@@ -373,6 +416,10 @@ jobs:
           elif [ "$RELEVANT" != "true" ]; then
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed — nothing to prove."
           else
+            if [ "$BACKEND" = "true" ] && [ "$BUILD" != "success" ]; then
+              echo "::error::the backend build did not pass ($BUILD) — the shards had no binaries to run against."
+              exit 1
+            fi
             for lane in "suite=$SUITE" "gate=$GATE"; do
               if [ "${lane#*=}" != "success" ]; then
                 echo "::error::${lane%%=*} did not pass (${lane#*=}) — the E2E suite did not fully run for this change."

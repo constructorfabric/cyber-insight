@@ -189,7 +189,15 @@ def test_every_repository_listing_projects_the_field_the_exclusion_reads() -> No
     """
     listings = _repository_listings(_streams())
     assert listings, "no repository listing found — the audit is not looking at anything"
-    missing = sorted(owner for owner, fields in listings if "values.slug" not in fields)
+    # repository_visibility answers "does the token reach anything at all". It
+    # generates no partitions and clones nothing, and an excluded repository is
+    # an operator's choice rather than an access failure, so it deliberately
+    # reads the workspace unfiltered.
+    missing = sorted(
+        owner
+        for owner, fields in listings
+        if "values.slug" not in fields and owner != "repository_visibility"
+    )
     assert not missing, (
         "these repository listings do not project values.slug, so the exclusion "
         f"filter cannot see it: {missing}"

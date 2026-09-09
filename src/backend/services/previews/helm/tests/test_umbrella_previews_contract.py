@@ -57,10 +57,18 @@ def test_the_edge_routes_api_previews_to_the_service(umbrella_deps) -> None:
 
 
 def test_previews_can_be_left_out(umbrella_deps) -> None:
-    code, out, err = render(umbrella_deps, *UMBRELLA_BASE, "--set", "previews.deploy=false")
+    """One knob removes both the workload and the edge route: nginx refuses to
+    load a route table whose upstream host does not resolve, so a render must
+    never carry /api/previews without the Service behind it."""
+    code, out, err = render(umbrella_deps, *UMBRELLA_BASE, "--set", "global.previews.enabled=false")
     assert code == 0, err
 
     assert not [d for d in _docs(out) if (d.get("metadata") or {}).get("name", "").endswith("-previews-gears-config")]
+
+    gateway_configs = [d for d in _docs(out) if d.get("kind") == "ConfigMap" and "routes.yaml" in (d.get("data") or {})]
+    assert len(gateway_configs) == 1, "expected exactly one gateway route-table ConfigMap"
+    routes = yaml.safe_load(gateway_configs[0]["data"]["routes.yaml"])["routes"]
+    assert not [r for r in routes if r["prefix"] == "/api/previews"], "route must vanish with the Service"
 
 
 def test_the_experiments_namespace_stays_single_sourced_through_the_umbrella(umbrella_deps) -> None:
