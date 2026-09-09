@@ -1039,6 +1039,7 @@ mod tests {
         // A fake `git` that backgrounds a child and then blocks: the budget
         // expires, and afterwards neither the script nor the child it started
         // may still exist — the whole process group goes with the timeout.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir -- test fixture; the name carries pid and a nanosecond clock and holds no secrets
         let dir = std::env::temp_dir().join(format!(
             "git-cli-proxy-fake-git-{}-{}",
             std::process::id(),
