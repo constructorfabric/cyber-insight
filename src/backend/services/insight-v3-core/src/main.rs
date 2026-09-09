@@ -47,6 +47,9 @@ struct Cli {
 enum Commands {
     Run,
     Migrate,
+    /// Print the `OpenAPI` document and exit. Offline — see
+    /// [`api::openapi_document`].
+    Openapi,
 }
 
 #[tokio::main]
@@ -66,6 +69,13 @@ async fn main() -> Result<()> {
         Commands::Migrate => {
             init_subcommand_logging();
             gear::run_migrate(&config).await
+        }
+        // No logging subscriber on this path: stdout stays pure JSON for the
+        // drift gate to read.
+        Commands::Openapi => {
+            let document = api::openapi_document()?;
+            println!("{}", serde_json::to_string_pretty(&document)?);
+            Ok(())
         }
     }
 }

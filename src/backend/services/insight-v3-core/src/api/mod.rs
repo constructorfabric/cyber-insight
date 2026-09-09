@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use toolkit::api::OpenApiRegistry;
+use toolkit::api::{OpenApiInfo, OpenApiRegistry, OpenApiRegistryImpl};
 
 pub(crate) mod admission;
 pub(crate) mod chat;
@@ -135,6 +135,68 @@ impl AppState {
     pub(crate) fn surfaces(&self) -> crate::custom::Surfaces<'_> {
         crate::custom::Surfaces::new(self.definitions.as_ref(), &self.metrics, &self.catalog)
     }
+}
+
+/// Title, version and description of the emitted document. Kept in step with
+/// the api-gateway block of `helm/templates/configmap.yaml`, which declares
+/// the same three for the served document.
+fn openapi_info() -> OpenApiInfo {
+    OpenApiInfo {
+        title: "Insight v3 Core API".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: Some(
+            "Raw-data ingestion under a static instance token, and the \
+             metric, widget and dashboard definitions the portal's custom \
+             pages read. The API Gateway mounts this service at /api/v3."
+                .to_owned(),
+        ),
+        servers: Vec::new(),
+    }
+}
+
+/// The `OpenAPI` document, built offline for the drift gate.
+///
+/// Every operation is declared while the router is assembled, so the document
+/// comes from the code that serves the routes rather than a copy kept beside
+/// it. Nothing here dials anything: the `ClickHouse` clients hold URLs they
+/// never call, and the definition store holds a disconnected handle — a route
+/// reached on this path would answer an error, and none is reached.
+///
+/// # Errors
+/// The registry could not assemble the document.
+pub(crate) fn openapi_document() -> anyhow::Result<utoipa::openapi::OpenApi> {
+    let offline = insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+        "http://clickhouse.invalid",
+        "insight",
+    ));
+    let state = Arc::new(AppState::new(
+        RawDataStore::new(offline.clone()),
+        TableStore::new(offline.clone()),
+        Arc::new(crate::definitions::MariaDefinitions::new(
+            sea_orm::DatabaseConnection::default(),
+        )),
+        MetricRunner::new(
+            offline.clone(),
+            crate::metric_query::People::new("identity"),
+        ),
+        ChatClient::canned(),
+        IdentityClient::new("http://identity.invalid")?,
+        Catalog::new(offline, "insight".to_owned()),
+    ));
+
+    let openapi = OpenApiRegistryImpl::new();
+    let _ = register_routes(
+        Router::new(),
+        &openapi,
+        state,
+        IngestAdmission::new(&secrecy::SecretString::from(
+            "openapi-document-token-not-a-credential".to_owned(),
+        )),
+    );
+
+    openapi.build_openapi(&openapi_info()).map_err(|error| {
+        anyhow::anyhow!("failed to build insight-v3-core OpenAPI document: {error}")
+    })
 }
 
 pub(crate) fn register_routes(
