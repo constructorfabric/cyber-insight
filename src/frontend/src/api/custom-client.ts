@@ -8,6 +8,14 @@ interface WidgetBase {
   metric: string;
   /** The heading a reader sees. Without it the card shows the identifier. */
   title?: string;
+  /**
+   * A metric for the drilldown to run instead of this widget's own.
+   *
+   * A chart draws an aggregate; the rows a reader wants underneath are the
+   * facts that went into it — the commits, not the counts. Only the author of
+   * the widget knows which query that is, so they name it.
+   */
+  detail?: string;
 }
 
 export interface TableWidget extends WidgetBase {

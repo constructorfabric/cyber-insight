@@ -39,11 +39,12 @@ export function WidgetDrilldown({
         <DialogHeader>
           <DialogTitle>{label}</DialogTitle>
           <DialogDescription>
-            Every row metric <span className="font-mono">{widget.metric}</span>{" "}
+            Every row metric{" "}
+            <span className="font-mono">{widget.detail ?? widget.metric}</span>{" "}
             returns.
           </DialogDescription>
         </DialogHeader>
-        {open ? <Rows metric={widget.metric} /> : null}
+        {open ? <Rows metric={widget.detail ?? widget.metric} /> : null}
       </DialogContent>
     </Dialog>
   );

@@ -10,7 +10,9 @@ const COMPACT = new Intl.NumberFormat("en", {
   notation: "compact",
   maximumFractionDigits: 1,
 });
-const GROUPED = new Intl.NumberFormat("en");
+const GROUPED = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });
+/** Below ten, one decimal hides the difference between 2.5 and 2.54. */
+const GROUPED_SMALL = new Intl.NumberFormat("en", { maximumFractionDigits: 2 });
 const DAY = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" });
 const DAY_IN_YEAR = new Intl.DateTimeFormat("en", {
   month: "short",
@@ -27,10 +29,13 @@ export function compactNumber(value: unknown): string {
   return number === null ? blank(value) : COMPACT.format(number);
 }
 
-/** `163,997,048` for a figure someone reads. */
+/** `163,997,048`, or `37.7` — a figure someone reads, not a float's tail. */
 export function groupedNumber(value: unknown): string {
   const number = toNumber(value);
-  return number === null ? blank(value) : GROUPED.format(number);
+  if (number === null) return blank(value);
+
+  const format = Math.abs(number) < 10 ? GROUPED_SMALL : GROUPED;
+  return format.format(number);
 }
 
 /**
