@@ -6,7 +6,11 @@ import {
   type ChartConfig,
   points,
 } from "@/components/custom/chart-data";
-import { categoryTick, groupedNumber } from "@/components/custom/chart-format";
+import {
+  categoryTick,
+  groupedNumber,
+  unitFor,
+} from "@/components/custom/chart-format";
 import {
   ChartFrame,
   ChartLegend,
@@ -24,6 +28,7 @@ export interface CustomPieChartProps {
 /** A share of a total: one slice per row, painted round the kit's palette. */
 export function CustomPieChart({ result, label, value }: CustomPieChartProps) {
   const data = points(result, [label, value]);
+  const unit = unitFor(result.percents, value);
   const config: ChartConfig = Object.fromEntries(
     data.map((slice, index) => [
       String(slice[label]),
@@ -42,7 +47,9 @@ export function CustomPieChart({ result, label, value }: CustomPieChartProps) {
             <ChartTooltipContent
               nameKey={label}
               hideLabel
-              formatter={(value, name) => `${name}  ${groupedNumber(value)}`}
+              formatter={(sliced, name) =>
+                `${name}  ${groupedNumber(sliced, unit)}`
+              }
             />
           }
         />

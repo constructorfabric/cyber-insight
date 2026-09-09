@@ -1,5 +1,5 @@
 import type { MetricResult } from "@/api/custom-client";
-import { groupedNumber } from "@/components/custom/chart-format";
+import { groupedNumber, unitFor } from "@/components/custom/chart-format";
 import { TEXT_LABEL } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 import {
@@ -26,7 +26,9 @@ const SHOWN = 200;
  * Nothing is composed here: only a value that already is an absolute http(s)
  * URL becomes one.
  */
-function Cell({ value }: { value: unknown }) {
+function Cell({ value, unit }: { value: unknown; unit: string }) {
+  if (unit) return <>{groupedNumber(value, unit)}</>;
+
   const text = String(value);
   if (!/^https?:\/\/\S+$/.test(text)) return <>{text}</>;
 
@@ -65,10 +67,13 @@ export function CustomTable({ result }: CustomTableProps) {
         <TableBody>
           {rows.map((row, rowIndex) => (
             <TableRow key={rowIndex}>
-              {result.columns.map((_, columnIndex) => (
+              {result.columns.map((column, columnIndex) => (
                 <TableCell key={columnIndex}>
                   {columnIndex < row.length ? (
-                    <Cell value={row[columnIndex]} />
+                    <Cell
+                      value={row[columnIndex]}
+                      unit={unitFor(result.percents, column)}
+                    />
                   ) : (
                     ""
                   )}

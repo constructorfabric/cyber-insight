@@ -77,6 +77,8 @@ export interface MetricDefinition {
 export interface MetricResult {
   columns: string[];
   rows: unknown[][];
+  /** The columns whose numbers are percentages, named by the metric. */
+  percents?: string[];
 }
 
 export interface Dashboard {

@@ -24,18 +24,31 @@ const DAY_IN_YEAR = new Intl.DateTimeFormat("en", {
 const TICK_CHARS = 14;
 
 /** `24.9k` for an axis, where the digits matter less than the shape. */
-export function compactNumber(value: unknown): string {
+export function compactNumber(value: unknown, unit = ""): string {
   const number = toNumber(value);
-  return number === null ? blank(value) : COMPACT.format(number);
+  return number === null ? blank(value) : `${COMPACT.format(number)}${unit}`;
 }
 
-/** `163,997,048`, or `37.7` — a figure someone reads, not a float's tail. */
-export function groupedNumber(value: unknown): string {
+/** `163,997,048`, `37.7`, or `83.9%` — a figure someone reads, with its unit. */
+export function groupedNumber(value: unknown, unit = ""): string {
   const number = toNumber(value);
   if (number === null) return blank(value);
 
   const format = Math.abs(number) < 10 ? GROUPED_SMALL : GROUPED;
-  return format.format(number);
+  return `${format.format(number)}${unit}`;
+}
+
+/**
+ * What a column's numbers are counted in.
+ *
+ * A rate arrives already multiplied by a hundred, so `83.9` and `83.9%` are
+ * the same number until the metric says which — and only the metric knows.
+ */
+export function unitFor(
+  percents: string[] | undefined,
+  column: string
+): string {
+  return percents?.includes(column) ? "%" : "";
 }
 
 /**

@@ -2,6 +2,7 @@ import { Area, AreaChart } from "recharts";
 
 import type { MetricResult } from "@/api/custom-client";
 import { points, seriesConfig } from "@/components/custom/chart-data";
+import { unitFor } from "@/components/custom/chart-format";
 import { ChartFrame, SeriesAxes } from "@/components/custom/chart-frame";
 
 export interface CustomAreaChartProps {
@@ -31,7 +32,11 @@ export function CustomAreaChart({ result, x, y }: CustomAreaChartProps) {
             />
           </linearGradient>
         </defs>
-        <SeriesAxes x={x} categories={data.map((point) => point[x])} />
+        <SeriesAxes
+          x={x}
+          categories={data.map((point) => point[x])}
+          unit={unitFor(result.percents, y)}
+        />
         <Area
           dataKey={y}
           type="monotone"

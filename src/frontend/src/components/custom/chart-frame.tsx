@@ -51,9 +51,12 @@ export function ChartFrame({
 export function SeriesAxes({
   x,
   categories,
+  unit = "",
 }: {
   x: string;
   categories: unknown[];
+  /** What the y values are counted in — `%` for a rate. */
+  unit?: string;
 }) {
   const withYear = spansYears(categories);
 
@@ -74,7 +77,7 @@ export function SeriesAxes({
         axisLine={false}
         width={44}
         tickCount={5}
-        tickFormatter={compactNumber}
+        tickFormatter={(value) => compactNumber(value, unit)}
       />
       <ChartTooltip
         cursor={false}
@@ -82,7 +85,9 @@ export function SeriesAxes({
           <ChartTooltipContent
             indicator="dot"
             labelFormatter={(label) => shortDate(label, true)}
-            formatter={(value, name) => `${name}  ${groupedNumber(value)}`}
+            formatter={(value, name) =>
+              `${name}  ${groupedNumber(value, unit)}`
+            }
           />
         }
       />

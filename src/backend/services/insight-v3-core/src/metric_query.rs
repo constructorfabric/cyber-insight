@@ -461,6 +461,8 @@ pub(crate) struct CompiledQuery {
     pub(crate) sql: String,
     pub(crate) binds: Vec<FilterBind>,
     column_types: HashMap<String, FieldType>,
+    /// The columns whose numbers are percentages, so a reader can say so.
+    percents: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -684,6 +686,12 @@ impl MetricQuery {
             sql,
             binds,
             column_types,
+            percents: self
+                .fields
+                .iter()
+                .filter(|field| field.percent)
+                .map(|field| field.as_name.clone())
+                .collect(),
         })
     }
 }
@@ -727,6 +735,9 @@ fn coerce_value(value: serde_json::Value, field_type: FieldType) -> serde_json::
 pub(crate) struct RunResult {
     pub(crate) columns: Vec<String>,
     pub(crate) rows: Vec<Vec<serde_json::Value>>,
+    /// Which of those columns are percentages. `83.9` and `83.9%` are the
+    /// same number until something says which one it is.
+    pub(crate) percents: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -802,7 +813,11 @@ impl MetricRunner {
             })
             .collect();
 
-        Ok(RunResult { columns, rows })
+        Ok(RunResult {
+            columns,
+            rows,
+            percents: compiled.percents.clone(),
+        })
     }
 }
 
@@ -978,6 +993,8 @@ mod tests {
             "{}",
             compiled.sql
         );
+        // Named, so whoever draws 83.9 can draw 83.9% instead.
+        assert_eq!(compiled.percents, ["share"]);
     }
 
     #[test]

@@ -22,6 +22,20 @@ describe("<CustomTable>", () => {
     expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
   });
 
+  it("writes a percentage column as a percentage", () => {
+    render(
+      <CustomTable
+        result={{
+          columns: ["day", "pass_rate"],
+          rows: [["2026-09-01", 83.91167192429022]],
+          percents: ["pass_rate"],
+        }}
+      />
+    );
+
+    expect(screen.getByText("83.9%")).toBeInTheDocument();
+  });
+
   it("leaves anything that is not a URL as text", () => {
     render(
       <CustomTable

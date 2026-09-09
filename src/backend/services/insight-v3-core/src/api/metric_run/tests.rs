@@ -151,7 +151,11 @@ async fn a_stored_metric_runs_and_returns_columns_in_field_order() -> R {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.json().await,
-        json!({ "columns": ["day", "lines"], "rows": [["2026-09-01", 3]] })
+        json!({
+            "columns": ["day", "lines"],
+            "rows": [["2026-09-01", 3]],
+            "percents": []
+        })
     );
 
     server.abort();
