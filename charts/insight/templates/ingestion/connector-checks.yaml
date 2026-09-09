@@ -78,7 +78,7 @@ spec:
           # captured and discarded. The emitter reads dbt's artifacts, so it
           # reports whatever the run produced, including tests that errored.
           RC=0
-          # shellcheck disable=SC2086 -- DBT_SELECT is a selector LIST; the words are the arguments
+          # shellcheck disable=SC2086 -- a dbt selector may be several words; splitting is intended
           dbt test --profiles-dir . --select $DBT_SELECT --log-format json --log-level "${INSIGHT_LOG_LEVEL:-info}" || RC=$?
           python3 /ingestion/scripts/data_quality_findings.py
           if [ "$RC" -ne 0 ]; then

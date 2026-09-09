@@ -216,9 +216,11 @@ spec:
           # `connector_quality` checks read a connector's bronze/staging, which
           # exist here precisely because this connector's pipeline is running —
           # the scheduled `data_quality` catalog cannot host them for that
-          # reason. The connector's own tag joins the selector so its untagged
-          # checks run too; the two selectors are a LIST (union), not an
-          # intersection.
+          # reason. INTERSECTION, not a list: a space-separated list is a union,
+          # which would run every connector's checks on every connector's sync,
+          # and a check reading another connector's staging fails where that
+          # connector is absent. Each such check therefore carries its own
+          # connector tag alongside `connector_quality`.
           #
           # Depends on whichever transform this path took, and on `.Succeeded`
           # for the same reason `identity-seed` does: a bare task name is also
@@ -234,7 +236,7 @@ spec:
             arguments:
               parameters:
                 - name: dbt_select
-                  value: {{ `"tag:connector_quality tag:{{inputs.parameters.data_source}}"` }}
+                  value: {{ `"tag:connector_quality,tag:{{inputs.parameters.data_source}}"` }}
                 - name: toolbox_image
                   value: {{ `"{{inputs.parameters.toolbox_image}}"` }}
                 - name: clickhouse_host

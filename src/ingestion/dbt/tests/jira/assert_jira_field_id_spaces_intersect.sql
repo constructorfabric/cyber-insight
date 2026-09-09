@@ -1,6 +1,6 @@
 {{ config(
     severity='warn',
-    tags=['connector_quality'],
+    tags=['connector_quality', 'jira'],
     store_failures=true,
     meta={
         'title': 'Task field ids agree between changelog and snapshot',

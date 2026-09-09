@@ -1,6 +1,6 @@
 {{ config(
     severity='warn',
-    tags=['connector_quality'],
+    tags=['connector_quality', 'jira'],
     store_failures=true,
     meta={
         'title': 'Task field history reconciles with the issue snapshot',
