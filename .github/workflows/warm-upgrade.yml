@@ -21,7 +21,7 @@ name: warm-upgrade
 # decides relevance from the merge-base diff, the simulation runs only when
 # the warehouse path moved, and the `warm-upgrade-gate` job always reports
 # (green when there was nothing to prove, red when relevance is unknown or
-# the simulation failed). `merge_group` is a trigger for the same reason.
+# the simulation failed).
 #
 # The push run is not redundant: a PR is validated against its own base, so
 # two PRs green apart can still leave main uncovered, and only a run on the
@@ -33,17 +33,16 @@ name: warm-upgrade
 on:
   pull_request:
     branches: [main]
-  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
   # PRs supersede per ref — cancelling an outdated run is free. Every main
-  # push and merge-group entry gets its OWN group: a shared group would let a
-  # newer queued run replace an older one, and the replaced A→B transition
-  # would never be validated — run B→C installs B's own fresh snapshot as the
-  # base, so B's missing migration is exactly what it cannot see.
+  # push gets its OWN group: a shared group would let a newer run replace an
+  # older one, and the replaced A→B transition would never be validated — run
+  # B→C installs B's own fresh snapshot as the base, so B's missing migration
+  # is exactly what it cannot see.
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -68,7 +67,7 @@ jobs:
           persist-credentials: false
       - id: filter
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -137,13 +136,13 @@ jobs:
       - name: Resolve the installed-release commit
         run: |
           set -euo pipefail
-          # PR / merge group: the base the branch merges onto — the release a
+          # Pull request: the base the branch merges onto — the release a
           # warm installation would be on when this change deploys.
           # Push to main: the commit just before this one; after a force-push
           # or on ref creation `event.before` is unusable, so fall back to
           # the first parent of the pushed commit.
-          if [ -n "${PR_OR_MQ_BASE_SHA}" ]; then
-            echo "BASE_SHA=${PR_OR_MQ_BASE_SHA}" >> "$GITHUB_ENV"
+          if [ -n "${PR_BASE_SHA}" ]; then
+            echo "BASE_SHA=${PR_BASE_SHA}" >> "$GITHUB_ENV"
           elif [ "${GITHUB_EVENT_NAME}" = "push" ] \
               && [ "${PUSH_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] \
               && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
@@ -154,7 +153,7 @@ jobs:
             echo "BASE_SHA=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
           fi
         env:
-          PR_OR_MQ_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
 
       - name: Install the base release, then deploy this tree onto it
