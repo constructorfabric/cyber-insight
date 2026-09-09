@@ -1,12 +1,8 @@
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { Line, LineChart } from "recharts";
 
 import type { MetricResult } from "@/api/custom-client";
 import { points, seriesConfig } from "@/components/custom/chart-data";
-import {
-  ChartFrame,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/custom/chart-frame";
+import { ChartFrame, SeriesAxes } from "@/components/custom/chart-frame";
 
 export interface CustomLineChartProps {
   result: MetricResult;
@@ -15,14 +11,20 @@ export interface CustomLineChartProps {
 }
 
 export function CustomLineChart({ result, x, y }: CustomLineChartProps) {
+  const data = points(result, [x, y]);
+
   return (
     <ChartFrame config={seriesConfig(y)} testId="custom-line-chart">
-      <LineChart data={points(result, [x, y])}>
-        <CartesianGrid vertical={false} className="stroke-border" />
-        <XAxis dataKey={x} tickLine={false} axisLine={false} />
-        <YAxis tickLine={false} axisLine={false} />
-        <ChartTooltip content={<ChartTooltipContent />} />
-        <Line dataKey={y} type="linear" stroke={`var(--color-${y})`} dot={false} />
+      <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+        <SeriesAxes x={x} categories={data.map((point) => point[x])} />
+        <Line
+          dataKey={y}
+          type="monotone"
+          stroke={`var(--color-${y})`}
+          strokeWidth={2}
+          dot={false}
+          activeDot={{ r: 4 }}
+        />
       </LineChart>
     </ChartFrame>
   );

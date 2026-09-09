@@ -1,4 +1,5 @@
 import type { MetricResult } from "@/api/custom-client";
+import { groupedNumber } from "@/components/custom/chart-format";
 import { TEXT_FIGURE, TEXT_LABEL } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +21,7 @@ export function CustomStat({ result, value, label }: CustomStatProps) {
 
   return (
     <div data-testid="custom-stat" className="flex flex-col gap-1">
-      <span className={TEXT_FIGURE}>{String(first?.[at] ?? "—")}</span>
+      <span className={TEXT_FIGURE}>{groupedNumber(first?.[at])}</span>
       <span className={cn(TEXT_LABEL, "font-mono")}>{label ?? value}</span>
     </div>
   );

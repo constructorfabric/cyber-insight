@@ -1,12 +1,8 @@
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Area, AreaChart } from "recharts";
 
 import type { MetricResult } from "@/api/custom-client";
 import { points, seriesConfig } from "@/components/custom/chart-data";
-import {
-  ChartFrame,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/custom/chart-frame";
+import { ChartFrame, SeriesAxes } from "@/components/custom/chart-frame";
 
 export interface CustomAreaChartProps {
   result: MetricResult;
@@ -15,19 +11,33 @@ export interface CustomAreaChartProps {
 }
 
 export function CustomAreaChart({ result, x, y }: CustomAreaChartProps) {
+  const data = points(result, [x, y]);
+  const gradient = `fill-${y}`;
+
   return (
     <ChartFrame config={seriesConfig(y)} testId="custom-area-chart">
-      <AreaChart data={points(result, [x, y])}>
-        <CartesianGrid vertical={false} className="stroke-border" />
-        <XAxis dataKey={x} tickLine={false} axisLine={false} />
-        <YAxis tickLine={false} axisLine={false} />
-        <ChartTooltip content={<ChartTooltipContent />} />
+      <AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
+            <stop
+              offset="5%"
+              stopColor={`var(--color-${y})`}
+              stopOpacity={0.7}
+            />
+            <stop
+              offset="95%"
+              stopColor={`var(--color-${y})`}
+              stopOpacity={0.05}
+            />
+          </linearGradient>
+        </defs>
+        <SeriesAxes x={x} categories={data.map((point) => point[x])} />
         <Area
           dataKey={y}
-          type="linear"
+          type="monotone"
           stroke={`var(--color-${y})`}
-          fill={`var(--color-${y})`}
-          fillOpacity={0.2}
+          strokeWidth={2}
+          fill={`url(#${gradient})`}
         />
       </AreaChart>
     </ChartFrame>

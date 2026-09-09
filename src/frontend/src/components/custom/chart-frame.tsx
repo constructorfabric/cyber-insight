@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { CartesianGrid, XAxis, YAxis } from "recharts";
 
 import {
   ChartContainer,
@@ -9,12 +10,19 @@ import {
   ChartTooltipContent,
 } from "@gears-frontx/ui-kit";
 
+import {
+  categoryTick,
+  compactNumber,
+  groupedNumber,
+  shortDate,
+  spansYears,
+} from "@/components/custom/chart-format";
+
 /**
- * The chrome every chart shares: the kit's container, its theming and its
- * tooltip.
+ * The chrome every chart shares: the kit's container, its palette, its
+ * tooltip, and axes that print what they draw rather than the raw column.
  *
- * Each kind contributes only its series, so what a chart looks like is the
- * kit's business and not repeated per widget type.
+ * Each kind contributes only its series.
  */
 export function ChartFrame({
   config,
@@ -31,6 +39,54 @@ export function ChartFrame({
         {children}
       </ChartContainer>
     </div>
+  );
+}
+
+/**
+ * The x and y axes for a series chart, plus the grid and the tooltip.
+ *
+ * A day column arrives as `2024-11-23 00:00:00.000` and a sha as 40
+ * characters; printed raw they crowd the axis until it is unreadable.
+ */
+export function SeriesAxes({
+  x,
+  categories,
+}: {
+  x: string;
+  categories: unknown[];
+}) {
+  const withYear = spansYears(categories);
+
+  return (
+    <>
+      <CartesianGrid vertical={false} strokeDasharray="4 4" />
+      <XAxis
+        dataKey={x}
+        tickLine={false}
+        axisLine={false}
+        tickMargin={8}
+        minTickGap={24}
+        interval="preserveStartEnd"
+        tickFormatter={(value) => categoryTick(value, withYear)}
+      />
+      <YAxis
+        tickLine={false}
+        axisLine={false}
+        width={44}
+        tickCount={5}
+        tickFormatter={compactNumber}
+      />
+      <ChartTooltip
+        cursor={false}
+        content={
+          <ChartTooltipContent
+            indicator="dot"
+            labelFormatter={(label) => shortDate(label, true)}
+            formatter={(value, name) => `${name}  ${groupedNumber(value)}`}
+          />
+        }
+      />
+    </>
   );
 }
 

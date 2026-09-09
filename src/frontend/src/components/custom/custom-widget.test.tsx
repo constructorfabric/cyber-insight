@@ -197,7 +197,7 @@ describe("<CustomWidget>", () => {
       />
     );
 
-    expect(screen.getByTestId("custom-stat")).toHaveTextContent("24887");
+    expect(screen.getByTestId("custom-stat")).toHaveTextContent("24,887");
     expect(screen.getByTestId("custom-stat")).toHaveTextContent("Lines");
   });
 

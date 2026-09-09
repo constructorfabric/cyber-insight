@@ -6,6 +6,7 @@ import {
   type ChartConfig,
   points,
 } from "@/components/custom/chart-data";
+import { categoryTick, groupedNumber } from "@/components/custom/chart-format";
 import {
   ChartFrame,
   ChartLegend,
@@ -27,7 +28,7 @@ export function CustomPieChart({ result, label, value }: CustomPieChartProps) {
     data.map((slice, index) => [
       String(slice[label]),
       {
-        label: String(slice[label]),
+        label: categoryTick(slice[label]),
         color: `var(--chart-${(index % CHART_COLORS) + 1})`,
       },
     ])
@@ -36,7 +37,15 @@ export function CustomPieChart({ result, label, value }: CustomPieChartProps) {
   return (
     <ChartFrame config={config} testId="custom-pie-chart">
       <PieChart>
-        <ChartTooltip content={<ChartTooltipContent nameKey={label} />} />
+        <ChartTooltip
+          content={
+            <ChartTooltipContent
+              nameKey={label}
+              hideLabel
+              formatter={(value, name) => `${name}  ${groupedNumber(value)}`}
+            />
+          }
+        />
         <ChartLegend content={<ChartLegendContent nameKey={label} />} />
         <Pie data={data} dataKey={value} nameKey={label}>
           {data.map((slice, index) => (
