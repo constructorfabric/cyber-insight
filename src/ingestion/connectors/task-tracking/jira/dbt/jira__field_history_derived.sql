@@ -25,12 +25,14 @@
 -- `class_task_field_history`. See
 -- `connectors/task-tracking/jira/specs/FIELD-HISTORY-IN-DBT.md`.
 --
--- Five kinds of row, matching the contract the class consumers rely on (§10):
+-- Six kinds of row, matching the contract the class consumers rely on (§10):
 --   1. one creation marker per issue (`field_id = 'created'`, `_seq = 0`);
 --   2. one `synthetic_initial` per (issue, field) holding the value at creation;
 --   3. one `changelog` row per event, holding the state after that event;
 --   4. one `retired_field` row per (issue, field) the issue stopped carrying;
---   5. one `unclassified_field` row per (issue, field) the catalogue lacks.
+--   5. one `unclassified_field` row per (issue, field) the catalogue lacks;
+--   6. one `snapshot_diff` per (issue, field) the issue cleared without an
+--      event — the state as OBSERVED, which is not the same claim as an event.
 --
 -- Only the element-wise kinds accumulate state across events; every other
 -- kind's item carries both sides in full, so its rows are computed from the
@@ -509,6 +511,67 @@ element_wise_state AS (
        AND ini.field_id = i.field_id
 ),
 
+-- ── the state the journal's own events arrive at ────────────────────────────
+-- Needed to tell a field the issue silently cleared from one it never held.
+-- Both families contribute: a self-describing item carries the state after it,
+-- and an element-wise field's state after its last operation is the span set.
+newest_from_events AS (
+    SELECT
+        src                                               AS insight_source_id,
+        iss                                               AS id_readable,
+        fid                                               AS field_id,
+        argMax(ids, ord)                                  AS value_ids
+    FROM (
+        SELECT
+            e.insight_source_id                           AS src,
+            e.id_readable                                 AS iss,
+            e.field_id                                    AS fid,
+            (e.event_at, e.event_ord)                     AS ord,
+            e.sides.3                                     AS ids
+        FROM live_events AS e
+        WHERE e.field_kind NOT IN {{ jira_element_wise_kinds() }}
+
+        UNION ALL
+
+        SELECT
+            a.insight_source_id,
+            a.id_readable,
+            a.field_id,
+            (a.event_at, a.ops_seq),
+            arrayMap(x -> splitByChar('\x1f', x)[1], a.state_pairs)
+        FROM element_wise_state AS a
+    )
+    GROUP BY src, iss, fid
+),
+
+-- ── fields the issue cleared without recording it ───────────────────────────
+-- The key is STILL in the issue JSON — the field applies and is simply unset —
+-- but the journal's own events end on a value. Jira does that when a value goes
+-- away without an entry: a link removed from the other side of the pair, an
+-- automation writing a read-only field, a list emptied by a bulk operation. §6
+-- calls the missing entry what it is, and this row does not pretend otherwise:
+-- it records the state observed, not an event that happened.
+--
+-- An ABSENT key is a different thing and belongs to `retired_pairs` — the field
+-- left the issue's context, rather than the issue dropping its value.
+cleared_pairs AS (
+    SELECT
+        n.insight_source_id                               AS insight_source_id,
+        n.id_readable                                     AS id_readable,
+        n.field_id                                        AS field_id,
+        j.observed_at                                     AS event_at
+    FROM newest_from_events AS n
+    INNER JOIN issue_json AS j
+        ON j.insight_source_id = n.insight_source_id
+       AND j.id_readable = n.id_readable
+    LEFT ANTI JOIN snapshot AS s
+        ON s.insight_source_id = n.insight_source_id
+       AND s.id_readable = n.id_readable
+       AND s.field_id = n.field_id
+    WHERE length(n.value_ids) > 0
+      AND JSONHas(j.custom_fields_json, n.field_id)
+),
+
 -- ── the value of every modelled field at issue creation ─────────────────────
 -- A field that changed is rolled back to before its earliest event; a field
 -- that never changed keeps its snapshot value. The second case is the one the
@@ -750,6 +813,48 @@ INNER JOIN kinds AS k
 LEFT JOIN issues AS i
     ON i.insight_source_id = r.insight_source_id
    AND i.id_readable = r.id_readable
+
+UNION ALL
+
+-- ── the value the issue no longer holds, with no event to explain it ────────
+-- Dated by the observation, like the withdrawal row above: the moment the
+-- clearing happened is not knowable, only the moment it was seen. `event_id` is
+-- constant per (issue, field) so re-observing restamps the one row rather than
+-- growing a new one each sync — the journal must not accumulate a row per read.
+--
+-- `snapshot_diff` is its own kind on purpose: a consumer counting real history
+-- can exclude it, and the share of state recovered by observation rather than
+-- by event stays measurable.
+SELECT
+    CAST(concat(c.insight_source_id, '-jira-', c.id_readable, '-', c.field_id,
+                '-snapshot_diff:', COALESCE(i.issue_id, '')) AS String)  AS unique_key,
+    c.insight_source_id,
+    CAST('jira' AS String)                                AS data_source,
+    COALESCE(i.issue_id, '')                              AS issue_id,
+    c.id_readable,
+    CAST(concat('snapshot_diff:', COALESCE(i.issue_id, '')) AS String) AS event_id,
+    c.event_at,
+    CAST('snapshot_diff' AS String)                       AS event_kind,
+    toUInt32(0)                                           AS _seq,
+    -- Nobody is recorded as having done this: there is no entry to name an author.
+    CAST(NULL AS Nullable(String))                        AS author_id,
+    c.field_id,
+    k.field_name,
+    {{ jira_field_cardinality('k.field_kind') }}          AS field_cardinality,
+    CAST(if({{ jira_field_cardinality('k.field_kind') }} = 'multi',
+            'remove', 'set') AS String)                   AS delta_action,
+    CAST([] AS Array(String))                             AS value_ids,
+    CAST([] AS Array(String))                             AS value_displays,
+    {{ jira_field_id_type('k.field_kind') }}              AS value_id_type,
+    now64(3)                                              AS collected_at,
+    toUnixTimestamp64Milli(now64(3))                      AS _version
+FROM cleared_pairs AS c
+INNER JOIN kinds AS k
+    ON k.insight_source_id = c.insight_source_id
+   AND k.field_id = c.field_id
+LEFT JOIN issues AS i
+    ON i.insight_source_id = c.insight_source_id
+   AND i.id_readable = c.id_readable
 
 UNION ALL
 

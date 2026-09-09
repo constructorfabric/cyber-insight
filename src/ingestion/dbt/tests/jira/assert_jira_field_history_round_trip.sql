@@ -80,6 +80,13 @@ WITH latest_state AS (
         max(event_at)                            AS latest_event_at
     FROM {{ ref('jira__field_history_derived') }} FINAL
     WHERE field_id != 'created'
+      -- `snapshot_diff` is the snapshot's own value written back as an observed
+      -- state, so counting it here would compare the snapshot with itself and
+      -- report agreement no matter what the events say. The events are the
+      -- side under test; a pair that needed a `snapshot_diff` row is exactly a
+      -- pair whose events do NOT reach the current value, and it must keep
+      -- showing up here.
+      AND event_kind != 'snapshot_diff'
       -- A field the catalogue does not contain (§3.2) carries ONE best-effort
       -- row, and the snapshot cannot hold a value for it at all: the snapshot
       -- model joins the catalogue, so an unclassifiable field never reaches it.
