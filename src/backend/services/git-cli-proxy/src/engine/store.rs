@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, OwnedRwLockReadGuard, RwLock, Semaphore, watch};
+use tokio::sync::{Mutex, Notify, OwnedRwLockReadGuard, RwLock, Semaphore, SemaphorePermit, watch};
 
 use super::disk::{Budget, Candidate, Reclaim, dir_size, needs_consolidation};
 use super::key::CacheKey;
@@ -23,6 +23,21 @@ use super::runner::{GitCredentials, GitError, GitRunner};
 /// INVARIANT: must stay under `api::HANDLER_BUDGET`, or the typed `Busy`
 /// answer below loses to the blanket 503.
 pub(crate) const PREPARATION_WAIT: Duration = Duration::from_mins(55);
+/// How long a heavy operation waits for cache headroom before giving up. A
+/// caller that reaches this point has already waited for a clone slot, so a
+/// refusal here means the disk stayed full for the whole wait, and the
+/// connector's `429` retry loop is the right place to carry on from.
+/// INVARIANT: under `PREPARATION_WAIT`, or the waiter in `await_refresh` times
+/// out first and the typed `Busy` never reaches it.
+const ADMISSION_WAIT: Duration = Duration::from_mins(50);
+const _: () = assert!(ADMISSION_WAIT.as_secs() < PREPARATION_WAIT.as_secs());
+/// Backstop cadence for re-checking headroom when no release woke the waiter.
+const ADMISSION_POLL: Duration = Duration::from_secs(15);
+/// Floor for a size-hinted reservation: a hint below it is not to be trusted
+/// to cover the pack overhead of even a tiny clone.
+const MIN_HINTED_RESERVATION: u64 = 64 * 1024 * 1024;
+/// A repository packs larger than the size its host reports for it.
+const HINT_OVERHEAD_FACTOR: u64 = 2;
 pub(crate) const COLD_RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Probe wait for opportunistic work that a concurrent writer makes moot.
 const MEASURE_WAIT: Duration = Duration::from_secs(15);
@@ -193,6 +208,7 @@ type RefreshResult = Result<u64, RefreshFailure>;
 #[derive(Debug)]
 pub struct Reservation<'a> {
     reserved: &'a AtomicU64,
+    freed: &'a Notify,
     bytes: u64,
 }
 
@@ -201,6 +217,7 @@ impl Drop for Reservation<'_> {
         // `fetch_sub` cannot underflow here: every reservation subtracts
         // exactly what it added, once.
         self.reserved.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.freed.notify_waiters();
     }
 }
 
@@ -251,6 +268,9 @@ pub struct RepoStore {
     /// Serialises decide-and-reserve. Two callers that each read usage before
     /// either reserved would both be admitted against the same headroom.
     admission: Mutex<()>,
+    /// Woken whenever headroom may have appeared: a reservation released, an
+    /// entry evicted or its blobs purged. Waiters in `admit_within` re-check.
+    space_freed: Notify,
 }
 
 impl RepoStore {
@@ -336,6 +356,7 @@ impl RepoStore {
             drift: Mutex::new(HashMap::new()),
             reserved_bytes: AtomicU64::new(0),
             admission: Mutex::new(()),
+            space_freed: Notify::new(),
         })
     }
 
@@ -411,6 +432,23 @@ impl RepoStore {
         creds: &GitCredentials,
         freshness: Freshness,
     ) -> Result<RepoGuard, StoreError> {
+        self.open_with_size_hint(key, creds, freshness, None).await
+    }
+
+    /// [`Self::open`] with the size the repository's host reports for it, in
+    /// bytes. A cold clone reserves cache headroom from the hint instead of the
+    /// per-repository cap, so many small repositories can be admitted at once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub async fn open_with_size_hint(
+        self: &Arc<Self>,
+        key: &CacheKey,
+        creds: &GitCredentials,
+        freshness: Freshness,
+        size_hint: Option<u64>,
+    ) -> Result<RepoGuard, StoreError> {
         let lock = self.entry_lock(key).await;
         let entry_dir = self.entry_dir(key);
         let git_dir = entry_dir.join("repo.git");
@@ -463,7 +501,7 @@ impl RepoStore {
                 // caller may read the entry. Re-check the fingerprint under
                 // the read guard and refresh again on a mismatch.
                 for _ in 0..REPROOF_ATTEMPTS {
-                    self.await_refresh(key, creds, max_staleness, RefreshKind::Sync)
+                    self.await_refresh(key, creds, max_staleness, RefreshKind::Sync, size_hint)
                         .await?;
 
                     let read = read_within(&lock, PREPARATION_WAIT).await?;
@@ -499,8 +537,11 @@ impl RepoStore {
         creds: &GitCredentials,
         max_staleness: Duration,
         kind: RefreshKind,
+        size_hint: Option<u64>,
     ) -> Result<u64, StoreError> {
-        let mut receiver = self.refresh_task(key, creds, max_staleness, kind).await;
+        let mut receiver = self
+            .refresh_task(key, creds, max_staleness, kind, size_hint)
+            .await;
 
         let waited =
             tokio::time::timeout(PREPARATION_WAIT, receiver.wait_for(Option::is_some)).await;
@@ -531,6 +572,7 @@ impl RepoStore {
         creds: &GitCredentials,
         max_staleness: Duration,
         kind: RefreshKind,
+        size_hint: Option<u64>,
     ) -> watch::Receiver<Option<RefreshResult>> {
         let flight = FlightKey {
             dir_name: key.dir_name(),
@@ -562,7 +604,9 @@ impl RepoStore {
                 let creds = creds.clone();
                 async move {
                     match kind {
-                        RefreshKind::Sync => store.refresh(&key, &creds, max_staleness).await,
+                        RefreshKind::Sync => {
+                            store.refresh(&key, &creds, max_staleness, size_hint).await
+                        }
                         RefreshKind::Promote => store.promote(&key, &creds).await,
                     }
                 }
@@ -599,6 +643,7 @@ impl RepoStore {
         key: &CacheKey,
         creds: &GitCredentials,
         max_staleness: Duration,
+        size_hint: Option<u64>,
     ) -> Result<u64, GitError> {
         let lock = self.entry_lock(key).await;
         let entry_dir = self.entry_dir(key);
@@ -629,7 +674,8 @@ impl RepoStore {
         if git_dir.is_dir() {
             self.fetch(key, &entry_dir, &git_dir, creds).await
         } else {
-            self.clone(key, &entry_dir, &git_dir, creds).await
+            self.clone(key, &entry_dir, &git_dir, creds, size_hint)
+                .await
         }
     }
 
@@ -639,19 +685,13 @@ impl RepoStore {
         entry_dir: &Path,
         git_dir: &Path,
         creds: &GitCredentials,
+        size_hint: Option<u64>,
     ) -> Result<u64, GitError> {
-        // Reclaim BEFORE taking disk, not after: an admission check that runs
-        // post-clone has already overshot the budget.
-        // INVARIANT: the reservation lives as long as the operation does. Drop
-        // it early and a concurrent caller is admitted against headroom this
-        // one has not finished consuming.
-        let Some(_reserved) = self.admit(entry_dir).await else {
-            return Err(GitError::AdmissionRejected);
-        };
-
-        // INVARIANT: the permit spans the whole clone — the semaphore IS the
-        // global heavy-ops cap.
-        let _permit = self.heavy_permit().await;
+        // INVARIANT: the permit and the reservation both span the whole clone —
+        // the semaphore IS the global heavy-ops cap, and a reservation dropped
+        // early admits a concurrent caller against headroom this one has not
+        // finished consuming.
+        let (_permit, _reserved) = self.admit_within(entry_dir, size_hint).await?;
 
         let tmp = self.data_dir.join("tmp").join(format!(
             "clone-{}-{}",
@@ -739,16 +779,11 @@ impl RepoStore {
         git_dir: &Path,
         creds: &GitCredentials,
     ) -> Result<u64, GitError> {
-        // INVARIANT: the reservation lives as long as the operation does. Drop
-        // it early and a concurrent caller is admitted against headroom this
-        // one has not finished consuming.
-        let Some(_reserved) = self.admit(entry_dir).await else {
-            return Err(GitError::AdmissionRejected);
-        };
-
-        // INVARIANT: the permit spans the whole fetch — the semaphore IS the
-        // global heavy-ops cap.
-        let permit = self.heavy_permit().await;
+        // INVARIANT: the permit and the reservation both span the whole fetch —
+        // the semaphore IS the global heavy-ops cap, and a reservation dropped
+        // early admits a concurrent caller against headroom this one has not
+        // finished consuming.
+        let (permit, _reserved) = self.admit_within(entry_dir, None).await?;
 
         // Shed the last window's blobs FIRST, while this task holds the write
         // side. The cap judges what the entry persistently costs; transient
@@ -884,7 +919,7 @@ impl RepoStore {
         key: &CacheKey,
         creds: &GitCredentials,
     ) -> Result<u64, StoreError> {
-        self.await_refresh(key, creds, Duration::ZERO, RefreshKind::Promote)
+        self.await_refresh(key, creds, Duration::ZERO, RefreshKind::Promote, None)
             .await
     }
 
@@ -906,16 +941,11 @@ impl RepoStore {
         }
 
         // A full clone is much larger than the skeleton it replaces.
-        // INVARIANT: the reservation lives as long as the operation does. Drop
-        // it early and a concurrent caller is admitted against headroom this
-        // one has not finished consuming.
-        let Some(_reserved) = self.admit(&entry_dir).await else {
-            return Err(GitError::AdmissionRejected);
-        };
-
-        // INVARIANT: the permit spans the whole promotion — the semaphore IS
-        // the global heavy-ops cap.
-        let _permit = self.heavy_permit().await;
+        // INVARIANT: the permit and the reservation both span the whole
+        // promotion — the semaphore IS the global heavy-ops cap, and a
+        // reservation dropped early admits a concurrent caller against headroom
+        // this one has not finished consuming.
+        let (_permit, _reserved) = self.admit_within(&entry_dir, None).await?;
 
         // Park the metadata before the first mutation. Unlike fetch there is
         // no restore on failure: the refetch below is not `--atomic`, so a
@@ -1440,12 +1470,47 @@ impl RepoStore {
     /// what the cache published; `statvfs` knows what the VOLUME holds —
     /// including a clone still staging under `tmp/` and anything else sharing
     /// the mount. Neither alone is sufficient.
-    async fn admit(&self, entry_dir: &Path) -> Option<Reservation<'_>> {
+    /// A clone slot together with the headroom the operation needs, waiting
+    /// in-connection for both. The slot comes first: a reservation held while
+    /// queued for a slot would count against every other caller's admission,
+    /// so a few queued clones could refuse the whole cache while nothing was
+    /// being written. Refused for space, the caller releases the slot and
+    /// waits for headroom to appear rather than bouncing the connector.
+    async fn admit_within(
+        &self,
+        entry_dir: &Path,
+        size_hint: Option<u64>,
+    ) -> Result<(SemaphorePermit<'_>, Reservation<'_>), GitError> {
+        // tokio's clock, not std's: the wait must obey a paused test clock
+        // the same way the timeouts around it do.
+        let deadline = tokio::time::Instant::now() + ADMISSION_WAIT;
+        loop {
+            // Registered before the check so a release between the check and
+            // the wait is not missed.
+            let freed = self.space_freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+
+            let permit = self.heavy_permit().await;
+            if let Some(reserved) = self.admit(entry_dir, size_hint).await {
+                return Ok((permit, reserved));
+            }
+            drop(permit);
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(GitError::AdmissionRejected);
+            }
+            let _ = tokio::time::timeout(remaining.min(ADMISSION_POLL), freed).await;
+        }
+    }
+
+    async fn admit(&self, entry_dir: &Path, size_hint: Option<u64>) -> Option<Reservation<'_>> {
         // INVARIANT: deciding and reserving must be one step. Two callers that
         // both read usage before either reserved would both be admitted
         // against the same headroom.
         let _decision = self.admission.lock().await;
-        let want = self.headroom_for(entry_dir).await;
+        let want = self.headroom_for(entry_dir, size_hint).await;
 
         let candidates = self.candidates().await;
         let accounted: u64 = candidates.iter().map(|c| c.size_bytes).sum();
@@ -1534,6 +1599,7 @@ impl RepoStore {
                 // throttle, escalation losses or purge failures.
                 self.drift.lock().await.remove(dir_name);
                 metrics::record_eviction(tier);
+                self.space_freed.notify_waiters();
                 tracing::info!(dir = %dir_name, freed_bytes = frees, tier = tier.as_str(), "evicted repo");
             }
             Err(e) => tracing::warn!(error = %e, dir = %dir_name, "eviction failed"),
@@ -1546,11 +1612,17 @@ impl RepoStore {
     ///
     /// Zero when either figure is unbounded — the test constructor uses
     /// `u64::MAX` for both, and reserving against it would refuse everything.
-    async fn headroom_for(&self, entry_dir: &Path) -> u64 {
+    async fn headroom_for(&self, entry_dir: &Path, size_hint: Option<u64>) -> u64 {
         if !self.budget.is_bounded() || self.max_repo_bytes == u64::MAX {
             return 0;
         }
-        let measured = dir_size_off_reactor(entry_dir.join("repo.git")).await;
+        let git_dir = entry_dir.join("repo.git");
+        if !git_dir.is_dir()
+            && let Some(hint) = size_hint
+        {
+            return hinted_reservation(hint, self.max_repo_bytes);
+        }
+        let measured = dir_size_off_reactor(git_dir).await;
         self.max_repo_bytes.saturating_sub(measured)
     }
 
@@ -1558,6 +1630,7 @@ impl RepoStore {
         self.reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
         Reservation {
             reserved: &self.reserved_bytes,
+            freed: &self.space_freed,
             bytes,
         }
     }
@@ -1740,7 +1813,10 @@ impl RepoStore {
         // held by a clone would stall every admission behind that clone.
         match self.shed_window_packs(&entry_dir).await {
             WindowShed::Settled { freed: 0 } => return Ok(BlobPurge::Skipped),
-            WindowShed::Settled { .. } => return Ok(BlobPurge::Purged),
+            WindowShed::Settled { .. } => {
+                self.space_freed.notify_waiters();
+                return Ok(BlobPurge::Purged);
+            }
             WindowShed::RepackDue { .. } => {}
         }
         let Ok(permit) = self.heavy.try_acquire() else {
@@ -2055,6 +2131,16 @@ fn fresh_meta(entry_dir: &Path, fingerprint: &str, max_staleness: Duration) -> O
 fn touch_access(entry_dir: &Path, mut meta: RepoMeta) {
     meta.last_accessed_at_epoch_s = now_epoch_s();
     let _ = meta.store(entry_dir);
+}
+
+/// Headroom to reserve for a cold clone of a repository its host says is
+/// `hint` bytes: the hint with pack overhead, floored so a tiny hint still
+/// covers a real clone, and never above the per-repository cap that the
+/// post-clone check enforces regardless.
+fn hinted_reservation(hint: u64, cap_bytes: u64) -> u64 {
+    hint.saturating_mul(HINT_OVERHEAD_FACTOR)
+        .max(MIN_HINTED_RESERVATION)
+        .min(cap_bytes)
 }
 
 #[cfg(test)]
@@ -2482,18 +2568,122 @@ pub(crate) mod tests {
         let f = fixture_with_budget("reserve", 1_000_000, 500_000);
         let entry_dir = f.store.entry_dir(&key(&f));
 
-        let Some(first) = f.store.admit(&entry_dir).await else {
+        let Some(first) = f.store.admit(&entry_dir, None).await else {
             panic!("an empty cache must admit the first caller")
         };
         assert!(
-            f.store.admit(&entry_dir).await.is_none(),
+            f.store.admit(&entry_dir, None).await.is_none(),
             "the second caller must be refused against the first's reservation"
         );
 
         drop(first);
         assert!(
-            f.store.admit(&entry_dir).await.is_some(),
+            f.store.admit(&entry_dir, None).await.is_some(),
             "and admitted again once that reservation is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_size_hint_reserves_the_hinted_size_not_the_cap() {
+        // High watermark 850 MB. The cap-sized reservation (500 MB) is held;
+        // a second cap-sized one does not fit, a hinted one (floored at 64 MiB)
+        // does.
+        let f = fixture_with_budget("hint", 1_000_000_000, 500_000_000);
+        let cold = f
+            .root
+            .join("cache-bounded")
+            .join("repos")
+            .join("cold-entry");
+        let Some(_held) = f.store.admit(&cold, None).await else {
+            panic!("an empty cache must admit the first caller")
+        };
+        assert!(
+            f.store.admit(&cold, None).await.is_none(),
+            "a second cap-sized reservation must not fit"
+        );
+        let hinted = f.store.admit(&cold, Some(1_000)).await;
+        assert!(
+            hinted.is_some(),
+            "a hinted reservation is the floor, not the cap, and fits beside the first"
+        );
+    }
+
+    #[test]
+    fn a_hinted_reservation_carries_overhead_and_stays_inside_the_cap() {
+        let cases = [
+            (1_000, 10_u64.pow(9), MIN_HINTED_RESERVATION),
+            (200 * 1024 * 1024, 10_u64.pow(9), 400 * 1024 * 1024),
+            (900 * 1024 * 1024, 10_u64.pow(9), 10_u64.pow(9)),
+            (u64::MAX, 10_u64.pow(9), 10_u64.pow(9)),
+        ];
+        for (hint, cap, expected) in cases {
+            assert_eq!(
+                hinted_reservation(hint, cap),
+                expected,
+                "should reserve {expected} for hint {hint} under cap {cap}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cold_clone_waits_for_headroom_instead_of_being_refused() {
+        // One cap-sized reservation fills the watermark. A cold open must not
+        // answer Busy while it is held; it must clone once it is released.
+        // Real time: a paused clock would fire git's own timeout under the
+        // clone before the subprocess finishes.
+        let f = fixture_with_budget("wait-headroom", 1_000_000, 500_000);
+        let elsewhere = f
+            .root
+            .join("cache-bounded")
+            .join("repos")
+            .join("other-entry");
+        let Some(held) = f.store.admit(&elsewhere, None).await else {
+            panic!("an empty cache must admit the first caller")
+        };
+
+        let store = Arc::clone(&f.store);
+        let k = key(&f);
+        let opening = tokio::spawn(async move { store.open(&k, &creds(), refresh()).await });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !opening.is_finished(),
+            "the caller must wait for headroom, not be bounced with Busy"
+        );
+
+        drop(held);
+        match opening.await {
+            Ok(Ok(guard)) => assert!(
+                guard.git_dir().is_dir(),
+                "the clone landed once room appeared"
+            ),
+            Ok(Err(e)) => panic!("the waiting caller must be served, got {e}"),
+            Err(e) => panic!("open task died: {e}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn headroom_that_never_appears_ends_in_busy_after_the_wait() {
+        let f = fixture_with_budget("wait-exhausted", 1_000_000, 500_000);
+        let elsewhere = f
+            .root
+            .join("cache-bounded")
+            .join("repos")
+            .join("other-entry");
+        let Some(_held) = f.store.admit(&elsewhere, None).await else {
+            panic!("an empty cache must admit the first caller")
+        };
+
+        let started = tokio::time::Instant::now();
+        match f.store.open(&key(&f), &creds(), refresh()).await {
+            Err(StoreError::Busy { retry_after }) => assert_eq!(retry_after, COLD_RETRY_AFTER),
+            Ok(_) => panic!("nothing freed the space, so the open cannot have been served"),
+            Err(e) => panic!("expected Busy once the admission wait is spent, got {e}"),
+        }
+        let waited = started.elapsed();
+        assert!(
+            waited >= ADMISSION_WAIT && waited < PREPARATION_WAIT,
+            "the admission wait must be what ends it, not the caller's own timeout: {waited:?}"
         );
     }
 
@@ -3605,11 +3795,11 @@ pub(crate) mod tests {
 
         let mine = f
             .store
-            .refresh_task(&k, &creds(), Duration::ZERO, RefreshKind::Sync)
+            .refresh_task(&k, &creds(), Duration::ZERO, RefreshKind::Sync, None)
             .await;
         let mine_again = f
             .store
-            .refresh_task(&k, &creds(), Duration::ZERO, RefreshKind::Sync)
+            .refresh_task(&k, &creds(), Duration::ZERO, RefreshKind::Sync, None)
             .await;
         assert_eq!(
             f.store.inflight.lock().await.len(),
@@ -3619,7 +3809,7 @@ pub(crate) mod tests {
 
         let theirs = f
             .store
-            .refresh_task(&k, &intruder, Duration::ZERO, RefreshKind::Sync)
+            .refresh_task(&k, &intruder, Duration::ZERO, RefreshKind::Sync, None)
             .await;
         assert_eq!(
             f.store.inflight.lock().await.len(),
@@ -3900,7 +4090,7 @@ pub(crate) mod tests {
         )
         .await;
 
-        let _ = f.store.admit(&f.store.entry_dir(&key(&f))).await;
+        let _ = f.store.admit(&f.store.entry_dir(&key(&f)), None).await;
         assert!(
             guard.git_dir().is_dir(),
             "a repository with a live reader must never be deleted"
