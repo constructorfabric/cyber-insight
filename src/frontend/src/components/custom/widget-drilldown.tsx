@@ -1,17 +1,13 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Table2 } from "lucide-react";
 
 import type { Widget } from "@/api/custom-client";
 import { CustomTable } from "@/components/custom/custom-table";
-import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { metricQuery, metricResultQuery } from "@/queries/custom";
@@ -23,31 +19,22 @@ import { cn } from "@/lib/utils";
  *
  * A chart is a shape; the question it prompts is "which rows are those?".
  * This opens the metric's own result — every row it returns, not the picture —
- * beside the query that produced it.
+ * beside the table it came from. Controlled, because the card opens it from
+ * two places: its own body, and the button in its header.
  */
 export function WidgetDrilldown({
   widget,
   label,
+  open,
+  onOpenChange,
 }: {
   widget: Widget;
   label: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
-
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Show the data behind ${label}`}
-            className="text-muted-foreground"
-          />
-        }
-      >
-        <Table2 />
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{label}</DialogTitle>
@@ -86,9 +73,7 @@ function Rows({ metric }: { metric: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {table ? (
-        <p className={cn(TEXT_LABEL, "font-mono")}>{table}</p>
-      ) : null}
+      {table ? <p className={cn(TEXT_LABEL, "font-mono")}>{table}</p> : null}
       <div className="max-h-[60vh] min-w-0 overflow-auto">
         <CustomTable result={result.data} />
       </div>

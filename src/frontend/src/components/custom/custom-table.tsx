@@ -18,6 +18,31 @@ export interface CustomTableProps {
 /** Beyond this the card is a scroll bar, and the DOM pays for every row. */
 const SHOWN = 200;
 
+/**
+ * One cell.
+ *
+ * A value that is a URL is the row's way out - to the pull request, the issue,
+ * the page it counted - so it is a link rather than text to copy by hand.
+ * Nothing is composed here: only a value that already is an absolute http(s)
+ * URL becomes one.
+ */
+function Cell({ value }: { value: unknown }) {
+  const text = String(value);
+  if (!/^https?:\/\/\S+$/.test(text)) return <>{text}</>;
+
+  return (
+    <a
+      href={text}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="underline decoration-dotted underline-offset-4"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {text}
+    </a>
+  );
+}
+
 export function CustomTable({ result }: CustomTableProps) {
   const rows = result.rows.slice(0, SHOWN);
 
@@ -42,7 +67,11 @@ export function CustomTable({ result }: CustomTableProps) {
             <TableRow key={rowIndex}>
               {result.columns.map((_, columnIndex) => (
                 <TableCell key={columnIndex}>
-                  {columnIndex < row.length ? String(row[columnIndex]) : ""}
+                  {columnIndex < row.length ? (
+                    <Cell value={row[columnIndex]} />
+                  ) : (
+                    ""
+                  )}
                 </TableCell>
               ))}
             </TableRow>

@@ -1,5 +1,9 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Table2 } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 
 import { CustomApiError } from "@/api/custom-client";
 import { CustomWidget } from "@/components/custom/custom-widget";
@@ -12,7 +16,12 @@ import {
   metricResultQuery,
   widgetQuery,
 } from "@/queries/custom";
-import { TEXT_BODY, TEXT_HEADING, TEXT_LABEL, TEXT_TITLE } from "@/lib/type-scale";
+import {
+  TEXT_BODY,
+  TEXT_HEADING,
+  TEXT_LABEL,
+  TEXT_TITLE,
+} from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/portal/custom/$name")({
@@ -108,6 +117,7 @@ function CustomDashboardBody({
 }
 
 function DashboardWidgetSlot({ name }: { name: string }) {
+  const [drilldown, setDrilldown] = useState(false);
   const widgetState = useQuery(widgetQuery(name));
   const metric = widgetState.data?.metric;
   const resultState = useQuery({
@@ -149,15 +159,41 @@ function DashboardWidgetSlot({ name }: { name: string }) {
             <p className={cn(TEXT_LABEL, "truncate font-mono")}>{name}</p>
           ) : null}
         </div>
-        <WidgetDrilldown widget={widgetState.data} label={heading ?? name} />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Show the data behind ${heading ?? name}`}
+          className="text-muted-foreground"
+          onClick={() => setDrilldown(true)}
+        >
+          <Table2 />
+        </Button>
       </CardHeader>
-      <CardContent className="max-h-72 overflow-auto">
+      <CardContent
+        role="button"
+        tabIndex={0}
+        aria-label={`Show the data behind ${heading ?? name}`}
+        className="max-h-72 cursor-pointer overflow-auto"
+        onClick={() => setDrilldown(true)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setDrilldown(true);
+          }
+        }}
+      >
         <CustomWidget
           widget={widgetState.data}
           result={resultState.data}
           error={resultState.error as Error | undefined}
         />
       </CardContent>
+      <WidgetDrilldown
+        widget={widgetState.data}
+        label={heading ?? name}
+        open={drilldown}
+        onOpenChange={setDrilldown}
+      />
     </Card>
   );
 }
