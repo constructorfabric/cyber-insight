@@ -149,14 +149,23 @@ function DashboardWidgetSlot({ name }: { name: string }) {
   const heading = widgetState.data.title;
 
   return (
-    <Card>
+    <Card className="group">
       <CardHeader className="flex flex-row items-start gap-2">
         <div className="min-w-0 flex-1">
           <CardTitle className={cn(TEXT_HEADING, heading ? "" : "font-mono")}>
             {heading ?? name}
           </CardTitle>
+          {/* The identifier is what a rename or a chat request names, so it
+              stays reachable — but it is noise until someone looks for it. */}
           {heading ? (
-            <p className={cn(TEXT_LABEL, "truncate font-mono")}>{name}</p>
+            <p
+              className={cn(
+                TEXT_LABEL,
+                "truncate font-mono opacity-0 transition-opacity group-hover:opacity-100"
+              )}
+            >
+              {name}
+            </p>
           ) : null}
         </div>
         <Button
