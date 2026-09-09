@@ -20,6 +20,10 @@ data:
     opentelemetry:
       resource:
         service_name: "insight-git-cli-proxy"
+        attributes:
+          # The release the pod runs; the log_ctx span and the OTel resource
+          # both read it (semconv service.version).
+          service.version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
       exporter:
         kind: {{ .Values.opentelemetry.exporter.kind }}
         {{- with .Values.opentelemetry.exporter.endpoint }}
@@ -48,6 +52,7 @@ data:
           max_repo_bytes: {{ required "cache.maxRepoBytes is required" .Values.cache.maxRepoBytes | int64 }}
           default_max_staleness_seconds: {{ required "cache.defaultMaxStalenessSeconds is required" .Values.cache.defaultMaxStalenessSeconds | int64 }}
           heavy_ops_concurrency: {{ required "cache.heavyOpsConcurrency is required" .Values.cache.heavyOpsConcurrency | int64 }}
+          serve_concurrency: {{ required "cache.serveConcurrency is required" .Values.cache.serveConcurrency | int64 }}
           ca_cert_path: {{ .Values.cache.caCertPath | quote }}
           # Not a values knob on purpose: a file:// origin reads the pod's own
           # filesystem, so no deployment may turn this on.

@@ -1,16 +1,4 @@
-{# 3 GiB, and spill thresholds to match: this build outgrew the shared 2 GiB
-   ceiling and failed the post-upgrade migration hook with MEMORY_LIMIT_EXCEEDED,
-   taking the whole deploy down with it. Same pairing the other heavy gold
-   models carry (task_issue_state, task_status_spans, account_attribute_values).
-   Raising the ceiling buys headroom, not a cure — the inputs keep growing. #}
-{{ metric_evidence_table(
-    join_use_nulls=1,
-    query_settings_overrides={
-        'max_memory_usage': 3221225472,
-        'max_bytes_before_external_group_by': 805306368,
-        'max_bytes_before_external_sort': 805306368
-    }
-) }}
+{{ metric_evidence_table(join_use_nulls=1) }}
 
 -- Resolution happens at READ time, and account-first: a row naming its author's
 -- account (pull requests) resolves through that binding, everything else
@@ -57,63 +45,6 @@ repository_default_branches AS (
     WHERE is_default = 1
     GROUP BY tenant_id, source_id, project_key, repo_slug
 ),
--- One row per change CONTENT, not per commit that carries it. The same content
--- entering a repository on two lines of history — a branch whose copy of a
--- tree also landed on the default branch, a cherry-pick, a squash that
--- re-applies its branch's whole span, a reverted-then-restored file — is one
--- authored change, and summing every carrier's diff would count those lines
--- more than once. `git_file_content_identity` is what "same content" means.
---
--- Earliest commit wins, so the value lands in the period the content was first
--- authored and does not move when a later commit repeats it.
---
--- The commit_hash tie-breaker keeps rows whose identity is UNKNOWN (a source
--- that reports no oid, or a row collected before the proxy did) distinct per
--- commit: without it every such row for one path would collapse into one,
--- because LIMIT 1 BY reads their NULL keys as equal.
---
--- The superseded set is the case content identity alone cannot reach: a squash
--- whose branch was only PARTLY collected carries the collected commits' work
--- under a span no single commit made, so nothing folds it. See
--- git_superseded_file_changes.
-deduplicated_file_changes AS (
-    SELECT
-        tenant_id,
-        source_id,
-        project_key,
-        repo_slug,
-        commit_hash,
-        data_source,
-        file_path,
-        file_extension,
-        change_type,
-        lines_added,
-        lines_removed
-    FROM {{ ref('git_commit_file_changes') }}
-    WHERE (tenant_id, data_source, commit_hash, file_path) NOT IN (
-        SELECT tenant_id, data_source, commit_hash, file_path
-        FROM {{ ref('git_superseded_file_changes') }}
-    )
-    -- INVARIANT: committer_date breaks the tie, and must stay ahead of the
-    -- hash. observed_at is the AUTHOR date, which a rebase preserves — so the
-    -- copy and its original tie there, and without this the survivor (and with
-    -- it the repository and branch scope the lines are filed under) would be
-    -- decided by comparing hashes. #3153
-    ORDER BY observed_at, committer_date, commit_hash
-    LIMIT 1 BY
-        tenant_id,
-        data_source,
-        project_key,
-        repo_slug,
-        file_path,
-        {{ git_file_content_identity('post_image_oid', 'pre_image_oid') }},
-        if(
-            coalesce(pre_image_oid, '') = ''
-                AND coalesce(post_image_oid, '') = '',
-            commit_hash,
-            ''
-        )
-),
 -- A commit's own line stats, less the lines of the file changes that lost the
 -- content dedup. The stats stay the base — a source can report a commit's
 -- totals without reporting its file changes at all — and only what the dedup
@@ -128,7 +59,7 @@ authored_commit_file_lines AS (
         commit_hash,
         sum(lines_added) AS lines_added,
         sum(lines_removed) AS lines_removed
-    FROM deduplicated_file_changes
+    FROM {{ ref('git_deduplicated_file_changes') }}
     GROUP BY tenant_id, data_source, commit_hash
 ),
 authored_commits AS (
@@ -262,7 +193,7 @@ file_changes_source AS (
             ) AS change_type_label,
             sum(lines_added) AS lines_added,
             sum(lines_removed) AS lines_removed
-        FROM deduplicated_file_changes AS raw_file_change
+        FROM {{ ref('git_deduplicated_file_changes') }} AS raw_file_change
         GROUP BY tenant_id, source_id, project_key, repo_slug, commit_hash, category, file_extension_value, file_extension_label, change_type_value, change_type_label
     ) AS file_changes
     INNER JOIN {{ ref('git_authored_commits') }} AS commits
@@ -290,11 +221,11 @@ unattributed_line_measures AS (
         metric_date,
         line_measure.1 AS measure_key,
         line_measure.2 AS value,
-        -- Written out rather than spliced into source_dimensions: this must
-        -- equal category_source_dimensions key for key, and a literal says so
-        -- at the one place a reader compares them. A different order would not
-        -- fail — it would split one logical dimension set into two breakdown
-        -- rows under `GROUP BY … dimensions`.
+        -- INVARIANT: the same KEYS as category_source_dimensions, which the
+        -- file-derived rows of these same measures carry. A breakdown groups
+        -- by a hidden source-id key as well as the visible ones, so a key
+        -- missing here splits one repository into two rows — a reader
+        -- comparing the two literals is what keeps them in step.
         CAST(
             [
                 tuple('branch_scope', branch_scope_value, branch_scope_label),
@@ -303,6 +234,7 @@ unattributed_line_measures AS (
                 tuple('change_type', '__unknown__', 'Unknown'),
                 tuple('repository', repository_value, repository_label),
                 tuple('project', project_value, project_label),
+                tuple('source_id', coalesce(toString(source_id), ''), coalesce(toString(source_id), '')),
                 tuple('source', source_value, source_label)
             ] AS Array(Tuple(key String, value String, label Nullable(String)))
         ) AS dimensions
@@ -332,41 +264,6 @@ unattributed_line_measures AS (
         )
     ) AS Array(Tuple(measure_key String, value Float64))) AS line_measure
     WHERE has_no_file_changes
-),
-pr_commit_emails AS (
-    SELECT
-        tenant_id,
-        source_id,
-        project_key,
-        repo_slug,
-        pr_id,
-        if(uniqExact(email) = 1, any(email), CAST(NULL AS Nullable(String))) AS email
-    FROM (
-        SELECT
-            links.tenant_id AS tenant_id,
-            links.source_id AS source_id,
-            links.project_key AS project_key,
-            links.repo_slug AS repo_slug,
-            links.pr_id AS pr_id,
-            lower(trimBoth(commits.author_email)) AS email,
-            uniqExact(commits.commit_hash) AS email_count,
-            max(uniqExact(commits.commit_hash)) OVER (
-                PARTITION BY links.tenant_id, links.source_id,
-                             links.project_key, links.repo_slug, links.pr_id
-            ) AS max_count
-        FROM {{ ref('class_git_pull_requests_commits') }} AS links
-        INNER JOIN {{ ref('class_git_commits') }} AS commits
-            ON commits.tenant_id = links.tenant_id
-            AND commits.source_id = links.source_id
-            AND commits.project_key = links.project_key
-            AND commits.repo_slug = links.repo_slug
-            AND commits.commit_hash = links.commit_hash
-        WHERE trimBoth(commits.author_email) != ''
-          AND commits.is_merge_commit = 0
-        GROUP BY tenant_id, source_id, project_key, repo_slug, pr_id, email
-    )
-    WHERE email_count = max_count
-    GROUP BY tenant_id, source_id, project_key, repo_slug, pr_id
 ),
 -- uniqExact, not count(): the link table is append-only per sync, so the same
 -- link row can arrive more than once and the count must not inflate.
@@ -406,9 +303,14 @@ pull_requests_source AS (
         prs.pr_number AS pr_number,
         prs.title AS title,
         prs.author_name AS author_name,
-        multiIf(
-            trimBoth(prs.author_email) != '', lower(trimBoth(prs.author_email)),
-            pr_commit_emails.email IS NOT NULL AND pr_commit_emails.email != '', pr_commit_emails.email,
+        -- INVARIANT: only what the source says about the AUTHOR may land here.
+        -- The author of a request and the author of a commit it carries are
+        -- different identities, so an address read off the commits would credit
+        -- the request to whoever wrote them — and a request the source names no
+        -- author for is one this metric has no answer for, not one to guess at.
+        if(
+            trimBoth(prs.author_email) != '',
+            lower(trimBoth(prs.author_email)),
             CAST(NULL AS Nullable(String))
         ) AS entity_id,
         -- identity's source_type vocabulary, not data_source's: the binding
@@ -500,12 +402,6 @@ pull_requests_source AS (
         AND pr_commit_counts.project_key = prs.project_key
         AND pr_commit_counts.repo_slug = prs.repo_slug
         AND pr_commit_counts.pr_id = prs.pr_id
-    LEFT JOIN pr_commit_emails
-        ON pr_commit_emails.tenant_id = prs.tenant_id
-        AND pr_commit_emails.source_id = prs.source_id
-        AND pr_commit_emails.project_key = prs.project_key
-        AND pr_commit_emails.repo_slug = prs.repo_slug
-        AND pr_commit_emails.pr_id = prs.pr_id
     LEFT JOIN pull_request_review_summary AS review_summary
         ON review_summary.tenant_id = prs.tenant_id
         AND review_summary.source_id = prs.source_id
@@ -656,10 +552,11 @@ pull_request_measures AS (
             []
         )
     ) AS Array(Tuple(measure_key String, contribution Float64, observed_at DateTime64(3)))) AS pr_measure
-    -- A row survives on EITHER key: the email (today's path) or the account
-    -- id, which the outer join resolves account-first. Only a pull request
-    -- with neither — no profile email, no attributable commit email, no
-    -- account id — drops here, exactly as before.
+    -- A row survives on EITHER key the source states about the author: the
+    -- address or the account id, which the outer join resolves account-first.
+    -- A request the source names neither for drops here — unattributable is
+    -- the answer, and a request that survives on an account nothing has bound
+    -- stays unresolved at read time rather than reaching some other person.
     WHERE (pull_request.entity_id IS NOT NULL AND pull_request.entity_id != '')
        OR pull_request.account_id != ''
 ),

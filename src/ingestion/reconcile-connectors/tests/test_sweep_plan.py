@@ -16,10 +16,20 @@ from sweep import plan
 from sweep import status as vocab
 
 CONNECTOR = "example-tracker"
+TENANT = "tenant-under-test"
+SOURCE = "main"
 TICK = "tick-1"
 
+INSTANCE = plan.Instance(CONNECTOR, TENANT, SOURCE)
+
 CONNECTION = "connection-under-test"
-CONNECTORS = {CONNECTION: CONNECTOR}
+CONNECTORS = {CONNECTION: INSTANCE}
+
+#: The same connector installed a second time: its own Secret, its own source
+#: id, its own connection. Nothing but the identity tells its rows from the
+#: first instance's.
+SIBLING = plan.Instance(CONNECTOR, TENANT, "second")
+SIBLING_CONNECTION = "connection-of-the-sibling"
 
 STARTED = "2026-08-27T08:00:30Z"
 UPDATED = "2026-08-27T08:02:52Z"
@@ -233,7 +243,8 @@ class TestAJobMustBelongToAManagedConnection:
         assert isinstance(planned, plan.Skipped)
 
     def test_the_connector_comes_from_the_map_not_the_name(self) -> None:
-        planned = plan.sync_row(entry(), {CONNECTION: "renamed"}, TICK)
+        renamed = plan.Instance("renamed", TENANT, SOURCE)
+        planned = plan.sync_row(entry(), {CONNECTION: renamed}, TICK)
         assert planned["connector"] == "renamed"
 
 
@@ -266,13 +277,13 @@ class TestEveryRowClassFillsEveryColumn:
 
     def test_the_three_classes_agree_on_their_columns(self) -> None:
         sync = row()
-        snapshot = plan.plan_snapshot([CONNECTOR], TICK)[0]
+        snapshot = plan.plan_snapshot([INSTANCE], TICK)[0]
         seal = plan.plan_seal(TICK)
         assert set(snapshot) == set(sync)
         assert set(seal) == set(sync)
 
     def test_a_snapshot_row_names_its_connector_and_nothing_else(self) -> None:
-        snapshot = plan.plan_snapshot([CONNECTOR], TICK)[0]
+        snapshot = plan.plan_snapshot([INSTANCE], TICK)[0]
         assert snapshot["connector"] == CONNECTOR
         assert snapshot["event"] == plan.CONNECTOR_CONFIGURED
         assert snapshot["job_id"] == ""
@@ -283,11 +294,84 @@ class TestEveryRowClassFillsEveryColumn:
         seal = plan.plan_seal(TICK)
         assert seal["event"] == plan.SWEEP_COMPLETED
         assert seal["connector"] == ""
+        assert seal["tenant_id"] == ""
+        assert seal["source_id"] == ""
         assert seal["tick_id"] == TICK
 
-    def test_a_snapshot_holds_each_connector_once(self) -> None:
-        rows = plan.plan_snapshot([CONNECTOR, CONNECTOR, "other"], TICK)
+    def test_a_snapshot_holds_each_instance_once(self) -> None:
+        other = plan.Instance("other", TENANT, SOURCE)
+        rows = plan.plan_snapshot([INSTANCE, INSTANCE, other], TICK)
         assert [r["connector"] for r in rows] == ["example-tracker", "other"]
+
+
+class TestOneConnectorCanBeInstalledTwice:
+    """The name is shared; the identity is what the ledger tells them by.
+
+    Without it both instances' syncs land under one name, the page resolves one
+    newest sync for the pair, and whichever synced last hides the other — a
+    failing instance reads as healthy because its sibling succeeded.
+    """
+
+    def test_a_sync_row_carries_the_instance_that_ran_it(self) -> None:
+        planned = row()
+
+        assert planned["connector"] == CONNECTOR
+        assert planned["tenant_id"] == TENANT
+        assert planned["source_id"] == SOURCE
+
+    def test_two_instances_of_one_connector_record_separately(self) -> None:
+        both = {CONNECTION: INSTANCE, SIBLING_CONNECTION: SIBLING}
+        planned = plan.plan_syncs(
+            [entry(), entry(jobId=8413, connectionId=SIBLING_CONNECTION)],
+            both,
+            TICK,
+            frozenset(),
+        )
+
+        recorded = {(r["connector"], r["source_id"]) for r in planned.rows}
+        assert recorded == {(CONNECTOR, SOURCE), (CONNECTOR, "second")}
+
+    def test_a_snapshot_holds_both_instances_of_one_connector(self) -> None:
+        rows = plan.plan_snapshot([INSTANCE, SIBLING], TICK)
+
+        assert [r["source_id"] for r in rows] == [SOURCE, "second"]
+
+    def test_an_abandoned_marker_lands_on_the_instance_it_closes(self) -> None:
+        """Written under a different identity it closes nothing, and the open
+        row goes on being the page's answer."""
+        rows = plan.plan_abandoned(
+            [
+                {
+                    "job_id": "8412",
+                    "connector": CONNECTOR,
+                    "tenant_id": TENANT,
+                    "source_id": "second",
+                    "updated": "2026-08-27 08:02:52.000",
+                }
+            ],
+            TICK,
+        )
+
+        assert rows[0]["source_id"] == "second"
+
+    def test_an_abandoned_marker_copies_an_identity_it_cannot_resolve(self) -> None:
+        """Rows recorded before the identity was carried hold an empty one. The
+        marker has to match them, not improve on them."""
+        rows = plan.plan_abandoned(
+            [
+                {
+                    "job_id": "8412",
+                    "connector": CONNECTOR,
+                    "tenant_id": "",
+                    "source_id": "",
+                    "updated": "2026-08-27 08:02:52.000",
+                }
+            ],
+            TICK,
+        )
+
+        assert rows[0]["tenant_id"] == ""
+        assert rows[0]["source_id"] == ""
 
 
 class TestTheListingsOwnShape:

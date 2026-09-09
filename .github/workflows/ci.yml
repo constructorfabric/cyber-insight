@@ -157,6 +157,26 @@ jobs:
       - name: Reconcile renderer contract
         run: python3 -m pytest src/ingestion/reconcile-connectors/tests -q
 
+  # The per-service logging bar (#2488 AC-6): every Rust service is judged
+  # against shape / level / fields / leaks and one below the bar is reported,
+  # not skipped. Pure file inspection - stdlib only, no cargo, no helm.
+  logging-bar:
+    name: Logging bar - per-service verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Judge every service against the bar
+        run: |
+          python3 scripts/ci/logging_bar.py | tee logging_bar.md
+          rc=${PIPESTATUS[0]}
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat logging_bar.md >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$rc"
+      - name: Check self-test
+        run: python3 -m unittest discover -s scripts/ci/tests -p "test_logging_bar.py" -q
+
   # One unified job per Rust crate: fmt + clippy (when entry.lint) and coverage
   # (when entry.cover). Replaces the old standalone workspace rust-lint — fmt and
   # clippy now run per crate, gated by the lint flag from changed.py (a shared
@@ -218,7 +238,7 @@ jobs:
           if [ "${{ matrix.entry.all_features }}" = "true" ]; then feats="--all-features"; fi
           cargo clippy -p ${{ matrix.entry.package }} --all-targets $feats
 
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         if: ${{ matrix.entry.cover }}
         with:
           tool: cargo-llvm-cov

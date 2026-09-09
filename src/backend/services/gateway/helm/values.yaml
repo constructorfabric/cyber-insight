@@ -4,6 +4,8 @@ global:
   mcp:
     enabled: false
     publicUrl: ""
+  previews:
+    enabled: true
 
 replicaCount: 1
 
@@ -90,6 +92,7 @@ gateway:
     - prefix: /api/previews
       upstream: 'http://{{ .Release.Name }}-previews:8085'
       stripPrefix: true
+      previewsOnly: true
 
   # Trusted ingress-hop CIDRs for X-Forwarded-For (set_real_ip_from). Empty =
   # no client-IP trust; set to the ingress/pod network where TLS terminates in

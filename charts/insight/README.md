@@ -25,7 +25,7 @@ local `file://` subchart:
 | Insight v3 Core      | `src/backend/services/insight-v3-core/helm`         | mandatory (no flag)          | on      |
 | Identity Resolution  | `src/backend/services/identity-resolution/helm`     | `identityResolution.deploy`  | on — the validator refuses `false` |
 | Keycloak (broker)    | `src/backend/services/keycloak/helm`                | `keycloak.deploy`            | off     |
-| Previews             | `src/backend/services/previews/helm`                | `previews.deploy`            | on      |
+| Previews             | `src/backend/services/previews/helm`                | `global.previews.enabled`    | on      |
 | Git CLI proxy        | `src/backend/services/git-cli-proxy/helm`           | `gitCliProxy.deploy`         | on      |
 | Frontend (SPA)       | `src/frontend/helm`                                 | `frontend.deploy`            | on      |
 

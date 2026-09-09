@@ -132,10 +132,16 @@ pub fn register_routes(
 ) -> Router {
     let api = build_operations(Router::new(), openapi)
         .layer(Extension(state))
-        .layer(insight_http_metrics::ServerMetricsLayer::new("analytics"));
+        .layer(insight_http_metrics::ServerMetricsLayer::new("analytics"))
+        .layer(insight_log_context::LogContextLayer::new());
 
     host_router.merge(api)
 }
+
+#[cfg(test)]
+mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
 
 /// `OpenAPI` document metadata — the stable API-contract identity baked into
 /// the committed `docs/components/backend/analytics/openapi.json` and the
@@ -241,6 +247,20 @@ pub(crate) fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) ->
         .authenticated()
         .no_license_required()
         .path_param("connector", "Connector name, as the descriptors spell it")
+        .query_param_typed(
+            "tenant_id",
+            false,
+            "Tenant of one installation of the connector. Required alongside \
+             source_id; omit both to span every installation",
+            "string",
+        )
+        .query_param_typed(
+            "source_id",
+            false,
+            "Source id of one installation, as its Secret annotates it. \
+             Required alongside tenant_id",
+            "string",
+        )
         .json_response_with_schema::<connector_health_domain::SyncHistoryResponse>(
             openapi,
             StatusCode::OK,

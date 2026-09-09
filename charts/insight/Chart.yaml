@@ -26,8 +26,8 @@ type: application
 # version    — packaging version of the chart. Bump on EVERY chart change.
 # appVersion — product version. Matches the image tag of all insight-* images.
 # Release pipeline: git tag v0.1.0 → version=0.1.0, appVersion="0.1.0".
-version: 0.6.80
-appVersion: "2026.09.07.05.19-8dd84fd"
+version: 0.7.5
+appVersion: "2026.09.09.01.26-fe57378"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/constructorfabric/insight
 sources:
@@ -105,7 +105,10 @@ dependencies:
     alias: previews
     version: "0.1.0"
     repository: "file://../../src/backend/services/previews/helm"
-    condition: previews.deploy
+    # Global so the gateway subchart drops the /api/previews route in the
+    # same render — a route to a Service the release does not create keeps
+    # nginx from loading its config at pod start.
+    condition: global.previews.enabled
   # Clone-based git extraction for the nocode git connectors. Consumed ONLY by
   # Airbyte connector pods — no gateway route, absent from platform-config, and
   # its own NetworkPolicy closes ingress to everything else.

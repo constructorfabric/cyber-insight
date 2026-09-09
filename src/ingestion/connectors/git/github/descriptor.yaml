@@ -46,7 +46,7 @@ name: github
 #   scoped `dbt --full-refresh` a major bump dispatches re-materializes them.
 #   Safe: both dates have been in Bronze all along, and the author date falls
 #   back to the committer date where a source left it empty. #3153
-version: "8.0.0"
+version: "8.0.1"
 schedule: "0 */4 * * *"
 workflow: sync
 
