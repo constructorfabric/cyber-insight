@@ -154,7 +154,7 @@ jobs:
           # Ignored because nothing this stand raises or runs reads these paths.
           # INVARIANT: */helm/Chart.yaml is NOT ignored — dev-compose.sh takes
           # the image the stand pulls from its appVersion.
-          IGNORED_PATHS='^src/(backend/services/[^/]+|frontend)/helm/|^src/ingestion/tools/seed/tests/|^tests/datapath/|\.md$'
+          IGNORED_PATHS='^src/(backend/services/[^/]+|frontend)/helm/|^src/ingestion/tools/seed/tests/|^tests/datapath/|^(src/backend|src/frontend|tests|deploy/compose)/.*\.md$'
           IMAGE_PIN_PATHS='^src/(backend/services/[^/]+|frontend)/helm/Chart\.yaml$'
           # `|| true`: a grep selecting nothing exits 1 — set -e fails the step.
           changes_to_test="$(printf '%s\n' "$changed" | grep -vE "$IGNORED_PATHS" || true)"
