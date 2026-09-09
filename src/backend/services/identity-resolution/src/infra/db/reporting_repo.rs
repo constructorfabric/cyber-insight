@@ -6,6 +6,12 @@ use uuid::Uuid;
 use crate::domain::reporting::{ReportingError, ReportingLine, project_profile, reject_cycles};
 use crate::domain::seed::PersonAssignment;
 
+mod timing;
+use timing::{ReportingTimes, key};
+
+#[cfg(test)]
+mod tests;
+
 pub(crate) async fn current<C: ConnectionTrait>(
     db: &C,
     tenant: Uuid,
@@ -43,8 +49,19 @@ pub(crate) async fn reconcile(
     before: &[ReportingLine],
     after: &[ReportingLine],
 ) -> anyhow::Result<u64> {
+    reconcile_at(txn, tenant, author, before, after, &HashMap::new()).await
+}
+
+async fn reconcile_at(
+    txn: &DatabaseTransaction,
+    tenant: Uuid,
+    author: Uuid,
+    before: &[ReportingLine],
+    after: &[ReportingLine],
+    observed: &ReportingTimes,
+) -> anyhow::Result<u64> {
     reject_cycles(after)?;
-    let now = chrono::Utc::now().naive_utc();
+    let times = timing::effective_times(txn, tenant, before, after, observed).await?;
     let by_key: HashMap<_, _> = after
         .iter()
         .map(|line| ((line.child, &line.source_type, line.source_id), line))
@@ -57,17 +74,19 @@ pub(crate) async fn reconcile(
             unchanged.insert(key);
             continue;
         }
+        let at = times[&timing::key(line)];
         txn.execute_raw(Statement::from_sql_and_values(DbBackend::MySql,
             "UPDATE org_chart SET valid_to = GREATEST(valid_from, ?) WHERE insight_tenant_id = ? AND insight_source_type = ? AND insight_source_id = ? AND child_person_id = ? AND valid_to IS NULL",
-            [now.into(), tenant.as_bytes().to_vec().into(), line.source_type.clone().into(), line.source_id.as_bytes().to_vec().into(), line.child.as_bytes().to_vec().into()])).await?;
+            [at.into(), tenant.as_bytes().to_vec().into(), line.source_type.clone().into(), line.source_id.as_bytes().to_vec().into(), line.child.as_bytes().to_vec().into()])).await?;
     }
     for line in after {
         if unchanged.contains(&(line.child, &line.source_type, line.source_id)) {
             continue;
         }
+        let at = times[&key(line)];
         txn.execute_raw(Statement::from_sql_and_values(DbBackend::MySql,
             "INSERT INTO org_chart (insight_tenant_id, insight_source_type, insight_source_id, child_person_id, parent_person_id, author_person_id, reason, valid_from, valid_to, parent_reference) VALUES (?, ?, ?, ?, ?, ?, 'roster-profile', ?, NULL, ?)",
-            [tenant.as_bytes().to_vec().into(), line.source_type.clone().into(), line.source_id.as_bytes().to_vec().into(), line.child.as_bytes().to_vec().into(), line.parent.map(|id| id.as_bytes().to_vec()).into(), author.as_bytes().to_vec().into(), now.into(), line.reference.as_ref().map(serde_json::to_string).transpose()?.into()])).await?;
+            [tenant.as_bytes().to_vec().into(), line.source_type.clone().into(), line.source_id.as_bytes().to_vec().into(), line.child.as_bytes().to_vec().into(), line.parent.map(|id| id.as_bytes().to_vec()).into(), author.as_bytes().to_vec().into(), at.into(), line.reference.as_ref().map(serde_json::to_string).transpose()?.into()])).await?;
         count += 1;
     }
     Ok(count)
@@ -110,6 +129,7 @@ pub(crate) async fn reconcile_seed(
         .filter(|line| !governed.contains(&(line.child, line.source_type.clone())))
         .cloned()
         .collect();
+    let mut observed = HashMap::new();
     for person in people.values() {
         let Some(account) = person.profile_account.as_deref() else {
             continue;
@@ -128,11 +148,16 @@ pub(crate) async fn reconcile_seed(
             &bindings.by_account,
             &profiles,
         ) {
-            Ok(line) => after.push(line),
+            Ok(line) => {
+                if let Some(at) = profiles.get(account).and_then(timing::observed_at) {
+                    observed.insert(key(&line), at);
+                }
+                after.push(line);
+            }
             Err(ReportingError::UnresolvedReference) => after.extend(old.into_iter().cloned()),
             Err(error) => return Err(error.into()),
         }
     }
-    reconcile(txn, tenant, author, &before, &after).await?;
+    reconcile_at(txn, tenant, author, &before, &after, &observed).await?;
     Ok(())
 }

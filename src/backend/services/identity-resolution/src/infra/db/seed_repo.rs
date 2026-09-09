@@ -260,7 +260,23 @@ async fn rebuild_org_chart(
     tenant_id: Uuid,
     author_person_id: Uuid,
 ) -> anyhow::Result<u64> {
-    const DELETE_ORG_CHART: &str = "DELETE FROM org_chart WHERE insight_tenant_id = ? AND NOT EXISTS (SELECT 1 FROM people p WHERE p.insight_tenant_id = org_chart.insight_tenant_id AND p.person_id = org_chart.child_person_id AND p.profile_source_type = org_chart.insight_source_type)";
+    const DELETE_ORG_CHART: &str = "
+        DELETE FROM org_chart
+        WHERE insight_tenant_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM people p
+              WHERE p.insight_tenant_id = org_chart.insight_tenant_id
+                AND p.person_id = org_chart.child_person_id
+                AND p.profile_source_type = org_chart.insight_source_type
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM org_chart protected
+              WHERE protected.insight_tenant_id = org_chart.insight_tenant_id
+                AND protected.child_person_id = org_chart.child_person_id
+                AND protected.insight_source_type = org_chart.insight_source_type
+                AND protected.insight_source_id = org_chart.insight_source_id
+                AND protected.parent_reference IS NOT NULL
+          )";
     // The `?` markers bind, in order: `insight_tenant_id` SIX times (state_log,
     // default_active, pe_periods, email_to_person, existing_edges,
     // source_member_latest_active), then `author_person_id` once (the Path-B
@@ -480,6 +496,12 @@ async fn rebuild_org_chart(
         FROM legacy_edges e
         WHERE NOT EXISTS (SELECT 1 FROM people p WHERE p.insight_tenant_id = e.insight_tenant_id
                           AND p.person_id = e.child_person_id AND p.profile_source_type = e.insight_source_type)
+          AND NOT EXISTS (SELECT 1 FROM org_chart protected
+                          WHERE protected.insight_tenant_id = e.insight_tenant_id
+                            AND protected.child_person_id = e.child_person_id
+                            AND protected.insight_source_type = e.insight_source_type
+                            AND protected.insight_source_id = e.insight_source_id
+                            AND protected.parent_reference IS NOT NULL)
     ";
 
     let tenant_bytes = tenant_id.as_bytes().to_vec();

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::resolution::EXCLUDED_PERSON;
-use super::seed::{KnownBinding, SeedProfile, SourceAccountKey, normalize_email};
+use super::seed::{IdentityInputRow, KnownBinding, SeedProfile, SourceAccountKey, normalize_email};
 
 #[cfg(test)]
 mod tests;
@@ -59,18 +59,11 @@ pub(crate) enum ReportingError {
 pub(crate) fn observed_reference(
     profile: &SeedProfile,
 ) -> Result<Option<ManagerReference>, ReportingError> {
-    for name in ["parent_person_id", "parent_id", "parent_email"] {
-        let Some(observation) = profile
-            .observations
-            .iter()
-            .find(|observation| observation.value_type == name)
-        else {
-            continue;
-        };
+    if let Some(observation) = manager_observation(profile) {
         if observation.is_delete || observation.value.trim().is_empty() {
             return Ok(Some(ManagerReference::NoManager));
         }
-        let reference = match name {
+        let reference = match observation.value_type.as_str() {
             "parent_person_id" => ManagerReference::Person {
                 person_id: Uuid::parse_str(&observation.value)
                     .map_err(|_| ReportingError::InvalidReference)?,
@@ -90,6 +83,17 @@ pub(crate) fn observed_reference(
         return Ok(Some(reference));
     }
     Ok(None)
+}
+
+pub(crate) fn manager_observation(profile: &SeedProfile) -> Option<&IdentityInputRow> {
+    ["parent_person_id", "parent_id", "parent_email"]
+        .into_iter()
+        .find_map(|name| {
+            profile
+                .observations
+                .iter()
+                .find(|observation| observation.value_type == name)
+        })
 }
 
 pub(crate) fn resolve_reference(
