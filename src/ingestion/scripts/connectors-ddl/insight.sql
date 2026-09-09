@@ -310,6 +310,25 @@ ORDER BY (tenant_id, data_source, commit_hash)
 SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
 ;
 
+CREATE TABLE IF NOT EXISTS insight.git_deduplicated_file_changes
+(
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `project_key` String,
+    `repo_slug` String,
+    `commit_hash` String,
+    `data_source` String,
+    `file_path` String,
+    `file_extension` String,
+    `change_type` String,
+    `lines_added` Nullable(Int64),
+    `lines_removed` Nullable(Int64)
+)
+ENGINE = MergeTree
+ORDER BY (tenant_id, data_source, commit_hash)
+SETTINGS allow_nullable_key = 1, replicated_deduplication_window = '0', index_granularity = 8192
+;
+
 CREATE TABLE IF NOT EXISTS insight.git_default_branch_commits
 (
     `tenant_id` Nullable(String),

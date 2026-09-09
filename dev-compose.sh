@@ -778,7 +778,7 @@ YML
           set -eux
           apt-get update && apt-get install -y --no-install-recommends \
             protobuf-compiler libprotobuf-dev pkg-config libssl-dev cmake > /dev/null
-          cargo build --release$bin_flags
+          cargo build --profile e2e$bin_flags
           mkdir -p /out/analytics /out/authenticator /out/identity-resolution
           # Publish with cat + cmp, NOT cp or install. /out is a macOS bind
           # mount; cp there fails with \"error deallocating ...: Invalid
@@ -788,23 +788,23 @@ YML
           # bash exempts every command in an && list but the last -- so the
           # build stayed green and shipped a truncated binary that segfaults
           # the instant it is exec'd. cmp makes a bad copy fatal, here.
-          if [ -f /target/release/analytics ]; then
+          if [ -f /target/e2e/analytics ]; then
             rm -rf /out/analytics/analytics
-            cat /target/release/analytics > /out/analytics/analytics
+            cat /target/e2e/analytics > /out/analytics/analytics
             chmod 0755 /out/analytics/analytics
-            cmp -s /target/release/analytics /out/analytics/analytics || { echo 'ERROR: /out/analytics/analytics copied corrupt' >&2; exit 1; }
+            cmp -s /target/e2e/analytics /out/analytics/analytics || { echo 'ERROR: /out/analytics/analytics copied corrupt' >&2; exit 1; }
           fi
-          if [ -f /target/release/authenticator ]; then
+          if [ -f /target/e2e/authenticator ]; then
             rm -rf /out/authenticator/authenticator
-            cat /target/release/authenticator > /out/authenticator/authenticator
+            cat /target/e2e/authenticator > /out/authenticator/authenticator
             chmod 0755 /out/authenticator/authenticator
-            cmp -s /target/release/authenticator /out/authenticator/authenticator || { echo 'ERROR: /out/authenticator/authenticator copied corrupt' >&2; exit 1; }
+            cmp -s /target/e2e/authenticator /out/authenticator/authenticator || { echo 'ERROR: /out/authenticator/authenticator copied corrupt' >&2; exit 1; }
           fi
-          if [ -f /target/release/identity-resolution ]; then
+          if [ -f /target/e2e/identity-resolution ]; then
             rm -rf /out/identity-resolution/identity-resolution
-            cat /target/release/identity-resolution > /out/identity-resolution/identity-resolution
+            cat /target/e2e/identity-resolution > /out/identity-resolution/identity-resolution
             chmod 0755 /out/identity-resolution/identity-resolution
-            cmp -s /target/release/identity-resolution /out/identity-resolution/identity-resolution || { echo 'ERROR: /out/identity-resolution/identity-resolution copied corrupt' >&2; exit 1; }
+            cmp -s /target/e2e/identity-resolution /out/identity-resolution/identity-resolution || { echo 'ERROR: /out/identity-resolution/identity-resolution copied corrupt' >&2; exit 1; }
           fi
         "
     fi
@@ -1123,28 +1123,28 @@ cmd_build() {
       set -eux
       apt-get update && apt-get install -y --no-install-recommends \
         protobuf-compiler libprotobuf-dev pkg-config libssl-dev cmake > /dev/null
-      cargo build --release$bin_flags
+      cargo build --profile e2e$bin_flags
       mkdir -p /out/analytics /out/authenticator /out/identity-resolution
       # cat + cmp, not cp/install -- see the identical block in cmd_up for why
       # a plain cp here silently ships a truncated, instantly-segfaulting
       # binary.
-      if [ -f /target/release/analytics ]; then
+      if [ -f /target/e2e/analytics ]; then
         rm -rf /out/analytics/analytics
-        cat /target/release/analytics > /out/analytics/analytics
+        cat /target/e2e/analytics > /out/analytics/analytics
         chmod 0755 /out/analytics/analytics
-        cmp -s /target/release/analytics /out/analytics/analytics || { echo 'ERROR: /out/analytics/analytics copied corrupt' >&2; exit 1; }
+        cmp -s /target/e2e/analytics /out/analytics/analytics || { echo 'ERROR: /out/analytics/analytics copied corrupt' >&2; exit 1; }
       fi
-      if [ -f /target/release/authenticator ]; then
+      if [ -f /target/e2e/authenticator ]; then
         rm -rf /out/authenticator/authenticator
-        cat /target/release/authenticator > /out/authenticator/authenticator
+        cat /target/e2e/authenticator > /out/authenticator/authenticator
         chmod 0755 /out/authenticator/authenticator
-        cmp -s /target/release/authenticator /out/authenticator/authenticator || { echo 'ERROR: /out/authenticator/authenticator copied corrupt' >&2; exit 1; }
+        cmp -s /target/e2e/authenticator /out/authenticator/authenticator || { echo 'ERROR: /out/authenticator/authenticator copied corrupt' >&2; exit 1; }
       fi
-      if [ -f /target/release/identity-resolution ]; then
+      if [ -f /target/e2e/identity-resolution ]; then
         rm -rf /out/identity-resolution/identity-resolution
-        cat /target/release/identity-resolution > /out/identity-resolution/identity-resolution
+        cat /target/e2e/identity-resolution > /out/identity-resolution/identity-resolution
         chmod 0755 /out/identity-resolution/identity-resolution
-        cmp -s /target/release/identity-resolution /out/identity-resolution/identity-resolution || { echo 'ERROR: /out/identity-resolution/identity-resolution copied corrupt' >&2; exit 1; }
+        cmp -s /target/e2e/identity-resolution /out/identity-resolution/identity-resolution || { echo 'ERROR: /out/identity-resolution/identity-resolution copied corrupt' >&2; exit 1; }
       fi
     "
   }
@@ -1608,6 +1608,11 @@ for dbt-built gold data rather than for containers to report healthy.
           --build-frontend   Build the SPA from this tree with pnpm, served by
                              the front-built nginx. Backend stays pinned.
           --build            Both.
+          --skip-build       With --build-backend: mount binaries already in
+                             deploy/compose/build/ instead of compiling, over
+                             runtime images taken from the chart pins (the
+                             gateway image still builds from this tree). The
+                             caller owns the binaries' freshness.
 
           `up` refuses to pin a tree that differs from origin/main and names
           the flag to pass — but only when origin/main is in the checkout. A
@@ -1706,6 +1711,29 @@ test_stand_pull_backends() {
       echo "       --build to build from source deliberately." >&2
       return 1; }
     update_env_var "$TEST_STAND_ENV_FILE" "$var" "$image"
+  done
+}
+
+# With --skip-build the caller supplies the binaries, and compose must not
+# bake the dev images just to produce a compiled-in binary the bind-mount
+# shadows. Tag the chart-pinned images under the compose default names so
+# `up` finds them and skips the build. The gateway stays out: routegen bakes
+# routes.yaml into nginx.conf at image-build time, so a routing change is
+# only exercised by an image built from this tree.
+test_stand_prime_dev_images() {
+  local entry var chart name image local_tag
+  for entry in "${TEST_STAND_PINNED_BACKENDS[@]}"; do
+    IFS='|' read -r var chart name <<<"$entry"
+    [[ "$name" == "gateway" ]] && continue
+    local_tag="insight-${name}:dev"
+    docker image inspect "$local_tag" >/dev/null 2>&1 && continue
+    image="$(test_stand_pinned_image "$chart" "$name")" || return 1
+    echo "    ${local_tag} <- ${image} (runtime layers only; the binary is bind-mounted)"
+    with_retries docker pull --quiet "$image" >/dev/null || {
+      echo "ERROR: cannot pull $image to stand in for $local_tag under --skip-build." >&2
+      return 1
+    }
+    docker tag "$image" "$local_tag"
   done
 }
 
@@ -2134,13 +2162,14 @@ cmd_test_stand() {
     up)
       # Each tree is pinned to its chart's appVersion or built from this one,
       # asked separately: --build is the both-axes alias.
-      local backend_mode=pinned build_frontend=false
+      local backend_mode=pinned build_frontend=false skip_build=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --build)          backend_mode=source; build_frontend=true; shift ;;
           --build-backend)  backend_mode=source; shift ;;
           --prebuilt-backend) backend_mode=prebuilt; shift ;;
           --build-frontend) build_frontend=true; shift ;;
+          --skip-build)     skip_build=true; shift ;;
           -h|--help) cmd_test_stand_help; return 0 ;;
           *) echo "ERROR: unknown test-stand up option: $1" >&2; return 2 ;;
         esac
@@ -2153,6 +2182,9 @@ cmd_test_stand() {
       # the env file.
       case "$backend_mode" in
         source)
+          if [[ "$skip_build" == "true" ]]; then
+            test_stand_prime_dev_images || return 1
+          fi
           echo "=== the backend is compiled from this tree, not pulled ==="
           ;;
         prebuilt)
@@ -2166,6 +2198,7 @@ cmd_test_stand() {
 
       local up_args=(--env-file "$TEST_STAND_ENV_FILE"
                      --authenticator-redirect "$(test_stand_origin)/auth/callback")
+      [[ "$skip_build" == "true" ]] && up_args+=(--skip-build)
       cmd_up "${up_args[@]}" || return 1
 
       # cmd_up resolved and exported the issuer for this run; persist what it
@@ -2206,13 +2239,14 @@ cmd_test_stand() {
       # and nothing the suite is about to delete. Its silver generators do not
       # run, so gold is empty and the gold gate would never pass -- readiness
       # is the services answering instead.
-      local mbackend_mode=pinned mbuild_frontend=false
+      local mbackend_mode=pinned mbuild_frontend=false mskip_build=false
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --build)          mbackend_mode=source; mbuild_frontend=true; shift ;;
           --build-backend)  mbackend_mode=source; shift ;;
           --prebuilt-backend) mbackend_mode=prebuilt; shift ;;
           --build-frontend) mbuild_frontend=true; shift ;;
+          --skip-build)     mskip_build=true; shift ;;
           -h|--help) cmd_test_stand_help; return 0 ;;
           *) echo "ERROR: unknown test-stand minimal option: $1" >&2; return 2 ;;
         esac
@@ -2220,14 +2254,21 @@ cmd_test_stand() {
 
       test_stand_prepare_env "$mbuild_frontend" || return 1
       case "$mbackend_mode" in
-        source)   echo "=== the backend is compiled from this tree, not pulled ===" ;;
+        source)
+          if [[ "$mskip_build" == "true" ]]; then
+            test_stand_prime_dev_images || return 1
+          fi
+          echo "=== the backend is compiled from this tree, not pulled ==="
+          ;;
         prebuilt) test_stand_use_prebuilt_backends || return 1 ;;
         pinned)   test_stand_backend_matches_charts || return 1
                   test_stand_pull_backends || return 1 ;;
       esac
 
-      cmd_up --env-file "$TEST_STAND_ENV_FILE" --seed-target identity \
-             --authenticator-redirect "$(test_stand_origin)/auth/callback" || return 1
+      local mup_args=(--env-file "$TEST_STAND_ENV_FILE" --seed-target identity
+                      --authenticator-redirect "$(test_stand_origin)/auth/callback")
+      [[ "$mskip_build" == "true" ]] && mup_args+=(--skip-build)
+      cmd_up "${mup_args[@]}" || return 1
 
       update_env_var "$TEST_STAND_ENV_FILE" AUTHENTICATOR_OIDC_ISSUER "${AUTHENTICATOR_OIDC_ISSUER:-}"
       echo "=== persisted AUTHENTICATOR_OIDC_ISSUER=${AUTHENTICATOR_OIDC_ISSUER:-<empty>} ==="

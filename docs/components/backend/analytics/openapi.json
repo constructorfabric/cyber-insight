@@ -250,6 +250,20 @@
                 "description": "Absent for a configured connector that has never synced."
               }
             ]
+          },
+          "source_id": {
+            "description": "The installation's own id within that tenant. Absent with `tenant_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant_id": {
+            "description": "Tenant of the installation this row is. Absent together with\n`source_id` on history recorded before the ledger carried the identity\nthat no single instance could be shown to own — unattributed, which is a\ndifferent answer from attributed to something named \"\".",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2865,12 +2879,26 @@
           "connector": {
             "type": "string"
           },
+          "source_id": {
+            "description": "The installation's own id within that tenant. Absent with `tenant_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "syncs": {
             "description": "A bounded window, newest first — not the full retained history.",
             "items": {
               "$ref": "#/components/schemas/SyncFact"
             },
             "type": "array"
+          },
+          "tenant_id": {
+            "description": "Tenant of the installation the window was narrowed to, echoed back.\nAbsent where the caller asked for the connector rather than one\ninstallation of it, in which case the window spans every instance under\nthat name.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "window": {
             "description": "How many rows this window holds at most, so the page can say the list\nis a window rather than everything.",
@@ -4564,6 +4592,24 @@
             "in": "path",
             "name": "connector",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Tenant of one installation of the connector. Required alongside source_id; omit both to span every installation",
+            "in": "query",
+            "name": "tenant_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Source id of one installation, as its Secret annotates it. Required alongside tenant_id",
+            "in": "query",
+            "name": "source_id",
+            "required": false,
             "schema": {
               "type": "string"
             }
