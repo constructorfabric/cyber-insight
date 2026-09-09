@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { MetricDefinition } from "@/api/custom-client";
 import {
   DefinitionCard,
   DefinitionList,
 } from "@/components/custom/definition-list";
+import { MetricSummary } from "@/components/custom/definition-summary";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { metricNamesQuery, metricQuery } from "@/queries/custom";
-import { TEXT_BODY, TEXT_LABEL } from "@/lib/type-scale";
+import { TEXT_BODY } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
 /**
@@ -54,79 +54,5 @@ function MetricRow({ name }: { name: string }) {
         <MetricSummary definition={data} />
       )}
     </DefinitionCard>
-  );
-}
-
-/** Where a field or filter reads its value: a column, or a payload key. */
-function source(of: { column?: string; json?: string }): string {
-  return of.column ?? of.json ?? "";
-}
-
-/** One field, as the query reads it. */
-function reads(field: MetricDefinition["fields"][number]): string {
-  const read = field.agg ? `${field.agg}(${source(field)})` : source(field);
-  const named = field.person ? `${read} by name` : read;
-
-  return `${named} as ${field.as_name}`;
-}
-
-function MetricSummary({ definition }: { definition: MetricDefinition }) {
-  const grouped = definition.group_by ?? [];
-  const filters = definition.filters ?? [];
-
-  return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
-      <Row label="Table">
-        <code className="font-mono">
-          {definition.database
-            ? `${definition.database}.${definition.table}`
-            : definition.table}
-        </code>
-      </Row>
-      <Row label="Fields">
-        <span className="font-mono">{definition.fields.map(reads).join(", ")}</span>
-      </Row>
-      {grouped.length ? (
-        <Row label="Grouped by">
-          <span className="font-mono">{grouped.join(", ")}</span>
-        </Row>
-      ) : null}
-      {filters.length ? (
-        <Row label="Filtered">
-          <span className="font-mono">
-            {filters
-              .map((f) => `${source(f)} ${f.op} ${String(f.value)}`)
-              .join(", ")}
-          </span>
-        </Row>
-      ) : null}
-      {definition.order_by ? (
-        <Row label="Ordered by">
-          <span className="font-mono">
-            {definition.order_by.field} {definition.order_by.direction ?? "asc"}
-          </span>
-        </Row>
-      ) : null}
-      {definition.limit ? (
-        <Row label="Limit">
-          <span className="font-mono">{definition.limit}</span>
-        </Row>
-      ) : null}
-    </dl>
-  );
-}
-
-function Row({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <>
-      <dt className={TEXT_LABEL}>{label}</dt>
-      <dd className={cn(TEXT_BODY, "min-w-0 break-words")}>{children}</dd>
-    </>
   );
 }
