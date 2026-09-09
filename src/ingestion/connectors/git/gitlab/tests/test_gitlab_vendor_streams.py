@@ -404,6 +404,38 @@ def test_state_and_label_events_keep_the_actor_and_distinct_keys(http_mocker: Ht
 
 
 @freezegun.freeze_time(_FROZEN)
+def test_merge_requests_sharing_an_iid_across_projects_each_get_their_children(http_mocker: HttpMocker) -> None:
+    """The iid is numbered per project, so two projects' fifth merge requests
+    must fan out as two partitions, not collapse into one."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_MRS_URL, query_params=ANY_QUERY_PARAMS), _ok([_mr(5), _mr(5, id=2005, project_id=8)]))
+    for project_id, note_id in ((7, 701), (8, 801)):
+        http_mocker.get(
+            HttpRequest(f"{API_URL}/projects/{project_id}/merge_requests/5/notes", query_params=ANY_QUERY_PARAMS),
+            _ok(
+                [
+                    {
+                        "id": note_id,
+                        "body": "ok",
+                        "system": False,
+                        "author": {"id": 11, "username": "alice"},
+                        "created_at": "2026-06-20T10:00:00.000+00:00",
+                        "updated_at": "2026-06-20T10:00:00.000+00:00",
+                    }
+                ]
+            ),
+        )
+
+    output = read_stream(_CONNECTOR, "pull_request_notes", config)
+
+    assert not output.errors
+    by_project = {r.record.data["project_id"]: r.record.data for r in output.records}
+    assert sorted(by_project) == [7, 8], f"should fan out both projects: {by_project!r}"
+    assert (by_project[7]["id"], by_project[8]["id"]) == (701, 801)
+    assert by_project[8]["mr_iid"] == 5 and by_project[8]["unique_key"] == "test-tenant:test-source:8:5:801"
+
+
+@freezegun.freeze_time(_FROZEN)
 @pytest.mark.parametrize("status", [402, 403, 404])
 def test_a_project_scoped_error_on_one_merge_request_skips_it_not_the_stream(
     http_mocker: HttpMocker, status: int

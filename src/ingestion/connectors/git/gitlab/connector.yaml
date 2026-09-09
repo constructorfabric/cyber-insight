@@ -1346,7 +1346,7 @@ streams:
       type: SimpleRetriever
       requester:
         <<: *vendor_requester
-        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_partition.mr_iid }}/notes"
+        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_slice.extra_fields['iid'] }}/notes"
         request_parameters:
           order_by: created_at
           sort: asc
@@ -1362,10 +1362,11 @@ streams:
         type: SubstreamPartitionRouter
         parent_stream_configs:
           - type: ParentStreamConfig
-            parent_key: iid
-            partition_field: mr_iid
+            parent_key: id
+            partition_field: mr_id
             extra_fields:
               - [project_id]
+              - [iid]
               - [updated_at]
             # Without this the parent cursor never persists, and every merge
             # request since the start date is re-walked — one call each — on
@@ -1397,7 +1398,7 @@ streams:
             value: "{{ stream_slice.extra_fields['project_id'] }}"
           - type: AddedFieldDefinition
             path: [mr_iid]
-            value: "{{ stream_partition.mr_iid }}"
+            value: "{{ stream_slice.extra_fields['iid'] }}"
           - type: AddedFieldDefinition
             path: [mr_updated_at]
             value: "{{ stream_slice.extra_fields['updated_at'] or '' }}"
@@ -1445,7 +1446,7 @@ streams:
           - type: AddedFieldDefinition
             path: [unique_key]
             value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.mr_iid }}:{{ record['id'] }}
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_slice.extra_fields['iid'] }}:{{ record['id'] }}
       - type: RemoveFields
         field_pointers:
           - [author]
@@ -1503,7 +1504,7 @@ streams:
       type: SimpleRetriever
       requester:
         <<: *vendor_requester
-        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_partition.mr_iid }}/commits"
+        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_slice.extra_fields['iid'] }}/commits"
         request_parameters:
           per_page: "100"
         error_handler: *project_scoped_error_handler
@@ -1517,10 +1518,11 @@ streams:
         type: SubstreamPartitionRouter
         parent_stream_configs:
           - type: ParentStreamConfig
-            parent_key: iid
-            partition_field: mr_iid
+            parent_key: id
+            partition_field: mr_id
             extra_fields:
               - [project_id]
+              - [iid]
               - [updated_at]
             incremental_dependency: true
             stream: *pull_requests_window_parent
@@ -1549,7 +1551,7 @@ streams:
             value: "{{ stream_slice.extra_fields['project_id'] }}"
           - type: AddedFieldDefinition
             path: [mr_iid]
-            value: "{{ stream_partition.mr_iid }}"
+            value: "{{ stream_slice.extra_fields['iid'] }}"
           - type: AddedFieldDefinition
             path: [mr_updated_at]
             value: "{{ stream_slice.extra_fields['updated_at'] or '' }}"
@@ -1573,7 +1575,7 @@ streams:
           - type: AddedFieldDefinition
             path: [unique_key]
             value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.mr_iid }}:{{ record['id'] }}
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_slice.extra_fields['iid'] }}:{{ record['id'] }}
       - type: RemoveFields
         field_pointers:
           - [id]
@@ -1616,7 +1618,7 @@ streams:
       type: SimpleRetriever
       requester:
         <<: *vendor_requester
-        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_partition.mr_iid }}/resource_state_events"
+        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_slice.extra_fields['iid'] }}/resource_state_events"
         request_parameters:
           per_page: "100"
         error_handler: *project_scoped_error_handler
@@ -1630,10 +1632,11 @@ streams:
         type: SubstreamPartitionRouter
         parent_stream_configs:
           - type: ParentStreamConfig
-            parent_key: iid
-            partition_field: mr_iid
+            parent_key: id
+            partition_field: mr_id
             extra_fields:
               - [project_id]
+              - [iid]
             incremental_dependency: true
             stream: *pull_requests_window_parent
     incremental_sync:
@@ -1658,7 +1661,7 @@ streams:
             value: "{{ stream_slice.extra_fields['project_id'] }}"
           - type: AddedFieldDefinition
             path: [mr_iid]
-            value: "{{ stream_partition.mr_iid }}"
+            value: "{{ stream_slice.extra_fields['iid'] }}"
           - type: AddedFieldDefinition
             path: [state]
             value: "{{ record.get('state') or '' }}"
@@ -1677,7 +1680,7 @@ streams:
           - type: AddedFieldDefinition
             path: [unique_key]
             value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.mr_iid }}:state:{{ record['id'] }}
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_slice.extra_fields['iid'] }}:state:{{ record['id'] }}
       - type: RemoveFields
         field_pointers:
           - [user]
@@ -1719,7 +1722,7 @@ streams:
       type: SimpleRetriever
       requester:
         <<: *vendor_requester
-        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_partition.mr_iid }}/resource_label_events"
+        path: "/projects/{{ stream_slice.extra_fields['project_id'] }}/merge_requests/{{ stream_slice.extra_fields['iid'] }}/resource_label_events"
         request_parameters:
           per_page: "100"
         error_handler: *project_scoped_error_handler
@@ -1733,10 +1736,11 @@ streams:
         type: SubstreamPartitionRouter
         parent_stream_configs:
           - type: ParentStreamConfig
-            parent_key: iid
-            partition_field: mr_iid
+            parent_key: id
+            partition_field: mr_id
             extra_fields:
               - [project_id]
+              - [iid]
             incremental_dependency: true
             stream: *pull_requests_window_parent
     incremental_sync:
@@ -1761,7 +1765,7 @@ streams:
             value: "{{ stream_slice.extra_fields['project_id'] }}"
           - type: AddedFieldDefinition
             path: [mr_iid]
-            value: "{{ stream_partition.mr_iid }}"
+            value: "{{ stream_slice.extra_fields['iid'] }}"
           - type: AddedFieldDefinition
             path: [action]
             value: "{{ record.get('action') or '' }}"
@@ -1787,7 +1791,7 @@ streams:
           - type: AddedFieldDefinition
             path: [unique_key]
             value: >-
-              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_partition.mr_iid }}:label:{{ record['id'] }}
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_slice.extra_fields['project_id'] }}:{{ stream_slice.extra_fields['iid'] }}:label:{{ record['id'] }}
       - type: RemoveFields
         field_pointers:
           - [user]

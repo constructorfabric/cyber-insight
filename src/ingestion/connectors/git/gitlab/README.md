@@ -123,7 +123,9 @@ Merge requests are listed once per scope, not once per project: a group
 listing covers every project in the group in one paged walk. The children
 (notes, commits, state and label events) fan out from a windowed copy of that
 listing and persist its cursor, so a later sync visits only merge requests
-updated since. A merge request from a project the roster excluded still
+updated since. They partition on the merge request's global `id`: the `iid`
+in the endpoint path is numbered per project, and a partition key that repeats
+across projects would be deduplicated into one. A merge request from a project the roster excluded still
 appears in the listing; the staging models join on the roster and drop it
 there, so exclusion stays consistent.
 
