@@ -489,7 +489,10 @@ async fn arranging_a_board_around_a_widget_that_is_not_there_is_refused() {
     let surfaces = surfaces();
     assert_accepted(
         &surfaces
-            .put_dashboard(put("board", json!({"title": "Example board", "widgets": []})))
+            .put_dashboard(put(
+                "board",
+                json!({"title": "Example board", "widgets": []}),
+            ))
             .await,
     );
 

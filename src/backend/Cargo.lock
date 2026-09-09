@@ -3777,6 +3777,7 @@ dependencies = [
  "clickhouse",
  "futures",
  "insight-clickhouse",
+ "insight-log-context",
  "jsonwebtoken",
  "p256 0.14.0",
  "reqwest 0.12.28",

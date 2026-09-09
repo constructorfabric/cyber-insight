@@ -1,3 +1,5 @@
+use std::fmt;
+
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use thiserror::Error;
@@ -45,7 +47,7 @@ impl Default for McpConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 pub(crate) struct GearConfig {
     pub(crate) clickhouse_url: String,
@@ -88,7 +90,6 @@ impl Default for GearConfig {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct ValidatedConfig {
     clickhouse_url: String,
     clickhouse_database: String,
@@ -104,6 +105,53 @@ pub(crate) struct ValidatedConfig {
     database_url: String,
     identity_url: String,
     mcp: McpConfig,
+}
+
+// SAFETY: `database_url` embeds the MariaDB password, so a `?config` in any
+// log line must render a marker rather than the value. The secrets beside it
+// redact themselves; a plain String does not.
+impl fmt::Debug for GearConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        f.debug_struct("GearConfig")
+            .field("clickhouse_url", &self.clickhouse_url)
+            .field("clickhouse_database", &self.clickhouse_database)
+            .field("identity_database", &self.identity_database)
+            .field("clickhouse_user", &self.clickhouse_user)
+            .field("clickhouse_password", &REDACTED)
+            .field("clickhouse_query_user", &self.clickhouse_query_user)
+            .field("clickhouse_query_password", &REDACTED)
+            .field("ingest_token", &REDACTED)
+            .field("anthropic_token", &REDACTED)
+            .field("chat_mode", &self.chat_mode)
+            .field("chat_model", &self.chat_model)
+            .field("database_url", &REDACTED)
+            .field("identity_url", &self.identity_url)
+            .field("mcp", &self.mcp)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ValidatedConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        f.debug_struct("ValidatedConfig")
+            .field("clickhouse_url", &self.clickhouse_url)
+            .field("clickhouse_database", &self.clickhouse_database)
+            .field("identity_database", &self.identity_database)
+            .field("clickhouse_user", &self.clickhouse_user)
+            .field("clickhouse_password", &REDACTED)
+            .field("clickhouse_query_user", &self.clickhouse_query_user)
+            .field("clickhouse_query_password", &REDACTED)
+            .field("ingest_token", &REDACTED)
+            .field("anthropic_token", &REDACTED)
+            .field("chat_mode", &self.chat_mode)
+            .field("chat_model", &self.chat_model)
+            .field("database_url", &REDACTED)
+            .field("identity_url", &self.identity_url)
+            .field("mcp", &self.mcp)
+            .finish()
+    }
 }
 
 impl ValidatedConfig {

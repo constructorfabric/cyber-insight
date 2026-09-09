@@ -55,7 +55,14 @@ async fn main() -> Result<()> {
     let config = AppConfig::load_or_default(cli.config.as_ref())?;
 
     match cli.command.unwrap_or(Commands::Run) {
-        Commands::Run => run_server(config).await,
+        Commands::Run => {
+            let resource = &config.opentelemetry.resource;
+            insight_log_context::init_identity_from_resource(
+                &resource.service_name,
+                &resource.attributes,
+            );
+            run_server(config).await
+        }
         Commands::Migrate => {
             init_subcommand_logging();
             gear::run_migrate(&config).await

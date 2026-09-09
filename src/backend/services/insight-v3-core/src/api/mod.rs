@@ -143,10 +143,20 @@ pub(crate) fn register_routes(
     state: Arc<AppState>,
     admission: IngestAdmission,
 ) -> Router {
-    let router = tables::register_routes(router, openapi, state.clone(), admission.clone());
-    let router = raw_data::register_routes(router, openapi, state.clone(), admission);
-    let router = definitions::register_routes(router, openapi, state.clone());
-    let router = metric_run::register_routes(router, openapi, state.clone());
+    // Built apart from the host's router so the layer wraps this service's
+    // own routes, and merged in after — the host's own endpoints carry
+    // their own context.
+    let api = tables::register_routes(Router::new(), openapi, state.clone(), admission.clone());
+    let api = raw_data::register_routes(api, openapi, state.clone(), admission);
+    let api = definitions::register_routes(api, openapi, state.clone());
+    let api = metric_run::register_routes(api, openapi, state.clone());
+    let api = chat::register_routes(api, openapi, state)
+        .layer(insight_log_context::LogContextLayer::new());
 
-    chat::register_routes(router, openapi, state)
+    router.merge(api)
 }
+
+#[cfg(test)]
+mod log_context_tests;
+#[cfg(test)]
+mod log_leak_tests;
