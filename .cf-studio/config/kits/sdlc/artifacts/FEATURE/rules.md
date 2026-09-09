@@ -35,7 +35,7 @@ RULES:
   - NEVER duplicate semantic criteria already in {feature_checklist}
   - ALWAYS preserve the canonical section 6 Acceptance Criteria checklist; do not introduce AC IDs or AC coverage ratios to link tests
   - ALWAYS trace PRD FR/NFR -> FEATURE Requirements and feature ID -> scenario -> executable test, carrying the covered feature criterion where one applies; tests cite the feature path, feature ID and stable scenario number, and keep the criterion reference an implemented scenario already names
-  - ALWAYS give each authored Testing scenario one primary vector and one suite tag; use `../../guides/quality-vectors.md` (relative to this file) for advisory scope, shared-test attribution and changed-scenario guidance; missing vector categories alone do not create a readiness gate
+  - ALWAYS give each authored Testing scenario one primary vector and one suite tag — gated by {feature_checklist}; use `../../guides/quality-vectors.md` (relative to this file) only for advisory scope, shared-test attribution and changed-scenario guidance; coverage of all five vector categories is not required — a feature legitimately may not exercise every vector, and no category's absence alone creates a readiness gate
   - NEVER include placeholder content (TODO, TBD, FIXME)
   - NEVER create duplicate IDs within the document
 

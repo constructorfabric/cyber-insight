@@ -27,6 +27,7 @@
   - [ARCH-PRD-003: Scalability Considerations](#arch-prd-003-scalability-considerations)
   - [ARCH-PRD-004: System Actor Clarity](#arch-prd-004-system-actor-clarity)
   - [ARCH-PRD-005: Compatibility Requirements](#arch-prd-005-compatibility-requirements)
+  - [ARCH-PRD-006: Quality Vector Coverage](#arch-prd-006-quality-vector-coverage)
 - [🔒 SECURITY Expertise (SEC)](#security-expertise-sec)
   - [SEC-PRD-001: Authentication Requirements](#sec-prd-001-authentication-requirements)
   - [SEC-PRD-002: Authorization Requirements](#sec-prd-002-authorization-requirements)
@@ -93,8 +94,8 @@
 <!-- /toc -->
 
 **Artifact**: Product Requirements Document (PRD)
-**Version**: 1.2
-**Last Updated**: 2026-02-03
+**Version**: 1.3
+**Last Updated**: 2026-09-09
 **Purpose**: Comprehensive quality checklist for PRD artifacts
 ---
 
@@ -356,6 +357,18 @@ Mark review as "PARTIAL" if not all domains completed.
 - [ ] Data format compatibility requirements captured (file formats, protocols)
 - [ ] Hardware/software environment compatibility stated
 - [ ] Backward compatibility requirements documented (if applicable)
+
+### ARCH-PRD-006: Quality Vector Coverage
+**Severity**: HIGH
+**Ref**: [quality-vector guide](../../guides/quality-vectors.md) (kit-local framing, not an ISO/IEC 25010 characteristic set)
+
+> **New in v1.3**: Added to gate the 6.1 Quality Vector Analysis table introduced alongside it.
+
+- [ ] All five quality vectors (Efficiency, Reliability, Performance, Security, Versatility) are present in the Quality Vector Analysis table
+- [ ] Each row's Show-Stopper cell takes one of four forms, each held to its own bar: a show-stopper requirement that is specific and measurable, citing the NFR that carries the obligation; an explicit `None — no show-stopper; obligations covered by {NFR IDs}` that names the actual NFR IDs from 6.2; an explicit `None — not material because {reason}` where the reason cites a concrete scope, scale, deployment or exclusion fact (not a restatement of immateriality); or an explicit `None — no obligation; {vector} is material and 6.2 carries no covering NFR (gap)`, valid only where the vector is genuinely material and no NFR in 6.2 covers it — this form records a real gap for the PRD's owner to close, not a satisfied requirement, and a reviewer seeing it should flag the gap rather than pass the row (the dash in all four forms follows the document's own dash convention — em dash or double hyphen — not a fixed one)
+- [ ] Every row carries a rationale
+- [ ] Where a show-stopper row corresponds to an NFR defined in 6.2, the two agree in modal strength (a show-stopper is not backed by a `SHOULD` bullet)
+- [ ] The analysis is presented as one consolidated table, not expanded into per-vector subsections
 
 ---
 
@@ -754,12 +767,12 @@ Mark review as "PARTIAL" if not all domains completed.
 
 ## Authoring aid — quality vectors
 
-Not a checklist item: it carries no ID, no severity and no verdict.
-
 **Authoring aid:** Use the [quality-vector guide](../../guides/quality-vectors.md)
 to suggest clearer expectations, scope, conditions or measurements. Report these
 as improvement opportunities, without a severity or pass/fail verdict. Canonical
-criteria above and agreed requirements retain their meaning.
+criteria above and agreed requirements retain their meaning. The presence and
+completeness of the Quality Vector Analysis table itself is checked under
+ARCH-PRD-006.
 
 ---
 

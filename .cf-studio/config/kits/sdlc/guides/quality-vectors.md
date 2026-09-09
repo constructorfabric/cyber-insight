@@ -1,10 +1,12 @@
 # Quality vectors: authoring guidance
 
 Use the five vectors to help an author discover and clarify product quality
-expectations. This guide produces improvement suggestions, not a new PRD or
-FEATURE readiness gate. Missing tags or a missing vector row do not create a
-validation failure. Existing canonical validation and
-agreed product requirements retain their meaning.
+expectations. This guide produces improvement suggestions for FR/NFR wording
+and the optional per-requirement `**Vector**` tag; a missing tag, or an FR/NFR
+left unclear, does not by itself create a validation failure. PRD section 6.1
+Quality Vector Analysis is checked separately, at HIGH severity, by checklist
+item ARCH-PRD-006: there, a missing vector row is a finding. Existing
+canonical validation and agreed product requirements retain their meaning.
 
 ## Meanings and useful questions
 
@@ -63,8 +65,19 @@ evidence can remain pending during authoring. An individual default NFR may be
 excluded with a reason while other requirements in its vector remain applicable.
 A wholly inapplicable vector is a separate, explicit scope decision.
 
-An optional vector summary should reference these IDs and explain business
-consequences without introducing a second definition or target. A tag groups a
+PRD section 6.1 Quality Vector Analysis is not optional: where a row is
+materially relevant, its Show-Stopper Requirement or Rationale should
+reference the corresponding NFR's ID from 6.2 and explain business
+consequences, without introducing a second definition or target. The
+Show-Stopper cell takes one of four forms: a show-stopper requirement citing
+its NFR; if the vector is material and its 6.2 obligations are covered but
+none of them makes the module unviable, `None — no show-stopper; obligations
+covered by {NFR IDs}`; where the vector cannot break the module at all,
+`None — not material because {reason}`; or, where the vector is material and
+6.2 carries no obligation covering it at all, `None — no obligation; {vector}
+is material and 6.2 carries no covering NFR (gap)` — an admission of a real
+gap for the PRD's owner to close, not a shortcut around the analysis. A row
+marked `None — not material` has no NFR to reference. A tag groups a
 requirement under a vector; it says nothing about adequacy or results.
 
 ## Carry the obligation into DESIGN and FEATURE
