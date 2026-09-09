@@ -9,6 +9,7 @@ use super::*;
 use crate::api::AppState;
 use crate::catalog::Catalog;
 use crate::chat::ChatClient;
+use crate::dashboard::{HeadingItem, TextItem, WidgetItem};
 use crate::definitions::memory::MemoryDefinitions;
 use crate::identity::IdentityClient;
 use crate::metric_query::{MetricRunner, People};
@@ -116,7 +117,7 @@ fn assert_accepted(result: &CallToolResult) -> Value {
 }
 
 #[test]
-fn the_server_announces_exactly_the_nine_custom_surface_tools() {
+fn the_server_announces_exactly_the_ten_custom_surface_tools() {
     let tools = CustomSurfaces::tool_router().list_all();
 
     let mut names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -125,6 +126,7 @@ fn the_server_announces_exactly_the_nine_custom_surface_tools() {
     assert_eq!(
         names,
         [
+            "arrange_dashboard",
             "delete_definition",
             "get_definition",
             "list_definitions",
@@ -418,5 +420,103 @@ async fn a_page_beyond_the_cap_is_refused_rather_than_served() {
             }))
             .await,
         "limit must be between 1 and 200",
+    );
+}
+
+#[tokio::test]
+async fn arranging_a_board_orders_its_widgets_and_captions_them() {
+    let surfaces = surfaces();
+    assert_accepted(&surfaces.put_metric(put("per-actor", metric_body())).await);
+    for widget in ["first", "second"] {
+        assert_accepted(
+            &surfaces
+                .put_widget(put(
+                    widget,
+                    json!({"type": "table", "metric": "per-actor", "columns": ["actor"]}),
+                ))
+                .await,
+        );
+    }
+    assert_accepted(
+        &surfaces
+            .put_dashboard(put(
+                "board",
+                json!({"title": "Example board", "widgets": ["first", "second"]}),
+            ))
+            .await,
+    );
+
+    let arranged = assert_accepted(
+        &surfaces
+            .arrange_dashboard(Parameters(ArrangeRequest {
+                name: "board".to_owned(),
+                items: vec![
+                    Item::Heading(HeadingItem {
+                        heading: "Per person".to_owned(),
+                    }),
+                    Item::Widget(WidgetItem {
+                        widget: "second".to_owned(),
+                    }),
+                    Item::Text(TextItem {
+                        text: "Bots excluded.".to_owned(),
+                    }),
+                    Item::Widget(WidgetItem {
+                        widget: "first".to_owned(),
+                    }),
+                ],
+            }))
+            .await,
+    );
+
+    // The title survives, the shorthand does not, and the order is the one
+    // that was asked for.
+    assert_eq!(
+        arranged,
+        json!({
+            "title": "Example board",
+            "items": [
+                { "heading": "Per person" },
+                { "widget": "second" },
+                { "text": "Bots excluded." },
+                { "widget": "first" }
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+async fn arranging_a_board_around_a_widget_that_is_not_there_is_refused() {
+    let surfaces = surfaces();
+    assert_accepted(
+        &surfaces
+            .put_dashboard(put("board", json!({"title": "Example board", "widgets": []})))
+            .await,
+    );
+
+    assert_refused(
+        &surfaces
+            .arrange_dashboard(Parameters(ArrangeRequest {
+                name: "board".to_owned(),
+                items: vec![Item::Widget(WidgetItem {
+                    widget: "absent".to_owned(),
+                })],
+            }))
+            .await,
+        "widget `absent` was not found",
+    );
+}
+
+#[tokio::test]
+async fn arranging_a_board_that_is_not_there_is_refused() {
+    let surfaces = surfaces();
+
+    assert_refused(
+        &surfaces
+            .arrange_dashboard(Parameters(ArrangeRequest {
+                name: "absent".to_owned(),
+                items: Vec::new(),
+            }))
+            .await,
+        "dashboard `absent` was not found",
     );
 }

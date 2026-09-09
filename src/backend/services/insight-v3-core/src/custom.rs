@@ -4,6 +4,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::catalog::{Catalog, CatalogError, TableSchema};
+use crate::dashboard::Item;
 use crate::definitions::{
     DefinitionKind, DefinitionName, DefinitionStoreError, Definitions, NamePage, Page,
 };
@@ -103,6 +104,46 @@ impl<'a> Surfaces<'a> {
                 kind,
                 name: name.as_str().to_owned(),
             })
+    }
+
+    /// Replaces what a dashboard draws, keeping its title.
+    ///
+    /// The order of the widgets, and the headings and prose between them, are
+    /// one list - so laying a board out is sending that list, not editing a
+    /// body around it.
+    pub(crate) async fn arrange(
+        &self,
+        name: &DefinitionName,
+        items: &[Item],
+    ) -> Result<Value, CustomError> {
+        let previous = self.get(DefinitionKind::Dashboard, name).await?;
+
+        for drawn in items.iter().filter_map(Item::widget) {
+            let widget = DefinitionName::parse(drawn).map_err(|_| CustomError::NotFound {
+                kind: DefinitionKind::Widget,
+                name: drawn.to_owned(),
+            })?;
+            if self
+                .definitions
+                .get(DefinitionKind::Widget, &widget)
+                .await
+                .map_err(CustomError::Store)?
+                .is_none()
+            {
+                return Err(CustomError::NotFound {
+                    kind: DefinitionKind::Widget,
+                    name: drawn.to_owned(),
+                });
+            }
+        }
+
+        let body = crate::dashboard::laid_out(&previous, items).map_err(CustomError::Body)?;
+        self.definitions
+            .put(DefinitionKind::Dashboard, name, &body)
+            .await
+            .map_err(CustomError::Store)?;
+
+        Ok(body)
     }
 
     pub(crate) async fn put(
@@ -207,12 +248,21 @@ impl<'a> Surfaces<'a> {
                 continue;
             };
 
-            let names = match body.get(needle) {
-                Some(Value::String(one)) => vec![one.as_str()],
-                Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
-                _ => Vec::new(),
+            let names: Vec<String> = match holder {
+                // A board names its widgets in an item list or in the older
+                // shorthand, and either one is still drawing them.
+                DefinitionKind::Dashboard => crate::dashboard::widgets(&body),
+                _ => match body.get(needle) {
+                    Some(Value::String(one)) => vec![one.clone()],
+                    Some(Value::Array(many)) => many
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    _ => Vec::new(),
+                },
             };
-            if names.contains(&name.as_str()) {
+            if names.iter().any(|held| held == name.as_str()) {
                 used_by.push(holder_name);
             }
         }

@@ -3,6 +3,7 @@ mod catalog;
 mod chat;
 mod config;
 mod custom;
+mod dashboard;
 mod definitions;
 mod gear;
 mod identity;

@@ -250,7 +250,13 @@ pub(crate) fn custom_error(error: CustomError) -> CanonicalError {
 }
 
 /// The same body, pointed at the new name.
-fn pointed_at(mut body: serde_json::Value, field: &str, from: &str, to: &str) -> serde_json::Value {
+///
+/// A dashboard also names its widgets inside its item list, where the order
+/// and the headings live; nothing else has one, so walking it is a no-op for
+/// a widget's metric.
+fn pointed_at(body: serde_json::Value, field: &str, from: &str, to: &str) -> serde_json::Value {
+    let mut body = crate::dashboard::renamed(body, from, to);
+
     match body.get_mut(field) {
         Some(serde_json::Value::String(one)) if one == from => to.clone_into(one),
         Some(serde_json::Value::Array(many)) => {

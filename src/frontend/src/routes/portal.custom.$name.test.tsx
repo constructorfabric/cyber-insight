@@ -67,6 +67,39 @@ describe("/portal/custom/$name", () => {
     expect(await screen.findByRole("cell", { name: "59" })).toBeInTheDocument();
   });
 
+  it("draws items in order, with headings and prose between the widgets", async () => {
+    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
+      title: "Engineering",
+      items: [
+        { heading: "Per person" },
+        { widget: "commits_table" },
+        { text: "Merge commits excluded." },
+      ],
+    });
+    vi.mocked(customClient.fetchWidget).mockResolvedValue({
+      type: "table",
+      metric: "commits_per_day",
+      columns: ["day"],
+    });
+    vi.mocked(customClient.runMetric).mockResolvedValue({
+      columns: ["day"],
+      rows: [["2026-09-01"]],
+    });
+    portalRouter.go("/portal/custom/engineering");
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByRole("heading", { name: "Per person" })
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Merge commits excluded.")
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("cell", { name: "2026-09-01" })
+    ).toBeInTheDocument();
+  });
+
   it("shows a loading state before the dashboard resolves", () => {
     vi.mocked(customClient.fetchDashboard).mockReturnValue(
       new Promise(() => {})

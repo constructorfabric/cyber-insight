@@ -578,7 +578,7 @@ fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue, map: &str) -> Str
          A widget draws its metric's columns by their as_name, never by the raw json field: a metric whose as_name is total_lines is drawn as y total_lines.\n\
          A widget is one of: {\"type\":\"table\",\"metric\":<metric name>,\"columns\":[<string>]}; {\"type\":\"line\"|\"bar\"|\"area\",\"metric\":<metric name>,\"x\":<string>,\"y\":<string>}; {\"type\":\"stat\",\"metric\":<metric name>,\"value\":<string>,\"label\":<string>}; {\"type\":\"pie\",\"metric\":<metric name>,\"label\":<string>,\"value\":<string>}.\n\
          Pick the one that answers the question: a count per category is a bar, a count over time is a line, a running total is an area, a single number is a stat, a share of a total is a pie, and anything with several columns worth reading is a table.\n\
-         A dashboard is {\"title\":<string>,\"widgets\":[<widget name>]}.\n",
+         A dashboard is {\"title\":<string>,\"items\":[<item>]}, drawn top to bottom. An item is {\"widget\":<widget name>}, {\"heading\":<string>} for a section title over the widgets that follow, or {\"text\":<string>} for a line saying what a number means or leaves out. Group the widgets under headings when a board holds more than a handful.\n",
     );
 
     if tables.is_empty() {
@@ -817,13 +817,23 @@ fn proposal_tools() -> Vec<Value> {
             "label": plain,
         },
     });
+    let item = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Exactly one of widget, heading or text.",
+        "properties": {
+            "widget": name,
+            "heading": { "type": "string" },
+            "text": { "type": "string" },
+        },
+    });
     let dashboard = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "widgets"],
+        "required": ["title", "items"],
         "properties": {
             "title": { "type": "string" },
-            "widgets": { "type": "array", "items": name },
+            "items": { "type": "array", "items": item },
         },
     });
     let named = |body: Value| {

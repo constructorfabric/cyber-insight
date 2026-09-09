@@ -5,7 +5,8 @@ import { Table2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-import { CustomApiError } from "@/api/custom-client";
+import { CustomApiError, type Dashboard } from "@/api/custom-client";
+import { dashboardItems } from "@/lib/custom/dashboard-items";
 import { CustomWidget } from "@/components/custom/custom-widget";
 import { WidgetDrilldown } from "@/components/custom/widget-drilldown";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -63,7 +64,7 @@ function CustomDashboardBody({
   name,
   onRetry,
 }: {
-  dashboard: { title: string; widgets: string[] } | undefined;
+  dashboard: Dashboard | undefined;
   isLoading: boolean;
   isError: boolean;
   error: Error | null;
@@ -92,12 +93,14 @@ function CustomDashboardBody({
   }
   if (!dashboard) return null;
 
+  const items = dashboardItems(dashboard);
+
   return (
     <>
       <header className="mb-4">
         <h1 className={TEXT_TITLE}>{dashboard.title}</h1>
       </header>
-      {dashboard.widgets.length === 0 ? (
+      {items.length === 0 ? (
         <ComingSoon
           variant="card"
           state="empty"
@@ -105,9 +108,34 @@ function CustomDashboardBody({
         />
       ) : (
         <div className="grid items-start gap-4 @3xl:grid-cols-2">
-          {dashboard.widgets.map((widgetName) => (
-            <DashboardWidgetSlot key={widgetName} name={widgetName} />
-          ))}
+          {items.map((item, index) =>
+            "widget" in item ? (
+              <DashboardWidgetSlot
+                key={`${index}-${item.widget}`}
+                name={item.widget}
+              />
+            ) : "heading" in item ? (
+              // The eyebrow label the portal's own sections use, and the whole
+              // row: it introduces the widgets under it rather than sitting
+              // beside one.
+              <h2
+                key={`${index}-heading`}
+                className="col-span-full mt-2 text-xs font-medium tracking-wider text-muted-foreground uppercase first:mt-0"
+              >
+                {item.heading}
+              </h2>
+            ) : (
+              <p
+                key={`${index}-text`}
+                className={cn(
+                  TEXT_BODY,
+                  "col-span-full max-w-prose text-muted-foreground"
+                )}
+              >
+                {item.text}
+              </p>
+            )
+          )}
         </div>
       )}
     </>

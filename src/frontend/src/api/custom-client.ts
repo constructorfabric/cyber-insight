@@ -81,10 +81,23 @@ export interface MetricResult {
   percents?: string[];
 }
 
+/**
+ * One thing a dashboard draws: a stored widget, a section title over the
+ * widgets that follow, or a line of prose between them.
+ */
+export type DashboardItem =
+  | { widget: string }
+  | { heading: string }
+  | { text: string };
+
 export interface Dashboard {
   title: string;
-  widgets: string[];
+  /** What the dashboard draws, top to bottom. */
+  items?: DashboardItem[];
+  /** The older shorthand: a list of nothing but widgets. */
+  widgets?: string[];
 }
+
 
 export interface ChatCreated {
   metric?: string;

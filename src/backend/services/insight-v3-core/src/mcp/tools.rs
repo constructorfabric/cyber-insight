@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::api::AppState;
 use crate::catalog::{Layer, TableSchema};
 use crate::custom::{CustomError, Surfaces};
+use crate::dashboard::Item;
 use crate::definitions::{DefinitionKind, DefinitionName, Page};
 
 #[cfg(test)]
@@ -69,6 +70,17 @@ pub(crate) struct NamedRequest {
 pub(crate) struct NameRequest {
     /// The stored metric's name.
     pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(crate) struct ArrangeRequest {
+    /// The dashboard to lay out. It must already exist.
+    pub(crate) name: String,
+    /// Everything the dashboard draws, top to bottom. Each entry names
+    /// exactly one of `widget` (a stored widget), `heading` (a section title
+    /// over the widgets that follow) or `text` (a line of prose between
+    /// them).
+    pub(crate) items: Vec<Item>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -185,6 +197,25 @@ impl CustomSurfaces {
     }
 
     #[tool(
+        name = "arrange_dashboard",
+        description = "Lays out a dashboard that already exists: the order its widgets are drawn in, and the headings and lines of prose between them. Send the whole list top to bottom — it replaces the previous one, and the title is kept. Every widget it names must already exist."
+    )]
+    async fn arrange_dashboard(
+        &self,
+        Parameters(request): Parameters<ArrangeRequest>,
+    ) -> CallToolResult {
+        let name = match parse_name(&request.name) {
+            Ok(name) => name,
+            Err(refusal) => return refusal,
+        };
+
+        match self.surfaces().arrange(&name, &request.items).await {
+            Ok(body) => CallToolResult::structured(body),
+            Err(error) => tool_error(&error),
+        }
+    }
+
+    #[tool(
         name = "get_definition",
         description = "Reads one definition's stored body, so it can be inspected or amended rather than rewritten from scratch."
     )]
@@ -221,7 +252,7 @@ impl CustomSurfaces {
 
     #[tool(
         name = "put_dashboard",
-        description = "Creates or replaces a dashboard, which has a title and names the widgets it holds: {\"title\": \"Example board\", \"widgets\": [\"chart\"]}."
+        description = "Creates or replaces a dashboard: a title, and what it draws top to bottom: {\"title\": \"Example board\", \"items\": [{\"heading\": \"Commits\"}, {\"widget\": \"chart\"}, {\"text\": \"Merge commits excluded.\"}]}. Each item names exactly one of `widget`, `heading` or `text`. `widgets: [\"chart\"]` is the older shorthand for a list of nothing but widgets, and is still read. To reorder or caption a board that exists, call arrange_dashboard instead."
     )]
     async fn put_dashboard(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
         self.write(ToolKind::Dashboard, request).await
