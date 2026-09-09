@@ -275,3 +275,17 @@ def test_a_superseded_proxy_snapshot_restarts_the_walk_instead_of_failing_it() -
         assert on_409 == ["RESET_PAGINATION"], f"{path}: a 409 must reset pagination, got {on_409}"
         reset = retriever.get("pagination_reset")
         assert reset == {"type": "PaginationReset", "action": _PROXY_RESET_ACTIONS[path]}, f"{path}: {reset}"
+
+
+def test_every_proxy_request_carries_the_repository_size_hint() -> None:
+    """The proxy reserves cache headroom from the hint instead of its per-repository
+    cap; a proxy requester without it, or a proxy parent that does not pass the size
+    along, silently falls back to the cap."""
+    retrievers = _proxy_retrievers(_streams())
+    assert retrievers
+    for retriever in retrievers:
+        hint = (retriever["requester"].get("request_headers") or {}).get("X-Repo-Size-Hint", "")
+        assert "extra_fields.get('size')" in hint, retriever["requester"]["path"]
+        for parent in retriever["partition_router"]["parent_stream_configs"]:
+            if parent.get("partition_field") == "repo_clone_url":
+                assert ["size"] in (parent.get("extra_fields") or []), retriever["requester"]["path"]
