@@ -20,10 +20,11 @@ use uuid::Uuid;
 /// whole is bounded by `SEED_TIMEOUT`, so give the read generous headroom.
 const READ_TIMEOUT: Duration = Duration::from_mins(5);
 const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CORRECTION_ACCOUNTS: usize = 10_000;
+pub(crate) const MAX_CORRECTION_ACCOUNTS: usize = 10_000;
 const MAX_CORRECTION_OBSERVATIONS: usize = 100_000;
 const ACCOUNT_READ_CHUNK: usize = 200;
 
+use crate::domain::reporting::SourceEmail;
 use crate::domain::seed::{IdentityInputRow, SourceAccountKey};
 use crate::domain::seed_service::IdentityInputsReader;
 
@@ -102,12 +103,77 @@ struct InputRow {
     op_type: String,
 }
 
+#[derive(Debug, Row, Deserialize)]
+struct AccountRow {
+    source_type: String,
+    source_id: String,
+    account_id: Option<String>,
+}
+
 /// Reads `identity_inputs` from ClickHouse via the shared client.
 pub struct ClickHouseIdentityInputsReader {
     client: Client,
 }
 
 impl ClickHouseIdentityInputsReader {
+    pub(crate) async fn email_accounts(
+        &self,
+        emails: &[SourceEmail],
+    ) -> anyhow::Result<Vec<SourceAccountKey>> {
+        tokio::time::timeout(ACCOUNT_READ_TIMEOUT, self.read_email_accounts(emails)).await?
+    }
+
+    async fn read_email_accounts(
+        &self,
+        emails: &[SourceEmail],
+    ) -> anyhow::Result<Vec<SourceAccountKey>> {
+        anyhow::ensure!(
+            emails.len() <= MAX_CORRECTION_ACCOUNTS,
+            "correction exceeds the email evidence limit"
+        );
+        let mut result = std::collections::HashSet::new();
+        for chunk in emails.chunks(ACCOUNT_READ_CHUNK) {
+            let sources =
+                vec!["(insight_source_type = ? AND insight_source_id = toUUID(?))"; chunk.len()]
+                    .join(" OR ");
+            let matches = vec!["(source_type = ? AND source_id = ? AND lowerUTF8(trimBoth(ifNull(latest.1, ''))) = ?)"; chunk.len()].join(" OR ");
+            let sql = format!(
+                "WITH latest_emails AS (SELECT insight_source_type AS source_type, toString(insight_source_id) AS source_id, source_account_id AS account_id, argMax(tuple(value, operation_type), tuple(_synced_at, _version)) AS latest FROM identity.identity_inputs WHERE value_type = 'email' AND ({sources}) GROUP BY insight_source_type, insight_source_id, source_account_id) SELECT source_type, source_id, account_id FROM latest_emails WHERE latest.2 != 'DELETE' AND ({matches}) LIMIT 10001"
+            );
+            let mut query = self.client.query(&sql);
+            for email in chunk {
+                query = query
+                    .bind(&email.source_type)
+                    .bind(email.source_id.to_string());
+            }
+            for email in chunk {
+                query = query
+                    .bind(&email.source_type)
+                    .bind(email.source_id.to_string())
+                    .bind(&email.email);
+            }
+            let rows: Vec<AccountRow> = query.fetch_all().await?;
+            anyhow::ensure!(
+                rows.len() <= MAX_CORRECTION_ACCOUNTS,
+                "correction exceeds the email account limit"
+            );
+            for row in rows {
+                result.insert(SourceAccountKey {
+                    source_type: row.source_type,
+                    source_id: Uuid::parse_str(&row.source_id)?,
+                    account_id: row
+                        .account_id
+                        .ok_or_else(|| anyhow::anyhow!("email evidence has no account id"))?,
+                });
+            }
+            anyhow::ensure!(
+                result.len() <= MAX_CORRECTION_ACCOUNTS,
+                "correction exceeds the email account limit"
+            );
+        }
+        Ok(result.into_iter().collect())
+    }
+
     pub(crate) async fn accounts(
         &self,
         accounts: &[SourceAccountKey],
@@ -206,93 +272,4 @@ fn parse_ch_datetime(s: &str) -> anyhow::Result<DateTime> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn account_reads_scope_native_ids_and_keep_the_latest_explicit_clear()
-    -> anyhow::Result<()> {
-        let Ok(url) = std::env::var("INTEGRATION_TESTS_IDENTITY_INPUTS_URL") else {
-            return Ok(());
-        };
-        let reader = ClickHouseIdentityInputsReader::connect(&url, "default", "", "");
-        reader
-            .client
-            .query("CREATE DATABASE IF NOT EXISTS identity")
-            .execute()
-            .await?;
-        reader.client.query("CREATE TABLE IF NOT EXISTS identity.identity_inputs (insight_source_type String, insight_source_id UUID, source_account_id Nullable(String), value_type String, value Nullable(String), _synced_at DateTime64(6), operation_type String, _version UInt64) ENGINE = MergeTree ORDER BY (insight_source_type, insight_source_id)").execute().await?;
-        let source_id = Uuid::now_v7();
-        for (kind, operation, value, version) in [
-            ("directory", "UPSERT", "Old Name", 1_u64),
-            ("directory", "DELETE", "", 2),
-            ("activity", "UPSERT", "Other source", 3),
-        ] {
-            reader.client.query("INSERT INTO identity.identity_inputs VALUES (?, toUUID(?), 'shared-id', 'person_display_name', ?, toDateTime64('2026-01-01 00:00:00', 6), ?, ?)")
-                .bind(kind).bind(source_id.to_string()).bind(value).bind(operation).bind(version).execute().await?;
-        }
-        let account = SourceAccountKey {
-            source_type: "directory".to_owned(),
-            source_id,
-            account_id: "shared-id".to_owned(),
-        };
-        let rows = reader.accounts(&[account]).await?;
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].is_delete);
-        assert!(rows[0].value.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn stream_sql_keeps_empty_value_delete_rows() {
-        assert!(
-            STREAM_SQL.contains("OR operation_type = 'DELETE'"),
-            "DELETE closure signals carry an empty value and must not be value-filtered"
-        );
-        assert!(
-            STREAM_SQL.contains("operation_type = 'UPSERT' AND value IS NOT NULL"),
-            "the non-empty filter applies to UPSERT rows only"
-        );
-    }
-
-    #[test]
-    fn parses_clickhouse_datetime_with_and_without_fraction() -> anyhow::Result<()> {
-        let with_frac = parse_ch_datetime("2026-07-16 12:34:56.123456")?;
-        let no_frac = parse_ch_datetime("2026-07-16 12:34:56")?;
-        assert_eq!(
-            with_frac.format("%Y-%m-%d %H:%M:%S").to_string(),
-            "2026-07-16 12:34:56"
-        );
-        assert_eq!(
-            no_frac.format("%Y-%m-%d %H:%M:%S").to_string(),
-            "2026-07-16 12:34:56"
-        );
-        assert!(parse_ch_datetime("not-a-date").is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn a_null_account_id_fails_the_read_rather_than_minting_a_pseudo_account() -> anyhow::Result<()>
-    {
-        let row = InputRow {
-            source_type: "bamboohr".to_owned(),
-            source_id: Uuid::now_v7().to_string(),
-            account_id: None,
-            val_type: "email".to_owned(),
-            val: "person@inputs.test".to_owned(),
-            synced_at: "2026-01-02 03:04:05.678".to_owned(),
-            op_type: "UPSERT".to_owned(),
-        };
-
-        let refused = map_row(row)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
-
-        anyhow::ensure!(
-            refused.contains("NULL source_account_id"),
-            "an accountless row must name itself in the failure, not fold into '': {refused:?}"
-        );
-        Ok(())
-    }
-}
+pub(crate) mod tests;

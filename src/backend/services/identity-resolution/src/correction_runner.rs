@@ -8,9 +8,11 @@ use crate::domain::people::PersonProjection;
 use crate::domain::resolution::{self, BindingRow};
 use crate::domain::roster::RosterSource;
 use crate::domain::roster_correction::{self, RosterCorrectionError, Snapshot};
-use crate::domain::seed::{KnownBinding, SeedProfile, SourceAccountKey, build_profiles};
+use crate::domain::seed::{KnownBinding, SeedProfile, SourceAccountKey};
 use crate::infra::db::{SeedLockGuard, people_repo, reporting_repo, resolution_repo};
-use crate::infra::identity_inputs::ClickHouseIdentityInputsReader;
+
+mod evidence;
+use evidence::read_evidence;
 
 #[cfg(test)]
 mod tests;
@@ -43,57 +45,6 @@ pub(crate) struct Evidence {
     pub reporting: Vec<crate::domain::reporting::ReportingLine>,
 }
 
-pub(crate) async fn read_evidence(
-    db: &DatabaseConnection,
-    config: &GearConfig,
-    tenant: Uuid,
-    named: &[SourceAccountKey],
-) -> Result<Evidence, CorrectionRunError> {
-    let bindings = resolution_repo::current_bindings_in_tenant(
-        db,
-        tenant,
-        resolution_repo::Ceiling::Bounded(resolution_repo::MAX_TENANT_BINDINGS),
-    )
-    .await?;
-    if bindings.truncated {
-        return Err(anyhow::anyhow!("correction exceeds the binding limit").into());
-    }
-    let people = people_repo::current_projections(db, tenant)
-        .await
-        .map_err(anyhow::Error::from)?;
-    let reporting = reporting_repo::current(db, tenant).await?;
-    let roster = RosterSource::parse(&config.roster_source_type);
-    let accounts: HashSet<_> = bindings
-        .by_account
-        .keys()
-        .filter(|account| {
-            roster
-                .as_ref()
-                .is_some_and(|roster| roster.speaks_for(&account.source_type))
-        })
-        .chain(named.iter())
-        .cloned()
-        .collect();
-    let reader = ClickHouseIdentityInputsReader::connect(
-        &config.clickhouse_url,
-        &config.clickhouse_database,
-        &config.clickhouse_user,
-        &config.clickhouse_password,
-    );
-    let accounts: Vec<_> = accounts.into_iter().collect();
-    let rows = reader.accounts(&accounts).await?;
-    let profiles = build_profiles(rows)
-        .into_iter()
-        .map(|profile| (profile.account.clone(), profile))
-        .collect();
-    Ok(Evidence {
-        bindings: bindings.by_account,
-        people,
-        profiles,
-        reporting,
-    })
-}
-
 pub(crate) async fn apply(
     db: &DatabaseConnection,
     config: &GearConfig,
@@ -110,7 +61,8 @@ pub(crate) async fn apply(
         return Ok(landed);
     }
     let accounts: Vec<_> = rows.iter().map(|row| row.account.clone()).collect();
-    let evidence = read_evidence(db, config, tenant, &accounts).await?;
+    let targets = rows.iter().map(|row| row.person_id).collect();
+    let evidence = read_evidence(db, config, tenant, &accounts, targets).await?;
     apply_evidence(db, config, tenant, &rows, &evidence).await
 }
 
@@ -199,7 +151,14 @@ pub(crate) async fn select_profile(
     if person == resolution::EXCLUDED_PERSON {
         return Err(RosterCorrectionError::ProfileChoiceRequired.into());
     }
-    let evidence = read_evidence(db, config, tenant, std::slice::from_ref(account)).await?;
+    let evidence = read_evidence(
+        db,
+        config,
+        tenant,
+        std::slice::from_ref(account),
+        HashSet::from([person]),
+    )
+    .await?;
     let profile = evidence
         .profiles
         .get(account)
@@ -221,7 +180,7 @@ pub(crate) async fn select_profile(
     let mut projected =
         crate::domain::people::selection::project_selected(person, profile, existing);
     projected.valid_from = chrono::Utc::now().naive_utc();
-    let mut reference = crate::domain::reporting::observed_reference(profile)
+    let reference = crate::domain::reporting::observed_reference(profile)
         .map_err(RosterCorrectionError::from)?;
     let previous_line = evidence
         .reporting
@@ -233,36 +192,26 @@ pub(crate) async fn select_profile(
         if existing.is_none() && line.parent.is_some() {
             return Err(RosterCorrectionError::MissingEvidence.into());
         }
-        reference = line.reference.clone();
-        if reference.is_none() && line.parent.is_some() {
+        if line.reference.is_none() && line.parent.is_some() {
             return Err(RosterCorrectionError::MissingEvidence.into());
         }
     }
-    let parent = reference
-        .as_ref()
-        .map(|reference| {
-            crate::domain::reporting::resolve_reference(
-                reference,
-                &evidence.bindings,
-                &evidence.profiles,
-            )
-        })
-        .transpose()
-        .map_err(RosterCorrectionError::from)?
-        .flatten();
+    let line = crate::domain::reporting::project_profile(
+        person,
+        account,
+        Some(profile),
+        previous_line.filter(|_| existing.is_some()),
+        &evidence.bindings,
+        &evidence.profiles,
+    )
+    .map_err(RosterCorrectionError::from)?;
     let mut reporting: Vec<_> = evidence
         .reporting
         .iter()
         .filter(|line| !(line.child == person && line.source_type == account.source_type))
         .cloned()
         .collect();
-    reporting.push(crate::domain::reporting::ReportingLine {
-        child: person,
-        source_type: account.source_type.clone(),
-        source_id: account.source_id,
-        parent,
-        reference: reference.or(Some(crate::domain::reporting::ManagerReference::NoManager)),
-    });
+    reporting.push(line);
     crate::domain::reporting::reject_cycles(&reporting).map_err(RosterCorrectionError::from)?;
     let txn = db.begin().await.map_err(anyhow::Error::from)?;
     people_repo::reconcile(

@@ -32,6 +32,14 @@ close and open intervals in `org_chart`; historical relationships are retained.
 The hierarchy remains an authorization input, and a missing manager never
 enables flat visibility.
 
+Corrected person-based manager references retain the original source reference
+and its destination, so unchanged source evidence cannot undo a merge. A changed
+source reference or explicit clear replaces that correction. Account-based
+manager references remain resolvable after exclusion and rebinding. Corrections
+read source observations only for affected accounts and reporting dependencies;
+bounded tenant binding and hierarchy snapshots remain available for resolution
+and cycle checks.
+
 The account listing reports `profile_source` as `selected`, `eligible`, or
 `ineligible`. An administrator can use
 `PUT /v1/resolution/persons/{person_id}/profile-source` with an `AccountRef` to

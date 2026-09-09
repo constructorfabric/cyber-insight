@@ -6,6 +6,16 @@ use uuid::Uuid;
 use super::resolution::EXCLUDED_PERSON;
 use super::seed::{KnownBinding, SeedProfile, SourceAccountKey, normalize_email};
 
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SourceEmail {
+    pub source_type: String,
+    pub source_id: Uuid,
+    pub email: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ManagerReference {
@@ -13,6 +23,10 @@ pub(crate) enum ManagerReference {
         account: SourceAccountKey,
     },
     Person {
+        person_id: Uuid,
+    },
+    RedirectedPerson {
+        source_person_id: Uuid,
         person_id: Uuid,
     },
     Email {
@@ -85,7 +99,8 @@ pub(crate) fn resolve_reference(
 ) -> Result<Option<Uuid>, ReportingError> {
     let person = match reference {
         ManagerReference::NoManager => return Ok(None),
-        ManagerReference::Person { person_id } => *person_id,
+        ManagerReference::Person { person_id }
+        | ManagerReference::RedirectedPerson { person_id, .. } => *person_id,
         ManagerReference::Account { account } => {
             bindings
                 .get(account)
@@ -123,6 +138,81 @@ pub(crate) fn resolve_reference(
         }
     };
     Ok((person != EXCLUDED_PERSON).then_some(person))
+}
+
+pub(crate) fn project_reference(
+    line: &ReportingLine,
+    reference: ManagerReference,
+    bindings: &HashMap<SourceAccountKey, KnownBinding>,
+    profiles: &HashMap<SourceAccountKey, SeedProfile>,
+) -> Result<ReportingLine, ReportingError> {
+    Ok(ReportingLine {
+        parent: resolve_reference(&reference, bindings, profiles)?,
+        reference: Some(reference),
+        ..line.clone()
+    })
+}
+
+pub(crate) fn project_profile(
+    person: Uuid,
+    account: &SourceAccountKey,
+    profile: Option<&SeedProfile>,
+    previous: Option<&ReportingLine>,
+    bindings: &HashMap<SourceAccountKey, KnownBinding>,
+    profiles: &HashMap<SourceAccountKey, SeedProfile>,
+) -> Result<ReportingLine, ReportingError> {
+    let observed = profile.map(observed_reference).transpose()?.flatten();
+    let persisted = previous.and_then(|line| line.reference.as_ref());
+    let reference = match (&observed, persisted) {
+        (
+            Some(ManagerReference::Person { person_id }),
+            Some(
+                redirected @ ManagerReference::RedirectedPerson {
+                    source_person_id, ..
+                },
+            ),
+        ) if person_id == source_person_id => Some(redirected.clone()),
+        _ => observed.or_else(|| persisted.cloned()),
+    }
+    .or_else(|| {
+        previous
+            .is_none_or(|line| line.parent.is_none())
+            .then_some(ManagerReference::NoManager)
+    })
+    .ok_or(ReportingError::UnresolvedReference)?;
+    let line = ReportingLine {
+        child: person,
+        source_type: account.source_type.clone(),
+        source_id: account.source_id,
+        parent: None,
+        reference: None,
+    };
+    project_reference(&line, reference, bindings, profiles)
+}
+
+pub(crate) fn references_accounts(
+    reference: &ManagerReference,
+    accounts: &HashSet<SourceAccountKey>,
+    profiles: &HashMap<SourceAccountKey, SeedProfile>,
+) -> bool {
+    match reference {
+        ManagerReference::Account { account } => accounts.contains(account),
+        ManagerReference::Email {
+            source_type,
+            source_id,
+            email,
+        } => accounts.iter().any(|account| {
+            account.source_type == *source_type
+                && account.source_id == *source_id
+                && profiles
+                    .get(account)
+                    .and_then(|profile| profile.latest_email.as_ref())
+                    .is_some_and(|value| normalize_email(value) == *email)
+        }),
+        ManagerReference::Person { .. }
+        | ManagerReference::RedirectedPerson { .. }
+        | ManagerReference::NoManager => false,
+    }
 }
 
 pub(crate) fn reject_cycles(lines: &[ReportingLine]) -> Result<(), ReportingError> {

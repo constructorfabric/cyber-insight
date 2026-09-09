@@ -241,6 +241,83 @@ fn missing_selected_account_evidence_is_not_inactivity() {
 }
 
 #[test]
+fn a_corrected_person_reference_resolves_to_the_surviving_manager() -> anyhow::Result<()> {
+    let mut fixture = Fixture::new();
+    fixture.reporting[3].reference = Some(ManagerReference::Person {
+        person_id: Uuid::from_u128(2),
+    });
+    let projected = fixture.move_account("b")?;
+    let report = projected
+        .reporting
+        .iter()
+        .find(|line| line.child == Uuid::from_u128(5))
+        .ok_or_else(|| anyhow::anyhow!("missing report"))?;
+    let mut after = fixture.bindings.clone();
+    after.insert(account("b"), binding(1));
+    let reference = report
+        .reference
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing reference"))?;
+    assert_eq!(
+        reporting::resolve_reference(reference, &after, &fixture.profiles)?,
+        Some(Uuid::from_u128(1))
+    );
+    Ok(())
+}
+
+#[test]
+fn rebinding_an_excluded_manager_reconnects_account_backed_reports() -> anyhow::Result<()> {
+    let mut fixture = Fixture::new();
+    let mut excluded = fixture.bindings.clone();
+    excluded.insert(
+        account("b"),
+        KnownBinding {
+            person_id: EXCLUDED_PERSON,
+            ..binding(2)
+        },
+    );
+    let projected = project(
+        &fixture.snapshot(),
+        &excluded,
+        &HashSet::from([Uuid::from_u128(2), EXCLUDED_PERSON]),
+    )?;
+    assert_eq!(
+        projected
+            .reporting
+            .iter()
+            .find(|line| line.child == Uuid::from_u128(5))
+            .and_then(|line| line.parent),
+        None
+    );
+    fixture.reporting = projected.reporting;
+    fixture.people.remove(&Uuid::from_u128(2));
+    fixture.bindings = excluded;
+    let projected = fixture.move_account("b")?;
+    assert_eq!(
+        projected
+            .reporting
+            .iter()
+            .find(|line| line.child == Uuid::from_u128(5))
+            .and_then(|line| line.parent),
+        Some(Uuid::from_u128(1))
+    );
+    Ok(())
+}
+
+#[test]
+fn remaining_account_without_membership_evidence_prevents_roster_closure() {
+    let mut fixture = Fixture::new();
+    let mut unknown = profile("b-other");
+    unknown.roster_membership = None;
+    fixture.profiles.insert(account("b-other"), unknown);
+    fixture.bindings.insert(account("b-other"), binding(2));
+    assert!(matches!(
+        fixture.move_account("b"),
+        Err(RosterCorrectionError::MissingEvidence)
+    ));
+}
+
+#[test]
 fn a_later_seed_uses_only_the_preserved_account_and_respects_explicit_clears() {
     let fixture = Fixture::new();
     let existing = &fixture.people[&Uuid::from_u128(1)];

@@ -3,8 +3,7 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, Statement};
 use uuid::Uuid;
 
-use crate::domain::reporting::{ManagerReference, observed_reference, resolve_reference};
-use crate::domain::reporting::{ReportingLine, reject_cycles};
+use crate::domain::reporting::{ReportingError, ReportingLine, project_profile, reject_cycles};
 use crate::domain::seed::PersonAssignment;
 
 pub(crate) async fn current<C: ConnectionTrait>(
@@ -121,29 +120,18 @@ pub(crate) async fn reconcile_seed(
                 line.child == person.person_id && line.source_type == account.source_type
             })
             .collect();
-        let observed = profiles
-            .get(account)
-            .map(observed_reference)
-            .transpose()?
-            .flatten();
-        let Some(reference) = observed
-            .or_else(|| old.first().and_then(|line| line.reference.clone()))
-            .or_else(|| old.is_empty().then_some(ManagerReference::NoManager))
-        else {
-            after.extend(old.into_iter().cloned());
-            continue;
-        };
-        let Ok(parent) = resolve_reference(&reference, &bindings.by_account, &profiles) else {
-            after.extend(old.into_iter().cloned());
-            continue;
-        };
-        after.push(ReportingLine {
-            child: person.person_id,
-            source_type: account.source_type.clone(),
-            source_id: account.source_id,
-            parent,
-            reference: Some(reference),
-        });
+        match project_profile(
+            person.person_id,
+            account,
+            profiles.get(account),
+            old.first().copied(),
+            &bindings.by_account,
+            &profiles,
+        ) {
+            Ok(line) => after.push(line),
+            Err(ReportingError::UnresolvedReference) => after.extend(old.into_iter().cloned()),
+            Err(error) => return Err(error.into()),
+        }
     }
     reconcile(txn, tenant, author, &before, &after).await?;
     Ok(())

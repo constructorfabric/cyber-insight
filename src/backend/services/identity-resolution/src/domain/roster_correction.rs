@@ -106,6 +106,16 @@ pub(crate) fn project(
     }
 
     let mut reporting = Vec::new();
+    let moved: HashSet<_> = after
+        .iter()
+        .filter(|(account, binding)| {
+            snapshot
+                .bindings
+                .get(*account)
+                .is_none_or(|before| before.person_id != binding.person_id)
+        })
+        .map(|(account, _)| account.clone())
+        .collect();
     for line in snapshot.reporting {
         if closed.contains(&line.child)
             && snapshot
@@ -115,10 +125,14 @@ pub(crate) fn project(
             continue;
         }
         let mut projected = line.clone();
-        if line.parent.is_some_and(|parent| affected.contains(&parent)) {
+        if line.parent.is_some_and(|parent| affected.contains(&parent))
+            || line.reference.as_ref().is_some_and(|reference| {
+                reporting::references_accounts(reference, &moved, snapshot.profiles)
+            })
+        {
             let reference = relationship_reference(snapshot, line)?;
-            projected.parent = corrected_parent(&reference, snapshot, after)?;
-            projected.reference = Some(reference);
+            let reference = corrected_reference(reference, snapshot, after)?;
+            projected = reporting::project_reference(line, reference, after, snapshot.profiles)?;
         }
         reporting.push(projected);
     }
@@ -126,17 +140,14 @@ pub(crate) fn project(
         if snapshot.people.contains_key(&person_id) {
             continue;
         }
-        let Some(reference) = reporting::observed_reference(profile)? else {
-            continue;
-        };
-        let parent = reporting::resolve_reference(&reference, after, snapshot.profiles)?;
-        reporting.push(ReportingLine {
-            child: person_id,
-            source_type: profile.account.source_type.clone(),
-            source_id: profile.account.source_id,
-            parent,
-            reference: Some(reference),
-        });
+        reporting.push(reporting::project_profile(
+            person_id,
+            &profile.account,
+            Some(profile),
+            None,
+            after,
+            snapshot.profiles,
+        )?);
     }
     reporting::reject_cycles(&reporting)?;
     Ok(CorrectionProjection { people, reporting })
@@ -177,7 +188,12 @@ fn ensure_membership_known(
         {
             continue;
         }
-        if !snapshot.profiles.contains_key(account) {
+        if snapshot
+            .profiles
+            .get(account)
+            .and_then(|profile| profile.roster_membership)
+            .is_none()
+        {
             return Err(RosterCorrectionError::MissingEvidence);
         }
     }
@@ -263,32 +279,41 @@ fn relationship_reference(
     Ok(reference)
 }
 
-fn corrected_parent(
-    reference: &ManagerReference,
+fn corrected_reference(
+    reference: ManagerReference,
     snapshot: &Snapshot<'_>,
     after: &HashMap<SourceAccountKey, KnownBinding>,
-) -> Result<Option<Uuid>, RosterCorrectionError> {
-    if let ManagerReference::Person { person_id } = reference {
-        let destinations: HashSet<_> = snapshot
-            .bindings
+) -> Result<ManagerReference, RosterCorrectionError> {
+    let (source_person_id, person_id) = match &reference {
+        ManagerReference::Person { person_id } => (*person_id, *person_id),
+        ManagerReference::RedirectedPerson {
+            source_person_id,
+            person_id,
+        } => (*source_person_id, *person_id),
+        ManagerReference::Account { .. }
+        | ManagerReference::Email { .. }
+        | ManagerReference::NoManager => return Ok(reference),
+    };
+    let destinations: HashSet<_> = snapshot
+        .bindings
+        .iter()
+        .filter(|(_, binding)| binding.person_id == person_id)
+        .filter_map(|(account, _)| after.get(account).map(|binding| binding.person_id))
+        .collect();
+    if destinations.len() == 1 {
+        let destination = *destinations
             .iter()
-            .filter(|(_, binding)| binding.person_id == *person_id)
-            .filter_map(|(account, _)| after.get(account).map(|binding| binding.person_id))
-            .collect();
-        if destinations.len() == 1 {
-            return Ok(destinations
-                .into_iter()
-                .next()
-                .filter(|person| *person != EXCLUDED_PERSON));
+            .next()
+            .ok_or(RosterCorrectionError::MissingEvidence)?;
+        if destination != person_id {
+            return Ok(ManagerReference::RedirectedPerson {
+                source_person_id,
+                person_id: destination,
+            });
         }
-        if !destinations.contains(person_id) {
-            return Err(RosterCorrectionError::MissingEvidence);
-        }
-        return Ok(Some(*person_id));
     }
-    Ok(reporting::resolve_reference(
-        reference,
-        after,
-        snapshot.profiles,
-    )?)
+    if !destinations.contains(&person_id) {
+        return Err(RosterCorrectionError::MissingEvidence);
+    }
+    Ok(reference)
 }

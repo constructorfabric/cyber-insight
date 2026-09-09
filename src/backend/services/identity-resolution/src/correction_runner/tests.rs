@@ -36,7 +36,7 @@ fn source_profile(fixture: &Fixture, name: &str, parent: Option<&str>) -> SeedPr
     }
 }
 
-async fn evidence(fixture: &Fixture) -> anyhow::Result<Evidence> {
+async fn evidence(fixture: &Fixture, person_reference: bool) -> anyhow::Result<Evidence> {
     let mut people = HashMap::new();
     let mut profiles = HashMap::new();
     let mut ids = HashMap::new();
@@ -52,14 +52,26 @@ async fn evidence(fixture: &Fixture) -> anyhow::Result<Evidence> {
         profiles.insert(profile.account.clone(), profile);
         ids.insert(account, person);
     }
+    let reference = if person_reference {
+        let profile = profiles
+            .get_mut(&fixture.account("report"))
+            .ok_or_else(|| anyhow::anyhow!("missing report"))?;
+        profile.observations[1].value_type = "parent_person_id".to_owned();
+        profile.observations[1].value = ids["duplicate"].to_string();
+        ManagerReference::Person {
+            person_id: ids["duplicate"],
+        }
+    } else {
+        ManagerReference::Account {
+            account: fixture.account("duplicate"),
+        }
+    };
     let reporting = vec![ReportingLine {
         child: ids["report"],
         source_type: SOURCE_TYPE.to_owned(),
         source_id: fixture.source_id,
         parent: Some(ids["duplicate"]),
-        reference: Some(ManagerReference::Account {
-            account: fixture.account("duplicate"),
-        }),
+        reference: Some(reference),
     }];
     let txn = fixture.db.begin().await?;
     let changes: Vec<_> = people.values().cloned().map(PersonChange::Upsert).collect();
@@ -98,17 +110,57 @@ fn correction(fixture: &Fixture, evidence: &Evidence) -> Vec<BindingRow> {
 #[tokio::test]
 async fn correction_commits_bindings_roster_and_reporting_before_returning_and_survives_seed()
 -> anyhow::Result<()> {
+    correction_survives_seed(false, false).await
+}
+
+#[tokio::test]
+async fn person_reference_correction_survives_seed_with_unchanged_source_evidence()
+-> anyhow::Result<()> {
+    correction_survives_seed(true, false).await
+}
+
+#[tokio::test]
+async fn rebinding_an_excluded_manager_restores_visibility_and_survives_seed() -> anyhow::Result<()>
+{
+    correction_survives_seed(false, true).await
+}
+
+async fn correction_survives_seed(
+    person_reference: bool,
+    exclude_first: bool,
+) -> anyhow::Result<()> {
     let Some(fixture) = fixture_or_skip().await? else {
         return Ok(());
     };
-    let evidence = evidence(&fixture).await?;
+    let mut evidence = evidence(&fixture, person_reference).await?;
     let config = GearConfig {
         roster_source_type: SOURCE_TYPE.to_owned(),
         ..GearConfig::default()
     };
+    let source = evidence.bindings[&fixture.account("duplicate")].person_id;
+    if exclude_first {
+        let account = fixture.account("duplicate");
+        let target = Target {
+            account: account.clone(),
+            person_id: resolution::EXCLUDED_PERSON,
+        };
+        let rows = resolution::build_rows(
+            [(&target, evidence.bindings.get(&account).copied())],
+            Uuid::from_u128(1000),
+            Verb::Exclude,
+            chrono::Utc::now().naive_utc(),
+        );
+        apply_evidence(&fixture.db, &config, fixture.tenant, &rows, &evidence).await?;
+        assert!(!fixture.can_see(source, evidence.reporting[0].child).await?);
+        evidence.bindings.extend(
+            resolution_repo::current_bindings(&fixture.db, fixture.tenant, &[account]).await?,
+        );
+        evidence.people = people_repo::current_projections(&fixture.db, fixture.tenant).await?;
+        evidence.reporting = reporting_repo::current(&fixture.db, fixture.tenant).await?;
+        assert_eq!(evidence.reporting[0].parent, None);
+    }
     let rows = correction(&fixture, &evidence);
     let target = rows[0].person_id;
-    let source = evidence.bindings[&fixture.account("duplicate")].person_id;
     let landed = apply_evidence(&fixture.db, &config, fixture.tenant, &rows, &evidence).await?;
     assert_eq!(landed, vec![true]);
     let report = evidence.reporting[0].child;
@@ -180,7 +232,7 @@ async fn rejected_projection_rolls_back_the_binding_write() -> anyhow::Result<()
     let Some(fixture) = fixture_or_skip().await? else {
         return Ok(());
     };
-    let mut evidence = evidence(&fixture).await?;
+    let mut evidence = evidence(&fixture, false).await?;
     let config = GearConfig {
         roster_source_type: SOURCE_TYPE.to_owned(),
         ..GearConfig::default()
@@ -202,5 +254,58 @@ async fn rejected_projection_rolls_back_the_binding_write() -> anyhow::Result<()
             .await?
             .contains_key(&source)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_single_account_correction_and_profile_selection_ignore_unrelated_roster_accounts()
+-> anyhow::Result<()> {
+    let Some(fixture) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let Some(reader) = crate::infra::identity_inputs::tests::reader_or_skip().await? else {
+        return Ok(());
+    };
+    let evidence = evidence(&fixture, false).await?;
+    for profile in evidence.profiles.values() {
+        crate::infra::identity_inputs::tests::insert_profile(&reader, profile).await?;
+    }
+    let unrelated: Vec<_> = (0..10_001)
+        .map(|index| BindingRow {
+            account: fixture.account(&format!("unrelated-{index}")),
+            person_id: Uuid::now_v7(),
+            author_person_id: Uuid::nil(),
+            reason: "fixture".to_owned(),
+            created_at: chrono::Utc::now().naive_utc(),
+        })
+        .collect();
+    resolution_repo::append_bindings_in(&fixture.db, fixture.tenant, &unrelated).await?;
+    let config = GearConfig {
+        roster_source_type: SOURCE_TYPE.to_owned(),
+        clickhouse_url: std::env::var("INTEGRATION_TESTS_IDENTITY_INPUTS_URL")?,
+        ..GearConfig::default()
+    };
+    let rows = correction(&fixture, &evidence);
+    let target = rows[0].person_id;
+    assert_eq!(
+        apply(&fixture.db, &config, fixture.tenant, rows).await?,
+        vec![true]
+    );
+    select_profile(
+        &fixture.db,
+        &config,
+        fixture.tenant,
+        Uuid::nil(),
+        target,
+        &fixture.account("target"),
+    )
+    .await?;
+    let report = evidence.reporting[0].child;
+    assert!(fixture.can_see(target, report).await?);
+    let people = people_repo::current_projections(&fixture.db, fixture.tenant).await?;
+    assert!(crate::domain::people::selection::same_profile(
+        &people[&target],
+        &evidence.people[&target]
+    ));
     Ok(())
 }
