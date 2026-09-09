@@ -96,7 +96,7 @@ function CustomDashboardBody({
           label="This dashboard holds no widgets yet."
         />
       ) : (
-        <div className="grid gap-4 @3xl:grid-cols-2">
+        <div className="grid items-start gap-4 @3xl:grid-cols-2">
           {dashboard.widgets.map((widgetName) => (
             <DashboardWidgetSlot key={widgetName} name={widgetName} />
           ))}

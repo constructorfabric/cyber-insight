@@ -39,22 +39,36 @@ export function CustomPageShell({
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
       <div className="@container relative min-w-0 flex-1 overflow-y-auto p-4 md:p-6">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={hidden ? "Show the assistant" : "Hide the assistant"}
-          aria-pressed={hidden}
-          className="absolute end-4 top-4 z-10 text-muted-foreground md:end-6 md:top-6"
-          onClick={toggle}
-        >
-          {hidden ? <PanelRightOpen /> : <PanelRightClose />}
-        </Button>
+        {/* Closed, the only way back is from the content's own edge. */}
+        {hidden ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Show the assistant"
+            aria-pressed
+            className="absolute end-4 top-4 z-10 text-muted-foreground md:end-6 md:top-6"
+            onClick={toggle}
+          >
+            <PanelRightOpen />
+          </Button>
+        ) : null}
         {children}
       </div>
       <div
         hidden={hidden}
-        className="flex min-h-96 shrink-0 flex-col lg:min-h-0 lg:w-80"
+        className="relative flex min-h-96 shrink-0 flex-col lg:min-h-0 lg:w-80"
       >
+        {/* Open, it belongs in the panel's own header, beside its title. */}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Hide the assistant"
+          aria-pressed={false}
+          className="absolute end-2 top-2 z-10 text-muted-foreground"
+          onClick={toggle}
+        >
+          <PanelRightClose />
+        </Button>
         {chat}
       </div>
     </div>
