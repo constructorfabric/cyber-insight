@@ -3,30 +3,33 @@ import { fetchWithAuth } from "@/api/fetch-with-auth";
 const BASE =
   (import.meta.env.VITE_API_BASE_V3 as string | undefined) ?? "/api/v3/v1";
 
-export interface TableWidget {
-  type: "table";
+/** What every widget carries, whatever it draws. */
+interface WidgetBase {
   metric: string;
+  /** The heading a reader sees. Without it the card shows the identifier. */
+  title?: string;
+}
+
+export interface TableWidget extends WidgetBase {
+  type: "table";
   columns: string[];
 }
 
 /** A line, a bar and an area all read one column against another. */
-export interface SeriesWidget {
+export interface SeriesWidget extends WidgetBase {
   type: "line" | "bar" | "area";
-  metric: string;
   x: string;
   y: string;
 }
 
-export interface StatWidget {
+export interface StatWidget extends WidgetBase {
   type: "stat";
-  metric: string;
   value: string;
   label?: string;
 }
 
-export interface PieWidget {
+export interface PieWidget extends WidgetBase {
   type: "pie";
-  metric: string;
   label: string;
   value: string;
 }

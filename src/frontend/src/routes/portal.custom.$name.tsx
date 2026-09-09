@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { CustomApiError } from "@/api/custom-client";
 import { CustomWidget } from "@/components/custom/custom-widget";
+import { WidgetDrilldown } from "@/components/custom/widget-drilldown";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
@@ -135,10 +136,20 @@ function DashboardWidgetSlot({ name }: { name: string }) {
     );
   }
 
+  const heading = widgetState.data.title;
+
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className={cn(TEXT_HEADING, "font-mono")}>{name}</CardTitle>
+      <CardHeader className="flex flex-row items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <CardTitle className={cn(TEXT_HEADING, heading ? "" : "font-mono")}>
+            {heading ?? name}
+          </CardTitle>
+          {heading ? (
+            <p className={cn(TEXT_LABEL, "truncate font-mono")}>{name}</p>
+          ) : null}
+        </div>
+        <WidgetDrilldown widget={widgetState.data} label={heading ?? name} />
       </CardHeader>
       <CardContent className="max-h-72 overflow-auto">
         <CustomWidget
