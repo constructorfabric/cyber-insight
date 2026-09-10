@@ -96,21 +96,31 @@ The system **MUST** {do something specific and verifiable}.
 
 ## 6. Non-Functional Requirements
 
-{Open with where this module stands on each quality vector — one line each. Say
-whether the vector is material here and why, in business terms. A vector that does
-not matter says so with its reason: that records a decision, where silence records
-nothing. These lines orient a reader and are not requirements — the requirements
-follow and carry their own tags — and no line here gates anything. The order is a
-display convention, not a ranking. See the
-[quality-vector guide](../../guides/quality-vectors.md).}
+### 6.1 Quality Vector Analysis
 
-- **Efficiency** — {what makes this costly to provide or operate, or why cost is not a concern here}
-- **Reliability** — {what must stay correct, current or recoverable, or why little is at stake}
-- **Performance** — {what must complete within a budget or sustain a rate, or why timing is not a concern}
-- **Security** — {what must be protected and from whom, or why the exposure is limited}
-- **Versatility** — {what breadth must work without bespoke change, or why the surface is fixed}
+{For each quality vector, name the show-stopper requirement — what would make this
+module unviable on that vector, not what would merely be good to have — and the
+business rationale behind it. The Show-Stopper cell takes one of four forms:
+a show-stopper requirement citing the NFR that carries the obligation; if the
+vector is material and covered in 6.2 but no obligation rises to unviability,
+`None — no show-stopper; obligations covered by {NFR IDs}`; if the vector
+cannot break this module at all, `None — not material because {reason}`, with
+a reason citing a concrete scope, scale, deployment or exclusion fact; or, if
+the vector is material and 6.2 carries no obligation covering it at all,
+`None — no obligation; {vector} is material and 6.2 carries no covering NFR
+(gap)` — an explicit recorded gap, not a substitute for doing the analysis.
+Silence is not a valid entry. The order is a display convention, not a
+ranking. See the [quality-vector guide](../../guides/quality-vectors.md).}
 
-### 6.1 NFR Inclusions
+| Quality Vector | Show-Stopper Requirement | Rationale |
+|-----------------|---------------------------|-----------|
+| Efficiency | {what cost or resource condition would make this module unviable; or `None — no show-stopper; obligations covered by {NFR IDs}`; or `None — not material because {reason}`; or `None — no obligation; Efficiency is material and 6.2 carries no covering NFR (gap)`} | {business reason} |
+| Reliability | {what correctness, currency or recovery failure would make this module unviable; or `None — no show-stopper; obligations covered by {NFR IDs}`; or `None — not material because {reason}`; or `None — no obligation; Reliability is material and 6.2 carries no covering NFR (gap)`} | {business reason} |
+| Performance | {what latency or throughput failure would make this module unviable; or `None — no show-stopper; obligations covered by {NFR IDs}`; or `None — not material because {reason}`; or `None — no obligation; Performance is material and 6.2 carries no covering NFR (gap)`} | {business reason} |
+| Security | {what exposure would make this module unviable; or `None — no show-stopper; obligations covered by {NFR IDs}`; or `None — not material because {reason}`; or `None — no obligation; Security is material and 6.2 carries no covering NFR (gap)`} | {business reason} |
+| Versatility | {what inflexibility would make this module unviable; or `None — no show-stopper; obligations covered by {NFR IDs}`; or `None — not material because {reason}`; or `None — no obligation; Versatility is material and 6.2 carries no covering NFR (gap)`} | {business reason} |
+
+### 6.2 NFR Inclusions
 
 {Document local extensions and inherited obligations here. Reference unchanged project NFRs by ID instead of restating their targets. No local extension does not mean the vector is inapplicable.}
 
@@ -138,11 +148,12 @@ identify open decisions and their owner without inventing a value}
 **Verification**: {Responsible role and intended shared verification, linked when
 available; preserve the upstream target and conditions, and state pending evidence}
 
-### 6.2 NFR Exclusions
+### 6.3 NFR Exclusions
 
-{Document any project-default NFRs that do NOT apply to this module}
+{Document individually named project-default NFRs that do NOT apply to this module.
+Whether a whole vector is material belongs in 6.1, not here.}
 
-- {Quality vector with no local or inherited obligation, or an excluded default NFR name}: {Reason for non-applicability; a requirement that is merely not yet measurable is not an exclusion}
+- {Excluded default NFR name}: {Reason for non-applicability; a requirement that is merely not yet measurable is not an exclusion}
 - {Inherited obligation being excluded — its upstream NFR ID}: {Why it does not apply to this module; departing from an inherited obligation is a decision, so name the ID and the reason rather than dropping it silently}
 
 ## 7. Public Library Interfaces

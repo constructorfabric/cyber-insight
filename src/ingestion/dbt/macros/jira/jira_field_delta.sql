@@ -180,13 +180,17 @@
             if(COALESCE({{ to_str }},   '') = '', [], [CAST({{ jira_text_prefix(to_str) }} AS String)])
         ),
 
+        {#- The display side stands in only when the id side is ABSENT. An id side
+            that is present and empty (`[]`) is a real value — the field was
+            cleared — and falling back there yields the display of an empty
+            list, which is the literal text `[]` parsed as one option. -#}
         {{ kind }} = 'option_array',
         (
-            CAST(if(length({{ f_ids }}) = 0, {{ f_disp }}, {{ f_ids }}) AS Array(String)),
-            CAST(if(length({{ f_ids }}) = 0, {{ f_disp }},
+            CAST(if(COALESCE({{ from_id }}, '') = '', {{ f_disp }}, {{ f_ids }}) AS Array(String)),
+            CAST(if(COALESCE({{ from_id }}, '') = '', {{ f_disp }},
                     if(length({{ f_disp }}) = length({{ f_ids }}), {{ f_disp }}, {{ f_ids }})) AS Array(String)),
-            CAST(if(length({{ t_ids }}) = 0, {{ t_disp }}, {{ t_ids }}) AS Array(String)),
-            CAST(if(length({{ t_ids }}) = 0, {{ t_disp }},
+            CAST(if(COALESCE({{ to_id }}, '') = '', {{ t_disp }}, {{ t_ids }}) AS Array(String)),
+            CAST(if(COALESCE({{ to_id }}, '') = '', {{ t_disp }},
                     if(length({{ t_disp }}) = length({{ t_ids }}), {{ t_disp }}, {{ t_ids }})) AS Array(String))
         ),
 
@@ -242,53 +246,19 @@
 {% endmacro %}
 
 
-{#- ---------- folding an element-wise field's history ----------
+{#- ---------- reconstructing an element-wise field's history ----------
 
   Elements are carried as one `id \x1f display` string so the ids and displays
-  cannot drift apart, and an operation is a `(action, element)` tuple.
+  cannot drift apart, and every rule keys on the ELEMENT ID, never on the whole
+  pair: a component or a version renamed after the event that touched it arrives
+  with one display in the changelog and another in the issue JSON, so the two
+  pairs are different strings while being the same element.
 
-  Both folds key on the ELEMENT ID, never on the whole pair: a component or a
-  version renamed after the event that touched it arrives with one display in
-  the changelog and another in the issue JSON, so the two pairs are different
-  strings while being the same element.
-
-  Why a fold and not window set arithmetic. The obvious closed form —
-  `(initial ∪ additions up to k) \ removals up to k` — is correct only while
-  each element is added at most once and removed at most once. An element added,
-  removed and ADDED AGAIN stays subtracted forever, because it is in "every
-  removal", so the field's newest state loses a value the issue still holds. Set
-  arithmetic cannot express a cycle; a sequential fold can, and the per-(issue,
-  field) event count is small enough that it costs nothing.
+  The reconstruction itself lives in `jira__field_history_derived`, per element
+  rather than by carrying a running list — see the comment on
+  `element_wise_items` for the rule and for why a running list cannot be made
+  cheap. What stays here is the dedup the journal's value arrays need.
 -#}
-
-{#- The pairs of `arr` whose element is not the one `pair` names. -#}
-{% macro jira_pairs_without(arr, pair) %}
-    arrayFilter(x -> splitByChar('\x1f', x)[1] != splitByChar('\x1f', {{ pair }})[1], {{ arr }})
-{% endmacro %}
-
-
-{#- Apply an ordered operation list forward onto a state.
-
-    An `add` replaces any existing entry for the element rather than appending,
-    so a re-add carries the display the later event rendered. -#}
-{% macro jira_apply_ops(ops, state) %}
-    arrayFold((acc, op) ->
-        if(op.1 = 'add',
-           arrayPushBack({{ jira_pairs_without('acc', 'op.2') }}, op.2),
-           {{ jira_pairs_without('acc', 'op.2') }}),
-        {{ ops }}, {{ state }})
-{% endmacro %}
-
-
-{#- The mirror, walked backwards: turns a state into the state BEFORE the list.
-    Undoing an `add` drops the element; undoing a `remove` puts it back. -#}
-{% macro jira_undo_ops(ops, state) %}
-    arrayFold((acc, op) ->
-        if(op.1 = 'add',
-           {{ jira_pairs_without('acc', 'op.2') }},
-           arrayPushBack({{ jira_pairs_without('acc', 'op.2') }}, op.2)),
-        reverse({{ ops }}), {{ state }})
-{% endmacro %}
 
 
 {#- Deduplicate a parallel (ids, displays) pair by ID, keeping the first

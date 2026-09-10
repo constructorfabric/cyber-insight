@@ -1020,7 +1020,7 @@ streams:
             path:
               - unique_key
             value: >-
-              {{ config['insight_tenant_id'] }}-{{ config['insight_source_id'] }}-{{ record['key'] }}
+              {{ config['insight_tenant_id'] }}-{{ config['insight_source_id'] }}-{{ record['id'] }}
           - type: AddedFieldDefinition
             path:
               - jira_id
@@ -2793,7 +2793,7 @@ streams:
             path:
               - unique_key
             value: >-
-              {{ config['insight_tenant_id'] }}-{{ config['insight_source_id'] }}-{{ record['key'] }}
+              {{ config['insight_tenant_id'] }}-{{ config['insight_source_id'] }}-{{ record['id'] }}
           - type: AddedFieldDefinition
             path:
               - id_readable
