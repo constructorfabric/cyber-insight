@@ -14,7 +14,6 @@ date: 2026-09-09
 - [Decision Outcome](#decision-outcome)
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
-- [Pros and Cons of the Options](#pros-and-cons-of-the-options)
 - [Traceability](#traceability)
 
 <!-- /toc -->
@@ -23,48 +22,36 @@ date: 2026-09-09
 
 ## Context and Problem Statement
 
-A metric compiles to a `SELECT` and runs as a read-only warehouse principal,
-separate from the credential the service writes with. A stand gains a database
-per connector it turns on, and a metric may be written over any of them.
+Metrics compile to `SELECT` and run as a read-only principal. A stand gains a
+database per connector it turns on.
 
 ## Decision Drivers
 
-* A metric over a newly connected source must run without anyone editing a
-  grant first.
-* The path the assistant queries through must not be able to write.
-* Nothing in this service hardcodes a database name.
+* A metric over newly connected data must run without a grant change.
+* That connection must never write.
 
 ## Considered Options
 
-* Grant `SELECT` on the databases a stand has today, and extend the grant per
-  connector.
-* Grant `SELECT` on everything.
+* `SELECT` per database, extended per connector — narrow; every connector
+  needs a migration nobody remembers, and the failure looks like a broken
+  metric.
+* `SELECT` on everything — every metric works the day its data lands; the read
+  surface is the whole instance. **Chosen.**
 
 ## Decision Outcome
 
-`GRANT SELECT ON *.*` to the read-only user. Every metric on the stand can be
-answered; nothing on that connection can write.
+`GRANT SELECT ON *.*` to the read-only user.
 
 ### Consequences
 
-* The role can read every database on the instance, including those belonging
-  to other services.
-* Whatever the assistant can be talked into reading, it can only read — data
-  the instance already holds, through a credential that cannot change it.
-* Adding a connector needs no grant work, which is the point.
+* The role reads every database on the instance, other services' included.
+* Reads only: a bad query cannot change anything.
+* Adding a connector needs no grant work.
 
 ### Confirmation
 
-The ledger-grant tests assert the reader cannot write, and that a caller with
-no role at all is refused.
-
-## Pros and Cons of the Options
-
-* **Per-database grants** — the role sees only what it was meant to; every new
-  connector is a migration nobody remembers to write, and the failure looks
-  like a broken metric.
-* **Read everything** — every metric works the day its data lands; the blast
-  radius of a bad query is every table on the instance, bounded to reads.
+The ledger-grant tests assert the reader cannot write, and that a caller with no
+role is refused.
 
 ## Traceability
 

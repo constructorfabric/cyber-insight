@@ -14,7 +14,6 @@ date: 2026-09-09
 - [Decision Outcome](#decision-outcome)
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
-- [Pros and Cons of the Options](#pros-and-cons-of-the-options)
 - [Traceability](#traceability)
 
 <!-- /toc -->
@@ -23,52 +22,38 @@ date: 2026-09-09
 
 ## Context and Problem Statement
 
-An MCP client discovers this resource from `mcp.public_url` — the audience its
-token carries. The server verifies that token against the issuer's JWKS. On a
-local stand the public URL is `localhost`, which inside the container names the
-container and not the gateway, so the key fetch fails and every authorized call
-is refused.
+A client discovers this resource from `mcp.public_url`. The server verifies
+tokens against the issuer's JWKS — and on a stand that URL is `localhost`, which
+inside the container is the container, not the gateway.
 
 ## Decision Drivers
 
-* The client's view of this resource must stay one URL: the audience and the
-  metadata it discovers.
-* The server has to reach the keys from wherever it runs.
-* A deployment whose public origin routes internally should need no new
-  setting.
+* One client-facing URL: the audience and the metadata.
+* The server has to reach the keys from where it runs.
 
 ## Considered Options
 
-* Derive the key URL from the public URL only.
-* Configure an internal base URL and derive every endpoint from it.
-* Configure the key URL alone, blank meaning "derive it from the public URL".
+* Derive the key URL from the public URL — nothing to configure; cannot verify
+  on a stand whose origin is not routable from inside.
+* Configure an internal base URL and derive endpoints from it — covers future
+  endpoints; a second description of the issuer, free to disagree.
+* Configure the key URL alone, blank deriving it — names the one call that
+  routes differently; a stand that needs it must know to set it. **Chosen.**
 
 ## Decision Outcome
 
-`mcp.jwks_url` names where the keys are fetched. Blank derives it from the
-public URL, which is what a deployment with a routable origin wants.
+`mcp.jwks_url` names where keys are fetched. Blank derives it from the public
+URL.
 
 ### Consequences
 
-* A local stand sets one environment variable pointing at the gateway.
-* The public URL remains the single client-facing identity; nothing else is
-  duplicated.
-* An operator can point key fetching at something the advertised issuer does
-  not serve, and the mistake shows as refused tokens.
+* A local stand sets one variable pointing at the gateway.
+* Pointing it at the wrong issuer shows up as refused tokens.
 
 ### Confirmation
 
-Compose sets it to the gateway's JWKS endpoint, and the MCP test asserts the
-challenge still names the public resource and its scope.
-
-## Pros and Cons of the Options
-
-* **Derive only** — nothing to configure; the server cannot start verifying on
-  any stand whose public origin is not routable from inside.
-* **An internal base URL** — one setting covers future endpoints; it is a
-  second description of the issuer, and the two can disagree.
-* **The key URL alone** — names exactly the one call that has to route
-  differently; a stand that needs it must know to set it.
+Compose sets it to the gateway's JWKS; the MCP test asserts the challenge still
+names the public resource and its scope.
 
 ## Traceability
 

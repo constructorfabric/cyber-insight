@@ -14,7 +14,6 @@ date: 2026-09-09
 - [Decision Outcome](#decision-outcome)
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
-- [Pros and Cons of the Options](#pros-and-cons-of-the-options)
 - [Traceability](#traceability)
 
 <!-- /toc -->
@@ -23,42 +22,36 @@ date: 2026-09-09
 
 ## Context and Problem Statement
 
-The catalogues of metrics, widgets and dashboards outgrew a screen, so reading
-them needs paging and a total. The same store answers a different question at
-delete time: which definitions depend on this one.
+The catalogues outgrew a screen. The same store answers a different question at
+delete time: what depends on this definition.
 
 ## Decision Drivers
 
-* A reader needs a page, a total and a search over the whole catalogue.
-* A dependency check that missed a row outside the current page would allow a
-  deletion that breaks a board.
+* A reader needs a page, a total and a search.
+* A dependency check that misses a row permits a delete that breaks a board.
 
 ## Considered Options
 
-* Page every read, and let the dependency scan walk the pages.
-* Page the reads, and keep an unpaged read for the scan.
+* Page every read and walk the pages in the scan — one read path; a scan that
+  forgets a page permits a bad delete silently.
+* Page the reads and keep an unpaged read for the scan — the check sees
+  everything by construction; the trait carries a method the API never
+  exposes. **Chosen.**
 
 ## Decision Outcome
 
-The read endpoints take a limit and an offset and answer with a total; the
-definitions trait keeps an unpaged `list` that only the dependency scan calls.
+Reads take a limit and an offset and answer with a total. The definitions trait
+keeps an unpaged `list`, called only by the dependency scan.
 
 ### Consequences
 
-* Two read paths over one table, one of which has no user-facing caller.
+* Two read paths, one with no user-facing caller.
 * The scan's cost grows with the catalogue; it runs on delete, not on render.
 
 ### Confirmation
 
-The definitions tests cover the paged answer with its total, and deleting a
-definition another one draws is refused by name.
-
-## Pros and Cons of the Options
-
-* **Page everything** — one read path; a scan that forgets to walk every page
-  silently permits a bad delete.
-* **Unpaged scan** — the check sees the whole catalogue by construction; the
-  trait carries a method the API never exposes.
+The definitions tests cover the paged answer and its total; deleting a
+definition another draws is refused by name.
 
 ## Traceability
 
