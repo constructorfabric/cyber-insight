@@ -22,8 +22,11 @@ date: 2026-09-09
 
 ## Context and Problem Statement
 
-Metrics compile to `SELECT` and run as a read-only principal. A stand gains a
-database per connector it turns on.
+Metrics compile to `SELECT` and run as a read-only warehouse user, separate
+from the one this service writes with. A stand gains a database per connector it
+turns on, so whatever that user was granted at install time will not cover the
+data that lands next — and a metric over it fails for want of a grant, which
+reads to everyone as a broken metric.
 
 ## Decision Drivers
 

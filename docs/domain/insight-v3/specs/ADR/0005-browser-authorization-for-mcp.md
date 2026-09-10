@@ -22,8 +22,10 @@ date: 2026-09-09
 
 ## Context and Problem Statement
 
-Authoring happens over MCP, and a client needs an access token carrying
-`mcp:author`. The clients are developer tools on a laptop.
+Authoring happens over MCP: a client writes metrics, widgets and dashboards by
+calling this service's tools. Every such call needs a token carrying the
+`mcp:author` scope, and nothing issues one — so the tools people would author
+from, a terminal agent or an editor on a laptop, cannot author at all.
 
 ## Decision Drivers
 
