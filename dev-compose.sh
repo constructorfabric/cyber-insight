@@ -1267,7 +1267,8 @@ cmd_seed() {
   # the wrong directory — it surfaces as an EACCES on /app/manifest.json after
   # the whole seed has run. The source is bind-mounted anyway, so the rebuild
   # is layer-cached and only refreshes entrypoint/WORKDIR/deps.
-  "${compose_cmd[@]}" --profile seed run --build --rm seed-sample "${args[@]}"
+  # --no-deps: --build would otherwise also rebake every depends_on image.
+  "${compose_cmd[@]}" --profile seed run --build --no-deps --rm seed-sample "${args[@]}"
   local seed_status=$?
   if [[ $seed_status -ne 0 ]]; then
     return $seed_status
@@ -1281,7 +1282,7 @@ cmd_seed() {
       seed_identity_projection "$env_file" "${compose_cmd[@]}" || return $?
       echo
       echo "=== rebuilding gold over the refreshed identity map ==="
-      "${compose_cmd[@]}" --profile seed run --rm seed-sample gold || return $?
+      "${compose_cmd[@]}" --profile seed run --no-deps --rm seed-sample gold || return $?
 
       # Restart analytics when ClickHouse data was touched. Its schema
       # validator caches schema_status at startup and never re-checks; without
