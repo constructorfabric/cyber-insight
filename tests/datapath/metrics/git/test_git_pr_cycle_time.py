@@ -123,19 +123,20 @@ def test_a_gitlab_merge_is_measured_to_the_merge_not_an_earlier_close(
     series = r.row("git.pr_cycle_time_h", "timeseries", entity_id=BOB)
     series.contains(points={"bucket_start": "2026-11-15", "value": 8})
     series.contains(points={"bucket_start": "2026-11-16", "value": 9})
-    r.row("git.pr_cycle_time_h", "period", entity_id=BOB).equals(value=9)
+    r.row("git.pr_cycle_time_h", "period", entity_id=BOB).equals(value=8.5)
 
 
-def test_a_bitbucket_recovered_close_reports_a_cycle_beside_a_measured_one(
+def test_a_recovered_bitbucket_close_counts_the_merge_but_reports_no_cycle(
     spec: SpecRun,
 ) -> None:
-    """901 runs 12 h from its terminal activity entry; 902 runs 9 h from a recovery.
+    """901 runs 12 h from its terminal activity entry; 902 reports no cycle at all.
 
     902 was merged by pushing its head, so its activity holds no terminal entry and
-    the close time comes from the request's own last update, corroborated by the
-    collected merge commit. The recovery decides which DAY a merge landed on, and
-    this metric reads the same value as the end of an interval — so 9 h is an
-    approximation standing beside a measurement, with nothing on the wire saying so.
+    its close time is recovered from the request's own last update. The recovery
+    settles which DAY the merge landed on, which is why 902 still counts as merged —
+    but an interval measured to it would be one nobody observed, so the duration is
+    absent rather than approximate. Both requests merged inside the window, and the
+    merged count says so.
     """
     r = spec.call(
         {
@@ -151,7 +152,8 @@ def test_a_bitbucket_recovered_close_reports_a_cycle_beside_a_measured_one(
                             {"view": "period"},
                             {"view": "timeseries", "bucket": "day"},
                         ],
-                    }
+                    },
+                    {"metric_key": "git.prs_merged", "views": [{"view": "period"}]},
                 ],
             },
         }
@@ -160,8 +162,9 @@ def test_a_bitbucket_recovered_close_reports_a_cycle_beside_a_measured_one(
 
     series = r.row("git.pr_cycle_time_h", "timeseries", entity_id=HEIDI)
     series.contains(points={"bucket_start": "2026-11-25", "value": 12})
-    series.contains(points={"bucket_start": "2026-11-26", "value": 9})
+    series.contains(points={"bucket_start": "2026-11-26", "value": None})
     r.row("git.pr_cycle_time_h", "period", entity_id=HEIDI).equals(value=12)
+    r.row("git.prs_merged", "period", entity_id=HEIDI).equals(value=2)
 
 
 def test_a_request_that_never_merged_contributes_nothing(spec: SpecRun) -> None:

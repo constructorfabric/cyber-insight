@@ -27,8 +27,8 @@ SOURCE_GITHUB = {"key": "source", "value": "github"}
 def test_the_median_takes_every_request_whatever_it_became(spec: SpecRun) -> None:
     """[12, 24 open, 36 closed-unmerged, 48, 100] medians to 36, not the mean 44.
 
-    The 2026-12-01 bucket holds the even set [12, 24, 36, 48] and serves the upper
-    middle 36 rather than the average 30 — quantileExact takes an index, never a pair.
+    The 2026-12-01 bucket holds the even set [12, 24, 36, 48] and serves 30, both
+    middle values averaged; answering with the upper middle alone would read 36.
     """
     r = spec.call(
         {
@@ -55,7 +55,7 @@ def test_the_median_takes_every_request_whatever_it_became(spec: SpecRun) -> Non
 
     r.row("git.pr_size", "period", entity_id=ALICE).equals(value=36)
     series = r.row("git.pr_size", "timeseries", entity_id=ALICE)
-    series.contains(points={"bucket_start": "2026-12-01", "value": 36})
+    series.contains(points={"bucket_start": "2026-12-01", "value": 30})
     series.contains(points={"bucket_start": "2026-12-02", "value": 100})
     r.row("git.pr_size", "breakdown", entity_id=ALICE, dimensions=SOURCE_GITHUB).equals(value=36)
     r.row("git.pr_size", "histogram", entity_id=ALICE).nonempty("bins")
@@ -115,7 +115,8 @@ def test_bitbucket_takes_the_current_file_rows_and_not_a_stale_one(spec: SpecRun
     802 holds a 70-line row for a file that left the diff in a rebase, written under
     an earlier update stamp. Size is the newest stamp's rows taken whole — resolving
     each file to its own newest row would keep the dropped file, which has no newer
-    row to displace it.
+    row to displace it. The period medians [30, 40] to 35; summing the stale row
+    would reach 70.
     """
     r = spec.call(
         {
@@ -141,7 +142,7 @@ def test_bitbucket_takes_the_current_file_rows_and_not_a_stale_one(spec: SpecRun
     series = r.row("git.pr_size", "timeseries", entity_id=HEIDI)
     series.contains(points={"bucket_start": "2026-12-11", "value": 40})
     series.contains(points={"bucket_start": "2026-12-12", "value": 30})
-    r.row("git.pr_size", "period", entity_id=HEIDI).equals(value=40)
+    r.row("git.pr_size", "period", entity_id=HEIDI).equals(value=35)
 
 
 def test_a_bitbucket_request_with_no_diffstat_contributes_nothing(spec: SpecRun) -> None:

@@ -16,7 +16,10 @@ description: >
   A request whose line counts were never collected contributes nothing. A
   request whose counts WERE collected and are zero contributes a real zero: it
   is an observed diff of no lines, not an absence, and the class columns are
-  nullable precisely to keep the two apart. #3066
+  nullable precisely to keep the two apart. #3362
+
+  The median is the textbook one — on an even sample both middle values are
+  averaged, so the answer need not be a size any request had. #3362
 
   Bitbucket's per-file rows accumulate: the key is the file path, so a
   ReplacingMergeTree replaces a file's row and never removes one. A request
@@ -26,16 +29,16 @@ description: >
   each file's own newest row instead keeps the dropped file, since that file has
   no newer row to displace it. #3066
 
-  alice opens five requests sized 12, 24, 36, 48 and 100 lines. Expected median
-  = 36: quantileExact picks the sorted element at index floor(0.5 x 5) = 2, and
-  a mean (44) fails it. The 2026-12-01 bucket holds the EVEN set
-  [12, 24, 36, 48] and serves 36 — the upper of the two middle values, not
-  their average 30.
+  alice opens five requests sized 12, 24, 36, 48 and 100 lines, so her period
+  median is 36 and a mean (44) fails it. The 2026-12-01 bucket holds the EVEN
+  set [12, 24, 36, 48] and serves 30, both middle values averaged; the upper
+  middle alone would read 36.
   carol opens three sized 0, 10 and 30, so her median is 10 while dropping the
   observed zero would serve 30.
   heidi's Bitbucket requests: one summing three current file rows to 40, one
   whose current diff is 30 lines beside a stale 70-line row, and one whose
-  diffstat was never collected at all.
+  diffstat was never collected at all — so her period medians [30, 40] to 35,
+  where summing the stale row would reach 70.
   bob's GitLab request reaches the metric with no size, which its own created
   count proves is absence of a line count and not absence of the request.
 

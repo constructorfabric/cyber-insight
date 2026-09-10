@@ -20,32 +20,37 @@ description: >
   request closed, reopened and then merged reports the earlier close, and taking
   it would report a cycle that ended before the merge happened. #3065
 
-  Bitbucket reports no merge time on a request, so the close time is derived —
-  from the terminal entry in the request's activity where there is one, and
-  otherwise recovered from the request's own last update when a collected merge
-  commit corroborates the merge (#3051, #3328). The recovery answers the
-  question "which DAY did this merge land on"; this metric reads the same value
-  as the END OF AN INTERVAL, so a recovered close makes the reported cycle an
-  approximation, and the two readings are asserted apart here to keep that
-  visible.
+  Bitbucket reports no merge time on a request. The terminal entry in its
+  activity states one where there is one; where there is none the close time is
+  RECOVERED from the request's own last update, corroborated by a collected
+  merge commit (#3051, #3328). That recovery answers which DAY a merge landed
+  on, which is what a count needs — a duration measured to it would report an
+  interval nobody observed. So the class contract keeps the stated time apart in
+  its own column and this metric reads only that: a silently merged request
+  counts in git.prs_merged and contributes NO cycle. #3362
 
-  alice merges five requests with cycles [2, 6, 10, 30, 100] h. Expected median
-  = 10: quantileExact picks the sorted element at index floor(0.5 x 5) = 2, and
-  a mean (29.6) fails it. The 2026-11-01 bucket holds [2, 6, 10] and serves 6.
+  The median is the textbook one — on an even sample both middle values are
+  averaged, so the answer need not be a duration any request took. #3362
+
+  alice merges five requests with cycles [2, 6, 10, 30, 100] h, so her period
+  median is 10 and a mean (29.6) fails it. The 2026-11-01 bucket holds
+  [2, 6, 10] and serves 6.
   dave's single request was closed 2 h after opening and merged 8 h after that,
   so its cycle is 10 h, not 2.
-  bob's GitLab requests run 8 h and 9 h, the second reporting a close 1 h in.
-  heidi's Bitbucket requests run 12 h from a terminal activity entry (measured)
-  and 9 h from a recovered close (approximate).
+  bob's GitLab requests run 8 h and 9 h, the second reporting a close 1 h in
+  that must not be taken for the merge; his period medians the pair to 8.5.
+  heidi's request with a terminal activity entry runs 12 h; her silently merged
+  one has no stated close time and so no cycle, though it still counts merged.
   carol's requests never merged and erin's merge is recorded before her opening,
   so neither contributes — which their created counts prove is not absence of
   the request.
 
   Cases: the median across views and the merge-day bucketing; a merged request
   is measured to its merge and not to an earlier close, on GitHub and on GitLab;
-  Bitbucket measured against Bitbucket recovered; an unmerged request
-  contributes nothing; an interval that runs backwards is dropped rather than
-  served negative, zero, or dated at the epoch; an empty window.
+  a Bitbucket request whose close time the source stated against one whose close
+  time was recovered; an unmerged request contributes nothing; an interval that
+  runs backwards is dropped rather than served negative, zero, or dated at the
+  epoch; an empty window.
 
 identity_accounts:
   # Bitbucket exposes no author address on a request, and GitLab exposes one
@@ -118,9 +123,10 @@ bronze:
     # one the source recorded: 12 h.
     - {$ref: ../templates/bitbucket_git.yaml#/templates/pull_request, unique_key: "ct-bb-pr:901", repo_full_name: acme/cycle, id: 901, author_display_name: Heidi Eta, author_account_id: bb-cycle-01, created_on: "2026-11-25T00:00:00Z", updated_on: "2026-11-25T14:00:00Z", merge_commit_sha: ct-bb-merge-901}
     # 902 — merged by pushing the request's head, so there is no merge ACTION
-    # and no activity at all. The close time is RECOVERED from the request's own
-    # last update, which the collected merge commit corroborates: 9 h, and an
-    # approximation rather than a measurement.
+    # and no activity at all. The recovery dates the merge by the request's own
+    # last update, corroborated by the collected merge commit, so it counts as
+    # merged — but the source stated no close time, so there is no interval to
+    # report and it contributes no cycle.
     - {$ref: ../templates/bitbucket_git.yaml#/templates/pull_request, unique_key: "ct-bb-pr:902", repo_full_name: acme/cycle, id: 902, author_display_name: Heidi Eta, author_account_id: bb-cycle-01, created_on: "2026-11-26T00:00:00Z", updated_on: "2026-11-26T09:00:00Z", merge_commit_sha: aa11bb22cc33}
 
   bronze_bitbucket_cloud.pull_request_activity:
