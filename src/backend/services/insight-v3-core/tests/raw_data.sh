@@ -133,11 +133,22 @@ status="$(curl --silent --connect-timeout 2 --max-time 10 \
   "http://127.0.0.1:$port/v1/tables/$table_name")"
 expect_equal "401" "$status" "table creation without a token"
 
+# Creating a table passes two gates, not one: the instance token admits the
+# request, and the caller must hold the admin role. Ingest itself keeps the
+# token alone, which the POSTs below still assert.
+status="$(curl --silent --connect-timeout 2 --max-time 10 \
+  --output /dev/null --write-out '%{http_code}' \
+  --request PUT \
+  --header "x-insight-token: $token" \
+  "http://127.0.0.1:$port/v1/tables/$table_name")"
+expect_equal "403" "$status" "table creation with the token but no caller"
+
 for _ in 1 2; do
   status="$(curl --silent --connect-timeout 2 --max-time 10 \
     --output /dev/null --write-out '%{http_code}' \
     --request PUT \
     --header "x-insight-token: $token" \
+    --header "authorization: Bearer live-test-administrator" \
     "http://127.0.0.1:$port/v1/tables/$table_name")"
   expect_equal "204" "$status" "authenticated table creation"
   table_created="true"
