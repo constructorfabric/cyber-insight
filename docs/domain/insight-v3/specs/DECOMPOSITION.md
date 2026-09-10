@@ -16,15 +16,24 @@ date: 2026-09-07
   - [2.5 Alerts - MEDIUM](#25-alerts---medium)
   - [2.6 AI - HIGH](#26-ai---high)
   - [2.7 Data Access - HIGH](#27-data-access---high)
+  - [2.8 Definition Lifecycle - HIGH](#28-definition-lifecycle---high)
+  - [2.9 Definition Catalogue - HIGH](#29-definition-catalogue---high)
+  - [2.10 Authoring over MCP - HIGH](#210-authoring-over-mcp---high)
+  - [2.11 Access Control - HIGH](#211-access-control---high)
+  - [2.12 People in Metrics - MEDIUM](#212-people-in-metrics---medium)
 - [3. Feature Dependencies](#3-feature-dependencies)
 
 <!-- /toc -->
 
 ## 1. Overview
 
-Seven features: data in, data out, metrics over it, widgets, dashboards, alerts, and a chat over all of it.
+Twelve features: data in, data out, metrics over it, widgets, dashboards, alerts, and a chat over
+all of it — plus what it takes to keep a growing set of definitions usable: editing them, finding
+them, authoring them from an agent, deciding who may, and naming people in them.
 
-The platform-usage requirements in [PRD §5.7](./PRD.md#57-platform-usage) are not decomposed yet.
+2.8 to 2.12 were built before they were written down here, so their requirements are named in the
+code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resolution),
+[§5.3](./PRD.md#53-access-control) and [§5.7](./PRD.md#57-platform-usage) are still TBD.
 
 ## 2. Entries
 
@@ -36,7 +45,7 @@ The platform-usage requirements in [PRD §5.7](./PRD.md#57-platform-usage) are n
 
 - [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-data-ingestion`
 
-- **Purpose**: Get data in.
+- **Purpose**: Get data in: a table per ingest stream, then rows into it.
 
 - **Depends On**: None
 
@@ -134,16 +143,82 @@ The platform-usage requirements in [PRD §5.7](./PRD.md#57-platform-usage) are n
   - [ ] `p1` - `cpt-insightspec-v3-fr-read-data`
   - [ ] `p2` - `cpt-insightspec-v3-fr-download-report`
 
+### 2.8 Definition Lifecycle - HIGH
+
+- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-lifecycle`
+
+- **Purpose**: Change a definition after it exists — replace its body, rename it, delete it.
+  Deletion is refused while another definition draws it, and a rename carries the dependents with
+  it, so a board cannot be broken from underneath.
+
+- **Depends On**: 2.2, 2.3, 2.4
+
+- **Requirements Covered**: TBD — no PRD requirement names editing yet.
+
+### 2.9 Definition Catalogue - HIGH
+
+- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-catalogue`
+
+- **Purpose**: Find a definition among hundreds: a page at a time with the total, and a search over
+  names and bodies.
+
+- **Depends On**: 2.2, 2.3, 2.4
+
+- **Requirements Covered**: TBD — no PRD requirement names browsing yet.
+
+### 2.10 Authoring over MCP - HIGH
+
+- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-mcp-authoring`
+
+- **Purpose**: Let an agent do what an author does — read the table catalogue, write a metric, run
+  it, draw it, arrange a board — through MCP rather than the browser.
+
+- **Depends On**: 2.2, 2.3, 2.4, 2.8, 2.9, 2.11
+
+- **Requirements Covered**: TBD — the PRD describes the chat, not an agent-facing surface.
+
+### 2.11 Access Control - HIGH
+
+- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-access-control`
+
+- **Purpose**: Decide who may do what: a token for ingest, an administrator for anything that
+  creates a table, a person's own authority for authoring, and a read-only warehouse user for
+  every query the assistant runs.
+
+- **Depends On**: 2.1
+
+- **Requirements Covered**: TBD — [PRD §5.3](./PRD.md#53-access-control) is not written yet.
+
+### 2.12 People in Metrics - MEDIUM
+
+- [ ] `p2` - **ID**: `cpt-insightspec-v3-feature-people-in-metrics`
+
+- **Purpose**: Show a person by the name they are known by rather than the address a source system
+  recorded, by resolving a column against the identity mirror.
+
+- **Depends On**: 2.2
+
+- **Requirements Covered**: TBD — [PRD §5.2](./PRD.md#52-identity-resolution) is not written yet.
+
+- **Out of scope**:
+  - Resolving identities. This reads what identity-resolution publishes.
+
 ## 3. Feature Dependencies
 
 ```text
+2.11 Access Control
+ |
 2.1 Data Ingestion
  |
  +-- 2.7 Data Access
  +-- 2.2 Semantic Layer
       |
-      +-- 2.3 Widgets --- 2.4 Dashboards
+      +-- 2.12 People in Metrics
       +-- 2.5 Alerts
-                          |
-                          +-- 2.6 AI (over 2.2-2.5)
+      +-- 2.3 Widgets --- 2.4 Dashboards
+                           |
+                           +-- 2.8 Definition Lifecycle
+                           +-- 2.9 Definition Catalogue
+                           +-- 2.6 AI (over 2.2-2.5)
+                           +-- 2.10 Authoring over MCP (over 2.2-2.4, 2.8, 2.9)
 ```
