@@ -52,10 +52,16 @@ WITH long_text_fields AS (
 
 -- Current bodies, from the issue JSON.
 issue_winner AS (
-    SELECT unique_key, argMax(_airbyte_raw_id, _airbyte_extracted_at) AS raw_id
+    -- Keyed on the issue's immutable id, NOT on `unique_key`. Bronze rows
+    -- written before descriptor 6.0.0 carry a `unique_key` built from the
+    -- issue KEY, which Jira changes when an issue moves between projects — so
+    -- such an issue has two bronze rows that RMT will never collapse, and
+    -- grouping by that column yields the issue twice: once with its current
+    -- payload, once as a ghost holding whatever the old key last saw.
+    SELECT source_id, jira_id, argMax(_airbyte_raw_id, _airbyte_extracted_at) AS raw_id
     FROM {{ source('bronze_jira', 'jira_issue') }}
-    WHERE unique_key IS NOT NULL
-    GROUP BY unique_key
+    WHERE jira_id IS NOT NULL
+    GROUP BY source_id, jira_id
 ),
 
 from_snapshot AS (
