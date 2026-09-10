@@ -31,6 +31,11 @@ Twelve features: data in, data out, metrics over it, widgets, dashboards, alerts
 all of it — plus what it takes to keep a growing set of definitions usable: editing them, finding
 them, authoring them from an agent, deciding who may, and naming people in them.
 
+The path runs end to end today: data arrives, a metric is written over it, a widget draws the
+metric, a dashboard holds the widget, and a reader opens that board in the portal — from the
+browser, from the chat, or from an agent over MCP. Alerts and report download are the two entries
+nothing is built for.
+
 2.8 to 2.12 were built before they were written down here, so their requirements are named in the
 code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resolution),
 [§5.3](./PRD.md#53-access-control) and [§5.7](./PRD.md#57-platform-usage) are still TBD.
@@ -43,7 +48,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.1 Data Ingestion - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-data-ingestion`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-data-ingestion`
 
 - **Purpose**: Get data in: a table per ingest stream, then rows into it.
 
@@ -51,8 +56,8 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-insightspec-v3-fr-accept-data`
-  - [ ] `p1` - `cpt-insightspec-v3-fr-write-connectors`
+  - [x] `p1` - `cpt-insightspec-v3-fr-accept-data`
+  - [x] `p1` - `cpt-insightspec-v3-fr-write-connectors`
   - [ ] `p2` - `cpt-insightspec-v3-fr-first-class-connectors`
 
 - **Data**:
@@ -61,7 +66,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.2 Semantic Layer - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-semantic-layer`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-semantic-layer`
 
 - **Purpose**: Create metrics based on ingested data.
 
@@ -69,12 +74,12 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-insightspec-v3-fr-create-metrics`
+  - [x] `p1` - `cpt-insightspec-v3-fr-create-metrics`
   - [ ] `p2` - `cpt-insightspec-v3-fr-metrics-for-stand`
 
 ### 2.3 Widgets - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-widgets`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-widgets`
 
 - **Purpose**: Create widgets in realtime, per user.
 
@@ -82,14 +87,14 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-insightspec-v3-fr-create-widgets`
+  - [x] `p1` - `cpt-insightspec-v3-fr-create-widgets`
 
 - **Out of scope**:
   - Sharing widgets, which comes later
 
 ### 2.4 Dashboards - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-dashboards`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-dashboards`
 
 - **Purpose**: Create dashboards in realtime, per user.
 
@@ -97,7 +102,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-insightspec-v3-fr-create-dashboards`
+  - [x] `p1` - `cpt-insightspec-v3-fr-create-dashboards`
 
 - **Out of scope**:
   - Sharing dashboards, which comes later
@@ -119,7 +124,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.6 AI - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-ai`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-ai`
 
 - **Purpose**: A chat over the data.
 
@@ -127,14 +132,17 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**:
 
-  - [ ] `p1` - `cpt-insightspec-v3-fr-ai-answer`
-  - [ ] `p1` - `cpt-insightspec-v3-fr-ai-create`
+  - [x] `p1` - `cpt-insightspec-v3-fr-ai-answer`
+  - [x] `p1` - `cpt-insightspec-v3-fr-ai-create`
 
 ### 2.7 Data Access - HIGH
 
 - [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-data-access`
 
 - **Purpose**: Get data out. Name is provisional.
+
+- **Status**: rows come out of a metric run; there is no download, and no way to read raw rows back
+  without a metric over them.
 
 - **Depends On**: 2.1, 2.2
 
@@ -145,7 +153,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.8 Definition Lifecycle - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-lifecycle`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-lifecycle`
 
 - **Purpose**: Change a definition after it exists — replace its body, rename it, delete it.
   Deletion is refused while another definition draws it, and a rename carries the dependents with
@@ -157,7 +165,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.9 Definition Catalogue - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-catalogue`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-catalogue`
 
 - **Purpose**: Find a definition among hundreds: a page at a time with the total, and a search over
   names and bodies.
@@ -168,7 +176,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.10 Authoring over MCP - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-mcp-authoring`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-mcp-authoring`
 
 - **Purpose**: Let an agent do what an author does — read the table catalogue, write a metric, run
   it, draw it, arrange a board — through MCP rather than the browser.
@@ -179,7 +187,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.11 Access Control - HIGH
 
-- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-access-control`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-access-control`
 
 - **Purpose**: Decide who may do what: a token for ingest, an administrator for anything that
   creates a table, a person's own authority for authoring, and a read-only warehouse user for
@@ -191,7 +199,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.12 People in Metrics - MEDIUM
 
-- [ ] `p2` - **ID**: `cpt-insightspec-v3-feature-people-in-metrics`
+- [x] `p2` - **ID**: `cpt-insightspec-v3-feature-people-in-metrics`
 
 - **Purpose**: Show a person by the name they are known by rather than the address a source system
   recorded, by resolving a column against the identity mirror.
