@@ -165,7 +165,6 @@ jobs:
               - 'src/backend/Cargo.lock'
             insight_v3_core:
               - '.github/workflows/build-images.yml'
-              - '.github/workflows/e2e-stand.yml'
               - 'src/backend/services/insight-v3-core/**'
               - 'src/backend/libs/insight-clickhouse/**'
               # The shared entrypoint is baked into the image.
