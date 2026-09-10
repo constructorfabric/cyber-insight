@@ -83,12 +83,7 @@ gears:
       clickhouse_password: null
       ingest_token: ""
       anthropic_token: ""
-      # Canned, because the token beside it is empty: a deployment sets both
-      # (see docker-compose.yml), and anything booting this file as it stands
-      # — the live tests, a local `run` — would otherwise be refused for want
-      # of a key it never calls.
-      chat_mode: "canned"
-      chat_model: "claude-haiku-4-5-20251001"
+      chat_model: "claude-sonnet-5"
       mcp:
         enabled: false
         bind_addr: "0.0.0.0:8087"

@@ -261,9 +261,46 @@ async fn a_name_already_in_use_is_replaced_and_reported_as_updated() {
     assert_eq!(stored["metric"], "m", "the new body must have replaced it");
 }
 
+/// A metric, two widgets over it and a dashboard holding both: everything one
+/// proposal can carry, so the handler's whole store path is exercised.
+fn whole_board_proposal() -> Proposal {
+    Proposal::Create {
+        reply: "here it is".to_owned(),
+        metric: Some((
+            "delivery_metric".to_owned(),
+            json!({
+                "table": "events",
+                "fields": [
+                    { "json": "day", "type": "string", "as_name": "day" },
+                    { "json": "lines", "type": "int", "agg": "sum", "as_name": "lines" }
+                ],
+                "group_by": ["day"]
+            }),
+        )),
+        widgets: vec![
+            (
+                "delivery".to_owned(),
+                json!({
+                    "type": "table",
+                    "metric": "delivery_metric",
+                    "columns": ["day", "lines"]
+                }),
+            ),
+            (
+                "delivery_line".to_owned(),
+                json!({ "type": "line", "metric": "delivery_metric", "x": "day", "y": "lines" }),
+            ),
+        ],
+        dashboard: Some((
+            "delivery_dashboard".to_owned(),
+            json!({ "title": "delivery", "widgets": ["delivery", "delivery_line"] }),
+        )),
+    }
+}
+
 #[tokio::test]
-async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
-    let harness = TestHarness::new(ChatClient::canned()).await;
+async fn a_proposal_stores_the_metric_its_widgets_and_the_dashboard_holding_them() {
+    let harness = TestHarness::new(ChatClient::scripted(whole_board_proposal)).await;
 
     harness.queue_chat_context();
 
@@ -281,6 +318,17 @@ async fn canned_mode_makes_no_network_call_and_stores_a_dashboard() {
         body["updated"],
         json!({ "metric": null, "widgets": [], "dashboard": null })
     );
+}
+
+#[tokio::test]
+async fn an_instance_with_no_key_refuses_the_ask_rather_than_inventing_a_reply() {
+    let harness = TestHarness::new(ChatClient::keyless()).await;
+
+    harness.queue_chat_context();
+
+    let response = harness.post_chat("delivery report").await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 /// Serves one ClickHouse JSON result, and hands back where to reach it.

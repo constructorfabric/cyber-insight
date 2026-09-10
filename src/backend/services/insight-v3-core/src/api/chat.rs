@@ -479,6 +479,10 @@ fn chat_error(error: ChatError) -> CanonicalError {
             tracing::error!("the model call failed");
             CanonicalError::internal("chat failed").create()
         }
+        ChatError::NoKey => {
+            tracing::error!("the assistant was asked to answer with no anthropic token set");
+            CanonicalError::internal("the assistant is not configured on this instance").create()
+        }
     }
 }
 

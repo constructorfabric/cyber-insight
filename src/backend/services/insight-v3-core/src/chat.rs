@@ -343,11 +343,15 @@ pub(crate) enum ChatError {
     Timeout,
     #[error("the model call failed")]
     Failed,
+    #[error("this instance has no Anthropic key, so the assistant cannot answer")]
+    NoKey,
 }
 
-/// Proposes an answer or a creation from a chat message. `canned()` never
-/// makes a network call — it is used when `chat_mode: canned` is configured,
-/// so recordings and tests never depend on a live model.
+/// Proposes an answer or a creation from a chat message.
+///
+/// There is one backend that answers: the model. A blank key gives
+/// [`ChatError::NoKey`] rather than a reply of our own invention, so a stand
+/// that never got a key says so instead of looking answered.
 #[derive(Debug, Clone)]
 pub(crate) struct ChatClient {
     backend: ChatBackend,
@@ -360,13 +364,17 @@ enum ChatBackend {
         token: SecretString,
         model: String,
     },
-    Canned,
+    Keyless,
     #[cfg(test)]
     Scripted(fn() -> Proposal),
 }
 
 impl ChatClient {
     pub(crate) fn new(token: &SecretString, model: String) -> Self {
+        if token.expose_secret().trim().is_empty() {
+            return Self::keyless();
+        }
+
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(CHAT_TIMEOUT_SECS))
             .build()
@@ -381,15 +389,16 @@ impl ChatClient {
         }
     }
 
-    pub(crate) fn canned() -> Self {
+    /// A client with nothing to call: every ask is [`ChatError::NoKey`].
+    pub(crate) fn keyless() -> Self {
         Self {
-            backend: ChatBackend::Canned,
+            backend: ChatBackend::Keyless,
         }
     }
 
     /// Always answers with a fixed [`Proposal`] built by `build`, making no
     /// network call — lets a test drive `handle_chat` with a proposal shape
-    /// of its own choosing, independent of `canned()`'s fixed shape.
+    /// of its own choosing.
     #[cfg(test)]
     pub(crate) fn scripted(build: fn() -> Proposal) -> Self {
         Self {
@@ -403,7 +412,7 @@ impl ChatClient {
     /// reply could not be turned into a [`Proposal`].
     pub(crate) async fn propose(&self, ask: &Ask<'_>) -> Result<Proposal, ChatError> {
         match &self.backend {
-            ChatBackend::Canned => Ok(canned_proposal(ask.message)),
+            ChatBackend::Keyless => Err(ChatError::NoKey),
             #[cfg(test)]
             ChatBackend::Scripted(build) => Ok(build()),
             ChatBackend::Live { http, token, model } => {
@@ -638,48 +647,6 @@ fn push_catalogue(prompt: &mut String, label: &str, names: &[String]) {
     prompt.push_str(" already built: ");
     prompt.push_str(&names.join(", "));
     prompt.push('\n');
-}
-
-fn canned_proposal(message: &str) -> Proposal {
-    let word = message.split_whitespace().next().unwrap_or("chat");
-    let metric_name = format!("{word}_metric");
-    let line_widget_name = format!("{word}_line");
-    let dashboard_name = format!("{word}_dashboard");
-
-    let metric_body = json!({
-        "table": "events",
-        "fields": [
-            { "json": "day", "type": "string", "as_name": "day" },
-            { "json": "lines", "type": "int", "agg": "sum", "as_name": "lines" }
-        ],
-        "group_by": ["day"],
-        "filters": []
-    });
-    let table_widget_body = json!({
-        "type": "table",
-        "metric": metric_name,
-        "columns": ["day", "lines"]
-    });
-    let line_widget_body = json!({
-        "type": "line",
-        "metric": metric_name,
-        "x": "day",
-        "y": "lines"
-    });
-    let dashboard_body = json!({
-        "title": word,
-        "widgets": [word, line_widget_name]
-    });
-
-    Proposal::Create {
-        reply: format!("Here's a starter dashboard for \"{word}\"."),
-        metric: Some((metric_name, metric_body)),
-        widgets: vec![
-            (word.to_owned(), table_widget_body),
-            (line_widget_name, line_widget_body),
-        ],
-        dashboard: Some((dashboard_name, dashboard_body)),
-    }
 }
 
 #[derive(Serialize)]
@@ -1761,12 +1728,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canned_mode_names_everything_after_the_messages_first_word() {
-        let client = ChatClient::canned();
+    async fn a_blank_key_says_so_instead_of_answering() {
+        let client = ChatClient::new(&SecretString::from("   ".to_owned()), "model".to_owned());
 
-        let proposal = client
+        let refusal = client
             .propose(&Ask {
-                message: "commits_table",
+                message: "commits per day",
                 turns: &[],
                 tables: &[],
                 catalogue: &Catalogue::default(),
@@ -1775,28 +1742,8 @@ mod tests {
                 schemas: &FixedSchemas("unused"),
                 people: &people(),
             })
-            .await
-            .unwrap_or_else(|error| panic!("canned mode never fails: {error}"));
+            .await;
 
-        match proposal {
-            Proposal::Create {
-                metric,
-                widgets,
-                dashboard,
-                ..
-            } => {
-                assert_eq!(
-                    metric.map(|(name, _)| name),
-                    Some("commits_table_metric".to_owned())
-                );
-                assert_eq!(widgets.len(), 2);
-                assert_eq!(widgets[0].0, "commits_table");
-                assert_eq!(
-                    dashboard.map(|(name, _)| name),
-                    Some("commits_table_dashboard".to_owned())
-                );
-            }
-            Proposal::Answer { .. } => panic!("canned mode always creates"),
-        }
+        assert!(matches!(refusal, Err(ChatError::NoKey)));
     }
 }

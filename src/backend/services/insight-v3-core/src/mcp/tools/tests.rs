@@ -35,7 +35,7 @@ fn surfaces() -> CustomSurfaces {
         TableStore::new(client()),
         Arc::new(MemoryDefinitions::new()),
         MetricRunner::new(client(), People::new("identity")),
-        ChatClient::canned(),
+        ChatClient::keyless(),
         identity,
         Catalog::new(client(), "insight".to_owned()),
     ));

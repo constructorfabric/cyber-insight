@@ -179,7 +179,7 @@ pub(crate) fn openapi_document() -> anyhow::Result<utoipa::openapi::OpenApi> {
             offline.clone(),
             crate::metric_query::People::new("identity"),
         ),
-        ChatClient::canned(),
+        ChatClient::keyless(),
         IdentityClient::new("http://identity.invalid")?,
         Catalog::new(offline, "insight".to_owned()),
     ));

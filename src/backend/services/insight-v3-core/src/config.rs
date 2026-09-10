@@ -8,19 +8,8 @@ const DEFAULT_CLICKHOUSE_DATABASE: &str = "insight";
 const DEFAULT_IDENTITY_DATABASE: &str = "identity";
 pub(crate) const MIN_INGEST_TOKEN_BYTES: usize = 32;
 pub(crate) const MAX_INGEST_TOKEN_BYTES: usize = 1024;
-const DEFAULT_CHAT_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_CHAT_MODEL: &str = "claude-sonnet-5";
 const DEFAULT_MCP_BIND_ADDR: &str = "0.0.0.0:8087";
-
-/// Whether the chat endpoint calls the model or returns a fixed reply.
-///
-/// `canned` makes no network call at all — it exists so a recording (or a
-/// test) can exercise the chat endpoint without a live model or an API key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ChatMode {
-    Live,
-    Canned,
-}
 
 /// The MCP server's own listener, off unless a deployment asks for it.
 ///
@@ -72,7 +61,6 @@ pub(crate) struct GearConfig {
     pub(crate) clickhouse_query_password: Option<SecretString>,
     pub(crate) ingest_token: SecretString,
     pub(crate) anthropic_token: SecretString,
-    pub(crate) chat_mode: ChatMode,
     pub(crate) chat_model: String,
     pub(crate) database_url: String,
     pub(crate) identity_url: String,
@@ -91,7 +79,6 @@ impl Default for GearConfig {
             clickhouse_query_password: None,
             ingest_token: SecretString::from(String::new()),
             anthropic_token: SecretString::from(String::new()),
-            chat_mode: ChatMode::Live,
             chat_model: DEFAULT_CHAT_MODEL.to_owned(),
             database_url: String::new(),
             identity_url: String::new(),
@@ -127,7 +114,6 @@ pub(crate) struct ValidatedConfig {
     clickhouse_query_password: Option<SecretString>,
     ingest_token: IngestToken,
     anthropic_token: SecretString,
-    chat_mode: ChatMode,
     chat_model: String,
     database_url: String,
     identity_url: String,
@@ -150,7 +136,6 @@ impl fmt::Debug for GearConfig {
             .field("clickhouse_query_password", &REDACTED)
             .field("ingest_token", &REDACTED)
             .field("anthropic_token", &REDACTED)
-            .field("chat_mode", &self.chat_mode)
             .field("chat_model", &self.chat_model)
             .field("database_url", &REDACTED)
             .field("identity_url", &self.identity_url)
@@ -172,7 +157,6 @@ impl fmt::Debug for ValidatedConfig {
             .field("clickhouse_query_password", &REDACTED)
             .field("ingest_token", &REDACTED)
             .field("anthropic_token", &REDACTED)
-            .field("chat_mode", &self.chat_mode)
             .field("chat_model", &self.chat_model)
             .field("database_url", &REDACTED)
             .field("identity_url", &self.identity_url)
@@ -239,10 +223,6 @@ impl ValidatedConfig {
 
     pub(crate) fn anthropic_token(&self) -> &SecretString {
         &self.anthropic_token
-    }
-
-    pub(crate) fn chat_mode(&self) -> ChatMode {
-        self.chat_mode
     }
 
     pub(crate) fn chat_model(&self) -> String {
@@ -314,9 +294,6 @@ impl GearConfig {
         require_non_empty("database_url", &self.database_url)?;
         require_non_empty("identity_url", &self.identity_url)?;
         let ingest_token = IngestToken::parse(self.ingest_token)?;
-        if self.chat_mode == ChatMode::Live {
-            require_non_empty("anthropic_token", self.anthropic_token.expose_secret())?;
-        }
         validate_credentials(
             self.clickhouse_user.as_deref(),
             self.clickhouse_password.as_ref(),
@@ -342,7 +319,6 @@ impl GearConfig {
             clickhouse_query_password,
             ingest_token,
             anthropic_token: self.anthropic_token,
-            chat_mode: self.chat_mode,
             chat_model: self.chat_model,
             database_url: self.database_url,
             identity_url: self.identity_url,
@@ -461,8 +437,7 @@ mod tests {
             ingest_token: SecretString::from("test-ingest-token-0123456789abcdef"),
             anthropic_token: SecretString::from("test-anthropic-token"),
             mcp: McpConfig::default(),
-            chat_mode: ChatMode::Live,
-            chat_model: "claude-haiku-4-5-20251001".to_owned(),
+            chat_model: "claude-sonnet-5".to_owned(),
             database_url: "mysql://insight:secret@mariadb.example.test:3306/insight_v3".to_owned(),
             identity_url: "http://identity-resolution.example.test:8082".to_owned(),
         }
@@ -492,17 +467,12 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_token_is_required_only_in_live_mode() {
-        let mut live = valid_config();
-        live.anthropic_token = SecretString::from(String::new());
-        assert!(live.validate().is_err(), "live mode needs a token");
-
-        let mut canned = valid_config();
-        canned.anthropic_token = SecretString::from(String::new());
-        canned.chat_mode = ChatMode::Canned;
+    fn a_stand_without_an_anthropic_token_still_serves_everything_else() {
+        let mut config = valid_config();
+        config.anthropic_token = SecretString::from(String::new());
         assert!(
-            canned.validate().is_ok(),
-            "canned mode makes no model call and needs no token"
+            config.validate().is_ok(),
+            "the assistant is one endpoint; the rest of the service does not wait on its key"
         );
     }
 

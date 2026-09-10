@@ -48,7 +48,7 @@ impl TestHarness {
             )),
             definitions.clone(),
             MetricRunner::new(metrics_client, crate::metric_query::People::new("identity")),
-            ChatClient::canned(),
+            ChatClient::keyless(),
             crate::identity::IdentityClient::fixed(true),
             crate::catalog::Catalog::new(
                 insight_clickhouse::Client::new(insight_clickhouse::Config::new(
