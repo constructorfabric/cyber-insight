@@ -1089,6 +1089,8 @@ Targets:
   analytics            Rust analytics binary only.
   authenticator        Rust authenticator binary only.
   identity-resolution  Rust identity-resolution binary only.
+  insight-v3-core      insight-v3-core image (it runs from an image, not a
+                       bind-mounted binary like the three above).
   frontend             pnpm build → dist/.
   rust                 All Rust services.
   all                  Everything (Rust + frontend).
@@ -1151,21 +1153,25 @@ cmd_build() {
 
   # Accept MULTIPLE targets, e.g. `build authenticator identity-resolution`.
   # Rust bins are batched into one build; frontend runs once if requested.
-  local rust_bins="" want_frontend=false t
+  local rust_bins="" want_frontend=false want_v3_image=false t
   for t in "$@"; do
     case "$t" in
       analytics)           rust_bins="$rust_bins analytics" ;;
       authenticator)       rust_bins="$rust_bins authenticator" ;;
       identity-resolution) rust_bins="$rust_bins identity-resolution" ;;
-      rust)                rust_bins="$rust_bins analytics authenticator identity-resolution" ;;
+      insight-v3-core)     want_v3_image=true ;;
+      rust)                rust_bins="$rust_bins analytics authenticator identity-resolution"; want_v3_image=true ;;
       frontend)            want_frontend=true ;;
-      all)                 rust_bins="$rust_bins analytics authenticator identity-resolution"; want_frontend=true ;;
+      all)                 rust_bins="$rust_bins analytics authenticator identity-resolution"; want_v3_image=true; want_frontend=true ;;
       *) echo "ERROR: unknown target: $t" >&2; cmd_build_help; return 2 ;;
     esac
   done
   rust_bins="$(trim "$rust_bins")"
   # shellcheck disable=SC2086 # word-split the bin list intentionally
   [[ -n "$rust_bins" ]] && build_rust_bins $rust_bins
+  # insight-v3-core runs from its image (unlike the bind-mounted binaries
+  # above), so rebuilding it is a compose image build.
+  [[ "$want_v3_image" == true ]] && "${compose_cmd[@]}" build insight-v3-core
   [[ "$want_frontend" == true ]] && "${compose_cmd[@]}" run --rm build-frontend
   echo "Done. If a runtime container has ENABLE_AUTO_RELOAD=true it will restart automatically."
 }
