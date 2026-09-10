@@ -1043,14 +1043,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A fake `git`: a shell script that records its pid, backgrounds a
-    /// child, runs `body`, then blocks. Whatever ends the launch must take
-    /// the whole process group with it, and the recorded pid names that group.
+    /// A fake `git`: a shell script that backgrounds a child appending to a
+    /// heartbeat file, runs `body` once the first beat has landed, then
+    /// blocks. Whatever ends the launch must take the whole process group
+    /// with it, and a heartbeat that stops is the proof.
     struct FakeGit {
         dir: PathBuf,
         script: PathBuf,
-        pid_file: PathBuf,
+        heartbeat: PathBuf,
     }
+
+    const HEARTBEAT_QUIET: Duration = Duration::from_millis(200);
 
     static FAKE_GIT_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -1065,12 +1068,16 @@ mod tests {
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 panic!("fake git dir: {e}");
             }
-            let pid_file = dir.join("pid");
+            let heartbeat = dir.join("heartbeat");
             let script = dir.join("git");
             let body = body(&dir);
             let source = format!(
-                "#!/bin/sh\necho $$ > {}\nsleep 30 &\n{body}\nexec sleep 30\n",
-                pid_file.display()
+                "#!/bin/sh\n\
+                 (while :; do echo beat >> {beat}; sleep 0.01; done) &\n\
+                 until [ -s {beat} ]; do sleep 0.01; done\n\
+                 {body}\n\
+                 exec sleep 30\n",
+                beat = heartbeat.display()
             );
             if let Err(e) = std::fs::write(&script, source) {
                 panic!("write fake git: {e}");
@@ -1082,23 +1089,29 @@ mod tests {
             Self {
                 dir,
                 script,
-                pid_file,
+                heartbeat,
             }
         }
 
-        fn recorded_group(&self) -> Pid {
-            let raw = std::fs::read_to_string(&self.pid_file).unwrap_or_default();
-            match raw.trim().parse::<i32>().ok().and_then(Pid::from_raw) {
-                Some(group) => group,
-                None => panic!("the fake git must have recorded its pid: {raw:?}"),
-            }
+        fn heartbeat_bytes(&self) -> u64 {
+            std::fs::metadata(&self.heartbeat).map_or(0, |m| m.len())
         }
 
-        fn assert_group_dead(&self, ended_by: &str) {
-            let group = self.recorded_group();
+        /// The backgrounded child was beating before the launch ended; a
+        /// zombie still answers `kill(-pgid, 0)` until PID 1 reaps it, so
+        /// the oracle is that the beating has stopped, not the process table.
+        async fn assert_nothing_still_writing(&self, ended_by: &str) {
+            let before = self.heartbeat_bytes();
             assert!(
-                rustix::process::test_kill_process_group(group).is_err(),
-                "every process of a launch ended by {ended_by} must be dead; group {group:?} still answers"
+                before > 0,
+                "the fake git must have started beating before {ended_by}"
+            );
+
+            tokio::time::sleep(HEARTBEAT_QUIET).await;
+            let after = self.heartbeat_bytes();
+            assert_eq!(
+                before, after,
+                "every process of a launch ended by {ended_by} must be dead; the heartbeat is still growing"
             );
         }
     }
@@ -1123,13 +1136,13 @@ mod tests {
             other => panic!("expected the budget to expire, got {other:?}"),
         }
 
-        fake.assert_group_dead("the budget");
+        fake.assert_nothing_still_writing("the budget").await;
     }
 
     #[tokio::test]
     async fn a_launch_killed_by_the_cap_leaves_no_process_behind() {
         // The watched tree is empty until the script drops a file into it,
-        // so the pid is on disk before the cap can fire.
+        // so the heartbeat is running before the cap can fire.
         let fake = FakeGit::new(|dir| {
             format!(
                 "echo grown > {}",
@@ -1152,7 +1165,7 @@ mod tests {
             other => panic!("expected the cap to fire, got {other:?}"),
         }
 
-        fake.assert_group_dead("the cap");
+        fake.assert_nothing_still_writing("the cap").await;
     }
 
     #[tokio::test]
