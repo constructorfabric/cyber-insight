@@ -98,6 +98,8 @@ jobs:
               - 'docs/components/backend/**/openapi.json'
               - 'tests/generate_schemas.py'
               - 'tests/stand/api/schemas/**'
+              - 'tests/pyproject.toml'
+              - 'tests/uv.lock'
               - '.github/workflows/openapi-specs.yml'
       - name: Select every check
         if: github.event_name == 'workflow_dispatch'
