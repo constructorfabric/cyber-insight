@@ -124,9 +124,13 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 ### 2.6 AI - HIGH
 
-- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-ai`
+- [ ] `p1` - **ID**: `cpt-insightspec-v3-feature-ai`
 
-- **Purpose**: A chat over the data.
+- **Purpose**: A chat over the data, reading context the team supplies of its own — what their
+  metrics mean, which tables to prefer, the words they use for things.
+
+- **Status**: answering and creating are built. Reader-supplied context is not; today the model
+  sees only the stand's tables, their sampled fields and what is already stored.
 
 - **Depends On**: 2.2, 2.3, 2.4, 2.5
 
