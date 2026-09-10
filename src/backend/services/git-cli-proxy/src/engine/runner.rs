@@ -330,8 +330,8 @@ impl GitRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // INVARIANT: this is what enforces the cap. Returning early drops
-            // the wait future, which owns the child, which kills it.
+            // SAFETY: a backstop for a caller that drops this future mid-run;
+            // the cap and the budget kill the whole group themselves.
             .kill_on_drop(true);
 
         let child = command.spawn()?;
@@ -357,6 +357,7 @@ impl GitRunner {
                                 .unwrap_or(0)
                         };
                         if measured > cap_bytes {
+                            kill_and_reap(&groups, &mut wait).await;
                             return Err(GitError::TooLarge { cap_bytes });
                         }
                     }
@@ -589,21 +590,29 @@ async fn within_budget<T>(
     tokio::select! {
         finished = &mut work => finished,
         () = tokio::time::sleep(budget) => {
-            for group in groups.iter().flatten() {
-                let _ = kill_process_group(*group, Signal::KILL);
-            }
-            if tokio::time::timeout(KILL_GRACE, &mut work).await.is_err() {
-                tracing::warn!(budget = ?budget, "a timed-out git child did not exit after SIGKILL");
-            }
+            kill_and_reap(groups, &mut work).await;
             Err(GitError::TimedOut(budget))
         }
+    }
+}
+
+/// Kill every listed process group and await `work`, which owns the children,
+/// so nothing from the launch is still writing when the caller returns.
+async fn kill_and_reap(groups: &[Option<Pid>], work: impl Future) {
+    for group in groups.iter().flatten() {
+        let _ = kill_process_group(*group, Signal::KILL);
+    }
+    if tokio::time::timeout(KILL_GRACE, work).await.is_err() {
+        tracing::warn!("a killed git child did not exit after SIGKILL");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
     use std::process::ExitStatus;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
@@ -1034,38 +1043,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[tokio::test]
-    async fn a_timed_out_launch_leaves_no_process_behind() {
-        // A fake `git` that backgrounds a child and then blocks: the budget
-        // expires, and afterwards neither the script nor the child it started
-        // may still exist — the whole process group goes with the timeout.
-        // nosemgrep: rust.lang.security.temp-dir.temp-dir -- test fixture; the name carries pid and a nanosecond clock and holds no secrets
-        let dir = std::env::temp_dir().join(format!(
-            "git-cli-proxy-fake-git-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            panic!("fake git dir: {e}");
-        }
-        let pid_file = dir.join("pid");
-        let script = dir.join("git");
-        let body = format!(
-            "#!/bin/sh\necho $$ > {}\nsleep 30 &\nexec sleep 30\n",
-            pid_file.display()
-        );
-        if let Err(e) = std::fs::write(&script, body) {
-            panic!("write fake git: {e}");
-        }
-        let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
-        if let Err(e) = std::fs::set_permissions(&script, executable) {
-            panic!("chmod fake git: {e}");
+    /// A fake `git`: a shell script that records its pid, backgrounds a
+    /// child, runs `body`, then blocks. Whatever ends the launch must take
+    /// the whole process group with it, and the recorded pid names that group.
+    struct FakeGit {
+        dir: PathBuf,
+        script: PathBuf,
+        pid_file: PathBuf,
+    }
+
+    static FAKE_GIT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    impl FakeGit {
+        fn new(body: impl FnOnce(&Path) -> String) -> Self {
+            // nosemgrep: rust.lang.security.temp-dir.temp-dir -- test fixture; the name carries pid and a per-process counter and holds no secrets
+            let dir = std::env::temp_dir().join(format!(
+                "git-cli-proxy-fake-git-{}-{}",
+                std::process::id(),
+                FAKE_GIT_SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                panic!("fake git dir: {e}");
+            }
+            let pid_file = dir.join("pid");
+            let script = dir.join("git");
+            let body = body(&dir);
+            let source = format!(
+                "#!/bin/sh\necho $$ > {}\nsleep 30 &\n{body}\nexec sleep 30\n",
+                pid_file.display()
+            );
+            if let Err(e) = std::fs::write(&script, source) {
+                panic!("write fake git: {e}");
+            }
+            let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+            if let Err(e) = std::fs::set_permissions(&script, executable) {
+                panic!("chmod fake git: {e}");
+            }
+            Self {
+                dir,
+                script,
+                pid_file,
+            }
         }
 
+        fn recorded_group(&self) -> Pid {
+            let raw = std::fs::read_to_string(&self.pid_file).unwrap_or_default();
+            match raw.trim().parse::<i32>().ok().and_then(Pid::from_raw) {
+                Some(group) => group,
+                None => panic!("the fake git must have recorded its pid: {raw:?}"),
+            }
+        }
+
+        fn assert_group_dead(&self, ended_by: &str) {
+            let group = self.recorded_group();
+            assert!(
+                rustix::process::test_kill_process_group(group).is_err(),
+                "every process of a launch ended by {ended_by} must be dead; group {group:?} still answers"
+            );
+        }
+    }
+
+    impl Drop for FakeGit {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_launch_leaves_no_process_behind() {
+        let fake = FakeGit::new(|_| String::new());
         let runner = GitRunner::new()
-            .with_git_binary(script)
+            .with_git_binary(fake.script.clone())
             .with_timeouts(Timeouts {
                 read: Duration::from_millis(300),
                 ..Timeouts::default()
@@ -1075,15 +1123,36 @@ mod tests {
             other => panic!("expected the budget to expire, got {other:?}"),
         }
 
-        let raw = std::fs::read_to_string(&pid_file).unwrap_or_default();
-        let Some(group) = raw.trim().parse::<i32>().ok().and_then(Pid::from_raw) else {
-            panic!("the fake git must have recorded its pid: {raw:?}")
-        };
-        assert!(
-            rustix::process::test_kill_process_group(group).is_err(),
-            "every process of the timed-out launch must be dead; group {group:?} still answers"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        fake.assert_group_dead("the budget");
+    }
+
+    #[tokio::test]
+    async fn a_launch_killed_by_the_cap_leaves_no_process_behind() {
+        // The watched tree is empty until the script drops a file into it,
+        // so the pid is on disk before the cap can fire.
+        let fake = FakeGit::new(|dir| {
+            format!(
+                "echo grown > {}",
+                dir.join("watched").join("blob").display()
+            )
+        });
+        let watch = fake.dir.join("watched");
+        if let Err(e) = std::fs::create_dir_all(&watch) {
+            panic!("watched dir: {e}");
+        }
+
+        let runner = GitRunner::new()
+            .with_git_binary(fake.script.clone())
+            .with_cap_poll(Duration::from_millis(1));
+        match runner
+            .run_capped(None, &["anything"], None, &watch, 0)
+            .await
+        {
+            Err(GitError::TooLarge { cap_bytes }) => assert_eq!(cap_bytes, 0),
+            other => panic!("expected the cap to fire, got {other:?}"),
+        }
+
+        fake.assert_group_dead("the cap");
     }
 
     #[tokio::test]

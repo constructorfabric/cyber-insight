@@ -150,8 +150,6 @@ pub(crate) enum BlobPurge {
     Purged,
     /// Nothing to purge, or the entry has readers right now.
     Skipped,
-    /// The heavy permit is busy with a clone or fetch.
-    PermitBusy,
 }
 
 /// How a caller wants the snapshot resolved.
@@ -1500,7 +1498,7 @@ impl RepoStore {
             freed.as_mut().enable();
 
             let permit = self.heavy_permit().await;
-            if let Some(reserved) = self.admit(entry_dir, size_hint).await {
+            if let Some(reserved) = self.admit(entry_dir, size_hint, &permit).await {
                 return Ok((permit, reserved));
             }
             drop(permit);
@@ -1513,7 +1511,14 @@ impl RepoStore {
         }
     }
 
-    async fn admit(&self, entry_dir: &Path, size_hint: Option<u64>) -> Option<Reservation<'_>> {
+    /// The caller's heavy permit is what a reclaim repack runs under: the
+    /// purge must not take a second one while the caller's slot is occupied.
+    async fn admit(
+        &self,
+        entry_dir: &Path,
+        size_hint: Option<u64>,
+        permit: &SemaphorePermit<'_>,
+    ) -> Option<Reservation<'_>> {
         // INVARIANT: deciding and reserving must be one step. Two callers that
         // both read usage before either reserved would both be admitted
         // against the same headroom.
@@ -1543,16 +1548,12 @@ impl RepoStore {
                 // A purge that cannot run or cannot finish must not leave the
                 // space unreclaimed: eviction frees it with no git involved.
                 Reclaim::PurgeBlobs { dir_name, frees } => {
-                    match self.purge_blobs_by_dir(&dir_name).await {
+                    match self.purge_blobs_by_dir(&dir_name, permit).await {
                         Ok(BlobPurge::Purged) => {
                             metrics::record_eviction(EvictionTier::Blob);
                             tracing::info!(dir = %dir_name, freed_bytes = frees, "purged blobs");
                         }
                         Ok(BlobPurge::Skipped) => {}
-                        Ok(BlobPurge::PermitBusy) => {
-                            tracing::info!(dir = %dir_name, "blob purge would wait for the heavy permit; evicting instead");
-                            self.evict_dir(&dir_name, frees).await;
-                        }
                         Err(e) => {
                             tracing::warn!(error = %e, dir = %dir_name, "blob purge failed; evicting instead");
                             self.evict_dir(&dir_name, frees).await;
@@ -1799,7 +1800,13 @@ impl RepoStore {
         entries.entry(dir_name.to_owned()).or_default().clone()
     }
 
-    pub(crate) async fn purge_blobs_by_dir(&self, dir_name: &str) -> Result<BlobPurge, StoreError> {
+    /// Shed an entry's served windows and, if the skeleton still needs it,
+    /// repack under the caller's heavy `permit`.
+    pub(crate) async fn purge_blobs_by_dir(
+        &self,
+        dir_name: &str,
+        permit: &SemaphorePermit<'_>,
+    ) -> Result<BlobPurge, StoreError> {
         let entry_dir = self.data_dir.join("repos").join(dir_name);
         if !entry_dir.join("repo.git").is_dir() {
             return Ok(BlobPurge::Skipped);
@@ -1817,8 +1824,6 @@ impl RepoStore {
             return Ok(BlobPurge::Skipped);
         };
 
-        // Never wait: the only caller holds the admission lock, and a permit
-        // held by a clone would stall every admission behind that clone.
         match self.shed_window_packs(&entry_dir).await {
             WindowShed::Settled { freed: 0 } => return Ok(BlobPurge::Skipped),
             WindowShed::Settled { .. } => {
@@ -1827,10 +1832,7 @@ impl RepoStore {
             }
             WindowShed::RepackDue { .. } => {}
         }
-        let Ok(permit) = self.heavy.try_acquire() else {
-            return Ok(BlobPurge::PermitBusy);
-        };
-        self.repack_blobless(&entry_dir, &permit)
+        self.repack_blobless(&entry_dir, permit)
             .await
             .map(|_| BlobPurge::Purged)
     }
@@ -2574,19 +2576,20 @@ pub(crate) mod tests {
         // Without reservations both callers see an empty cache, are both
         // admitted, and together overrun the budget.
         let f = fixture_with_budget("reserve", 1_000_000, 500_000);
+        let permit = f.store.heavy_permit().await;
         let entry_dir = f.store.entry_dir(&key(&f));
 
-        let Some(first) = f.store.admit(&entry_dir, None).await else {
+        let Some(first) = f.store.admit(&entry_dir, None, &permit).await else {
             panic!("an empty cache must admit the first caller")
         };
         assert!(
-            f.store.admit(&entry_dir, None).await.is_none(),
+            f.store.admit(&entry_dir, None, &permit).await.is_none(),
             "the second caller must be refused against the first's reservation"
         );
 
         drop(first);
         assert!(
-            f.store.admit(&entry_dir, None).await.is_some(),
+            f.store.admit(&entry_dir, None, &permit).await.is_some(),
             "and admitted again once that reservation is released"
         );
     }
@@ -2597,19 +2600,20 @@ pub(crate) mod tests {
         // a second cap-sized one does not fit, a hinted one (floored at 64 MiB)
         // does.
         let f = fixture_with_budget("hint", 1_000_000_000, 500_000_000);
+        let permit = f.store.heavy_permit().await;
         let cold = f
             .root
             .join("cache-bounded")
             .join("repos")
             .join("cold-entry");
-        let Some(_held) = f.store.admit(&cold, None).await else {
+        let Some(_held) = f.store.admit(&cold, None, &permit).await else {
             panic!("an empty cache must admit the first caller")
         };
         assert!(
-            f.store.admit(&cold, None).await.is_none(),
+            f.store.admit(&cold, None, &permit).await.is_none(),
             "a second cap-sized reservation must not fit"
         );
-        let hinted = f.store.admit(&cold, Some(1_000)).await;
+        let hinted = f.store.admit(&cold, Some(1_000), &permit).await;
         assert!(
             hinted.is_some(),
             "a hinted reservation is the floor, not the cap, and fits beside the first"
@@ -2640,12 +2644,13 @@ pub(crate) mod tests {
         // Real time: a paused clock would fire git's own timeout under the
         // clone before the subprocess finishes.
         let f = fixture_with_budget("wait-headroom", 1_000_000, 500_000);
+        let permit = f.store.heavy_permit().await;
         let elsewhere = f
             .root
             .join("cache-bounded")
             .join("repos")
             .join("other-entry");
-        let Some(held) = f.store.admit(&elsewhere, None).await else {
+        let Some(held) = f.store.admit(&elsewhere, None, &permit).await else {
             panic!("an empty cache must admit the first caller")
         };
 
@@ -2673,12 +2678,13 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn headroom_that_never_appears_ends_in_busy_after_the_wait() {
         let f = fixture_with_budget("wait-exhausted", 1_000_000, 500_000);
+        let permit = f.store.heavy_permit().await;
         let elsewhere = f
             .root
             .join("cache-bounded")
             .join("repos")
             .join("other-entry");
-        let Some(_held) = f.store.admit(&elsewhere, None).await else {
+        let Some(_held) = f.store.admit(&elsewhere, None, &permit).await else {
             panic!("an empty cache must admit the first caller")
         };
 
@@ -4086,6 +4092,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_pinned_repository_survives_reclaim() {
         let f = fixture_with_budget("pinned-reclaim", 1, u64::MAX);
+        let permit = f.store.heavy_permit().await;
         let k = key(&f);
 
         // INVARIANT: holding the guard pins the entry; reclaim must skip it.
@@ -4098,7 +4105,10 @@ pub(crate) mod tests {
         )
         .await;
 
-        let _ = f.store.admit(&f.store.entry_dir(&key(&f)), None).await;
+        let _ = f
+            .store
+            .admit(&f.store.entry_dir(&key(&f)), None, &permit)
+            .await;
         assert!(
             guard.git_dir().is_dir(),
             "a repository with a live reader must never be deleted"
@@ -4106,21 +4116,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_reclaim_purge_never_waits_for_the_heavy_permit() {
+    async fn a_reclaim_purge_repacks_under_the_callers_permit() {
         let f = fixture("permit-busy-purge");
         let k = key(&f);
         let guard = open_until_ready(&f, &k, refresh()).await;
         drop(guard);
         forget_skeleton_packs(&f.store.entry_dir(&k));
 
-        // Clones or fetches elsewhere hold every heavy permit.
-        let Ok(_held) = f.store.heavy.try_acquire_many(2) else {
-            panic!("the fixture's heavy permits must be free")
+        // The caller holds one slot; clones or fetches elsewhere hold the rest.
+        let permit = f.store.heavy_permit().await;
+        let Ok(_others) = f.store.heavy.try_acquire_many(1) else {
+            panic!("the fixture's remaining heavy permit must be free")
         };
+        assert_eq!(f.store.heavy.available_permits(), 0);
 
-        match f.store.purge_blobs_by_dir(&k.dir_name()).await {
-            Ok(BlobPurge::PermitBusy) => {}
-            other => panic!("a busy permit must be reported, not waited on: {other:?}"),
+        match f.store.purge_blobs_by_dir(&k.dir_name(), &permit).await {
+            Ok(BlobPurge::Purged) => {}
+            other => panic!("the purge must repack under the permit it was given: {other:?}"),
         }
     }
 
@@ -4135,7 +4147,8 @@ pub(crate) mod tests {
         // Bitmap writing on + `--filter` is exactly the combination that fails
         // without `--no-write-bitmap-index`.
         sh(&git_dir, "git config repack.writeBitmaps true");
-        if let Err(e) = f.store.purge_blobs_by_dir(&k.dir_name()).await {
+        let permit = f.store.heavy_permit().await;
+        if let Err(e) = f.store.purge_blobs_by_dir(&k.dir_name(), &permit).await {
             panic!("purge must survive repack.writeBitmaps=true: {e}");
         }
     }
