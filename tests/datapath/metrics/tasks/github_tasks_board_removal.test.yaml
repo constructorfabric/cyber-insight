@@ -1,0 +1,69 @@
+spec_version: 1
+description: >
+  Task Delivery - dev_time for GITHUB when a card is taken off its board.
+
+  A board column is the only place GitHub says work is in progress, so a card
+  that leaves the board takes that statement with it. The vendor announces the
+  departure as `RemovedFromProjectV2Event` and names no new column.
+
+  What makes this measurable rather than cosmetic is how a status span ends: a
+  span runs until the NEXT status event, and the last one runs until `now()`.
+  An issue whose final word is "In progress" therefore accrues development time
+  every day, forever - on a board it no longer sits on - and the number a
+  reader sees depends on the day they ask.
+
+  The issue is created on the 1st, lands on the board as Todo on the 2nd,
+  enters In progress on the 6th, and its card is removed on the 9th. The
+  removal is a status event of its own naming no column, so the In progress
+  span closes there: three days, 72 hours, and it stays 72 whenever this runs.
+  Without that closing row the same fixture reports the hours between the 6th
+  and today.
+
+  The issue is deliberately left OPEN and its own `state` is bound to
+  `ignored`: closing it would end the span through `final_close_at` and hide
+  the very thing under test.
+
+bronze:
+  bronze_bamboohr.employees:
+    - $ref: ../templates/people.yaml#/templates/carol
+
+  bronze_github.commit_authors:
+    - { $ref: ../templates/github_task.yaml#/templates/commit_author, unique_key: gh-author-1003, _airbyte_raw_id: gh-author-1003, author_id: 1003, author_login: carol, author_email: carol@example.com }
+
+  config.task_field_roles:
+    # The board is the lifecycle source; the issue's own state says nothing here.
+    - $ref: ../templates/github_task.yaml#/templates/role_board_status
+    - $ref: ../templates/github_task.yaml#/templates/role_assignees
+    - { $ref: ../templates/github_task.yaml#/templates/role_state, unique_key: gh-role-state-ignored, role: ignored }
+    - { $ref: ../templates/github_task.yaml#/templates/role_type, unique_key: gh-role-type-ignored, role: ignored }
+
+  config.task_value_map:
+    - $ref: ../templates/github_task.yaml#/templates/value_board_todo
+    - $ref: ../templates/github_task.yaml#/templates/value_board_in_progress
+    - $ref: ../templates/github_task.yaml#/templates/value_board_done
+
+  bronze_github.issue_types: []
+  bronze_github.issue_fields: []
+
+  # Without the board's own select column the board is not bindable at all.
+  bronze_github.project_fields:
+    - $ref: ../templates/github_task.yaml#/templates/project_field_status
+
+  # `project_items` is deliberately absent. Board membership reaches no model
+  # on this path - the journal is built from the timeline - and seeding a card
+  # would have to state a column, which is the one thing a removed card no
+  # longer has.
+
+  bronze_github.issues:
+    - { $ref: ../templates/github_task.yaml#/templates/issue, id: 1, number: 1, unique_key: gh-issue-1, _airbyte_raw_id: gh-issue-1,
+        state: open, state_reason: "", closed_at: "", closed_by_login: "", closed_by_id: 0,
+        assignee_logins: carol, assignee_ids: "1003", author_login: carol, author_id: 1003,
+        created_at: "2026-03-01T09:00:00Z", updated_at: "2026-03-09T09:00:00Z" }
+
+  bronze_github.issue_timeline_events:
+    - { $ref: ../templates/github_task.yaml#/templates/board_status_event, unique_key: gh-bev-1, event_id: PSE_1, item_number: 1, event_at: "2026-03-02T09:00:00Z", prev_value: "",     new_value: Todo }
+    - { $ref: ../templates/github_task.yaml#/templates/board_status_event, unique_key: gh-bev-2, event_id: PSE_2, item_number: 1, event_at: "2026-03-06T09:00:00Z", prev_value: Todo, new_value: "In progress" }
+    # The card leaves. The event names no column, and that is what has to reach
+    # the journal: a status the issue no longer holds must stop running.
+    - { $ref: ../templates/github_task.yaml#/templates/board_status_event, unique_key: gh-bev-3, event_id: RFP_1, item_number: 1, event_at: "2026-03-09T09:00:00Z", prev_value: "",     new_value: "",
+        event_type: RemovedFromProjectV2Event }
