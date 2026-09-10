@@ -352,7 +352,6 @@ if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
   kubectl -n "$NS_APP" annotate secret "$CORE_CONFIG_SECRET" \
     helm.sh/resource-policy=keep --overwrite >/dev/null
   echo "composed → $NS_APP/$CORE_CONFIG_SECRET"
-  "$ROOT/scripts/restart-deployment-if-present.sh" "$NS_APP" "${RELEASE}-v3-core"
 fi
 
 # `insight-authenticator-config` (NGINX_BFF): the authenticator's leaf config.
