@@ -33,11 +33,15 @@
 ##    These are just strings the consumers (and the pre-install init-DB
 ##    Hook Jobs) read — the umbrella never runs the dep itself.
 ##
-## 4. Core app services (apiGateway, analytics, insightV3Core, frontend) are MANDATORY
+## 4. Core app services (apiGateway, analytics, frontend) are MANDATORY
 ##    components of the umbrella — no deploy-flag. The gateway is the
 ##    only entrance to the cluster internals; the other services are
 ##    reachable only through it. This matches the Constructor Platform
 ##    integration contract.
+##    `global.insightV3Core.deploy` is OPTIONAL and off by default: the service
+##    cannot boot until its instance's ingest token is sealed, so an instance
+##    opts in once that exists. The switch also drops the gateway's three v3
+##    routes.
 ##    Identity Resolution (`identityResolution`) is OPTIONAL (deploy-flag,
 ##    off by default) — it is the Rust persons-store service that owns the
 ##    `identity` MariaDB database (per ADR-0006), reads observation history
@@ -104,6 +108,8 @@ global:
     # one otherwise — so a cluster with no TLS at its edge cannot serve MCP
     # without this.
     allowInsecurePrivateNetwork: false
+  insightV3Core:
+    deploy: false
   # Global (not `previews.deploy`) so one knob controls both the previews
   # subchart and the gateway's /api/previews route: a route left pointing at a
   # Service the release does not create keeps nginx from loading its config.
