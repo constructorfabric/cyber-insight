@@ -301,6 +301,35 @@ models:
           lowercased). '' when the source exposes none — a deleted or suspended
           author, or a connector without identity inputs — in which case person
           attribution falls back to author_email.
+      - name: closed_on_reported
+        description: >
+          The close time as the source stated it, and nothing derived. NULL when
+          the source stated none: Bitbucket recovers such a merge into
+          `closed_on` so a count still keeps it, and every duration measure
+          reads this column instead, so a recovered time cannot pose as a
+          measured interval.
+      - name: files_changed
+        description: >
+          NULL when the source never reported a diff, 0 when it reported one
+          that touched no file. GitLab exposes no diff-stat stream for a merge
+          request, so its rows carry NULL and never 0.
+        tests:
+          - null_for_data_source:
+              data_source: insight_gitlab
+      - name: lines_added
+        description: >
+          NULL when the source never reported a diff, 0 when it reported one
+          that added no line.
+        tests:
+          - null_for_data_source:
+              data_source: insight_gitlab
+      - name: lines_removed
+        description: >
+          NULL when the source never reported a diff, 0 when it reported one
+          that removed no line.
+        tests:
+          - null_for_data_source:
+              data_source: insight_gitlab
 
   - name: class_git_pull_requests_reviewers
     description: "Unified git pull request reviewers from all sources (GitHub, Bitbucket, GitLab)"
