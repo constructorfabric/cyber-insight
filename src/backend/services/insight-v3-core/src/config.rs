@@ -100,6 +100,23 @@ impl Default for GearConfig {
     }
 }
 
+/// The stores a migration writes. Deliberately not [`ValidatedConfig`]: a
+/// migration that cannot serve a request should still run.
+pub(crate) struct StoreConfig {
+    clickhouse: insight_clickhouse::Client,
+    database_url: String,
+}
+
+impl StoreConfig {
+    pub(crate) fn clickhouse(&self) -> &insight_clickhouse::Client {
+        &self.clickhouse
+    }
+
+    pub(crate) fn database_url(&self) -> &str {
+        &self.database_url
+    }
+}
+
 pub(crate) struct ValidatedConfig {
     clickhouse_url: String,
     clickhouse_database: String,
@@ -165,9 +182,16 @@ impl fmt::Debug for ValidatedConfig {
 }
 
 impl ValidatedConfig {
-    pub(crate) fn from_app_config(
+    /// The two stores a migration writes, and nothing else.
+    ///
+    /// `migrate` creates the raw-data tables in `ClickHouse` and the
+    /// definition tables in MariaDB. It never resolves a person, answers a
+    /// chat or serves MCP, so holding it to `identity_url`, the chat token or
+    /// the MCP origin makes a migration fail for want of a setting it will
+    /// not read — as it did on every runner that had no identity service.
+    pub(crate) fn stores_from_app_config(
         app: &toolkit::bootstrap::AppConfig,
-    ) -> Result<Self, ConfigLoadError> {
+    ) -> Result<StoreConfig, ConfigLoadError> {
         let raw = app
             .gears
             .get("insight-v3-core")
@@ -175,7 +199,7 @@ impl ValidatedConfig {
             .ok_or(ConfigLoadError::MissingSection)?;
         let config = serde_json::from_value::<GearConfig>(raw.clone())?;
 
-        config.validate().map_err(ConfigLoadError::Invalid)
+        config.validate_stores().map_err(ConfigLoadError::Invalid)
     }
 
     pub(crate) fn clickhouse_client(&self) -> insight_clickhouse::Client {
@@ -250,6 +274,38 @@ impl ValidatedConfig {
 }
 
 impl GearConfig {
+    /// What a migration needs: the warehouse it creates tables in, and the
+    /// definition store it migrates.
+    pub(crate) fn validate_stores(self) -> Result<StoreConfig, ConfigError> {
+        require_non_empty("clickhouse_url", &self.clickhouse_url)?;
+        require_non_empty("clickhouse_database", &self.clickhouse_database)?;
+        require_non_empty("database_url", &self.database_url)?;
+        validate_credentials(
+            self.clickhouse_user.as_deref(),
+            self.clickhouse_password.as_ref(),
+        )?;
+
+        Ok(StoreConfig {
+            clickhouse: insight_clickhouse::Client::new(
+                match (
+                    self.clickhouse_user.as_deref(),
+                    self.clickhouse_password.as_ref(),
+                ) {
+                    (Some(user), Some(password)) => insight_clickhouse::Config::new(
+                        &self.clickhouse_url,
+                        &self.clickhouse_database,
+                    )
+                    .with_auth(user, password.expose_secret()),
+                    _ => insight_clickhouse::Config::new(
+                        &self.clickhouse_url,
+                        &self.clickhouse_database,
+                    ),
+                },
+            ),
+            database_url: self.database_url,
+        })
+    }
+
     pub(crate) fn validate(self) -> Result<ValidatedConfig, ConfigError> {
         require_non_empty("clickhouse_url", &self.clickhouse_url)?;
         require_non_empty("clickhouse_database", &self.clickhouse_database)?;
