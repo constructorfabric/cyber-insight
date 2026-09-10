@@ -195,6 +195,11 @@ TBD
 
 The schema lives in the migration, not here: [src/backend/services/insight-v3-core/src/migration.rs](../../../../src/backend/services/insight-v3-core/src/migration.rs).
 
+`raw_data` is the stream the migration brings up. A further ingest stream gets
+a physical table of its own with the identical columns, requested by an
+administrator through `PUT /v1/tables/{table}` — see
+[ADR-0007](./ADR/0007-a-table-per-ingest-stream.md).
+
 ### 3.8 Deployment Topology
 
 TBD
