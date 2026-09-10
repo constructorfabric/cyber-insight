@@ -222,3 +222,5 @@ pub(crate) fn register_routes(
 mod log_context_tests;
 #[cfg(test)]
 mod log_leak_tests;
+#[cfg(test)]
+mod openapi_tests;

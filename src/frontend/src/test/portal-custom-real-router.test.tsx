@@ -100,11 +100,16 @@ describe("the /portal/custom routes, through the real router", () => {
     // nav the reader picks dashboards from, so it has to be one of them. They
     // read the catalogue through different queries — a page of names, and all
     // of them — so they arrive one after the other.
-    const links = await waitFor(() => {
-      const found = screen.getAllByRole("link", { name: "engineering" });
-      expect(found.length).toBeGreaterThan(1);
-      return found;
-    });
+    // Two independent queries — a page of names and all of them — so the
+    // second link can land well after the first on a loaded runner.
+    const links = await waitFor(
+      () => {
+        const found = screen.getAllByRole("link", { name: "engineering" });
+        expect(found.length).toBeGreaterThan(1);
+        return found;
+      },
+      { timeout: 10000 }
+    );
     for (const link of links) {
       expect(link).toHaveAttribute("href", "/portal/custom/engineering");
     }

@@ -74,10 +74,10 @@ class ChangedCliTests(unittest.TestCase):
                 "cover": False,
                 "test": True,
                 "clippy": True,
-                "live_db": False,
+                "live_db": True,
                 "live_ch": True,
                 "live_test": "services/insight-v3-core/tests/ci.sh",
-                "live_db_name": "insight-v3-core",
+                "live_db_name": "insight_v3",
                 "cover_ignore_regex": "",
             },
         )

@@ -32,11 +32,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The definition store and the identity service the config demands at startup.
+# CI hands us a MariaDB (see scripts/ci/components.py); a local run falls back
+# to the compose stand's, and identity is only dialed by a request that needs a
+# person resolved — no live service is required to boot.
+database_url="${INTEGRATION_TESTS_MARIADB_URL:-mysql://insight:insight@127.0.0.1:3306/insight_v3}"
+identity_url="${INTEGRATION_TESTS_IDENTITY_URL:-http://identity.invalid}"
+
 app_env=(
   env
   "APP__gears__insight_v3_core__config__clickhouse_url=$clickhouse_url"
   "APP__gears__insight_v3_core__config__clickhouse_database=$clickhouse_database"
   "APP__gears__insight_v3_core__config__ingest_token=$token"
+  "APP__gears__insight_v3_core__config__database_url=$database_url"
+  "APP__gears__insight_v3_core__config__identity_url=$identity_url"
 )
 clickhouse_curl=(--fail --silent --show-error --connect-timeout 2 --max-time 10)
 

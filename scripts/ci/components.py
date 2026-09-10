@@ -81,6 +81,10 @@ COMPONENTS = [
         "package": "insight-v3-core",
         "cover": False,
         "live_ch": True,
+        # The definition store is MariaDB, and the service refuses to start
+        # without it — the live test boots the real binary, so it needs one.
+        "live_db": True,
+        "live_db_name": "insight_v3",
         "live_test": "services/insight-v3-core/tests/ci.sh",
         "paths": ["src/backend/services/insight-v3-core"],
         "triggered_by": ["insight-clickhouse"],
