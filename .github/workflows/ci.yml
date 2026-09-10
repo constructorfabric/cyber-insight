@@ -342,7 +342,14 @@ jobs:
             # idempotency. The gear name may contain a dash
             # (identity-resolution), so the env override is passed via
             # `env` — a plain NAME=VALUE prefix is not a valid sh assignment.
+            # A service whose migrator also owns ClickHouse tables
+            # (insight-v3-core) validates both connections before it runs, so
+            # the URL goes in whenever the entry asked for a warehouse. Empty
+            # for an entry that did not, which leaves the config's own value.
             env "APP__gears__${{ matrix.entry.name }}__config__database_url=$INTEGRATION_TESTS_MARIADB_URL" \
+              ${INTEGRATION_TESTS_CLICKHOUSE_URL:+"APP__gears__${{ matrix.entry.name }}__config__clickhouse_url=$INTEGRATION_TESTS_CLICKHOUSE_URL"} \
+              ${INTEGRATION_TESTS_CLICKHOUSE_USER:+"APP__gears__${{ matrix.entry.name }}__config__clickhouse_user=$INTEGRATION_TESTS_CLICKHOUSE_USER"} \
+              ${INTEGRATION_TESTS_CLICKHOUSE_PASSWORD:+"APP__gears__${{ matrix.entry.name }}__config__clickhouse_password=$INTEGRATION_TESTS_CLICKHOUSE_PASSWORD"} \
               cargo run -p ${{ matrix.entry.package }} $feats -- \
                 -c "services/${{ matrix.entry.name }}/config/insight.yaml" migrate
           fi
