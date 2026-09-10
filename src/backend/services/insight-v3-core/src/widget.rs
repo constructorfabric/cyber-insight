@@ -72,6 +72,10 @@ impl Widget {
     pub(crate) fn check_against(&self, metric: &MetricQuery) -> Result<(), WidgetError> {
         let available = metric.column_names();
 
+        if self.columns().is_empty() {
+            return Err(WidgetError::NoColumns);
+        }
+
         for column in self.columns() {
             if !available.iter().any(|name| name == column) {
                 return Err(WidgetError::UnknownColumn {
@@ -88,6 +92,8 @@ impl Widget {
 
 #[derive(Debug, Error)]
 pub(crate) enum WidgetError {
+    #[error("a table names the columns it draws; this one names none")]
+    NoColumns,
     #[error(
         "a widget needs a metric, a type of `table`, `line`, `bar`, `area`, `stat` or `pie`, \
          and the columns that type draws: columns for a table, x and y for a line, bar or \
@@ -239,6 +245,18 @@ mod tests {
         }));
 
         assert!(widget.check_against(&metric()).is_err());
+    }
+
+    #[test]
+    fn a_table_naming_no_columns_is_refused() {
+        let widget = widget(json!({ "type": "table", "metric": "lines_per_day" }));
+
+        let refusal = widget.check_against(&metric());
+
+        assert!(
+            matches!(refusal, Err(WidgetError::NoColumns)),
+            "an empty column list renders an empty table: {refusal:?}"
+        );
     }
 
     #[test]

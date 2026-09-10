@@ -471,6 +471,11 @@ pub(crate) enum MetricQueryError {
     Identifier(String),
     #[error("`{0}` must name one of this query's as_name values")]
     GroupBy(String),
+    #[error(
+        "`{0}` is selected beside an aggregate, so it has to be in `group_by` \
+         or carry an aggregate of its own"
+    )]
+    Ungrouped(String),
     #[error("`{0}` cannot order the rows: it is not one of this query's as_name values")]
     OrderBy(String),
     #[error("a metric must select at least one field")]
@@ -627,6 +632,15 @@ impl MetricQuery {
             }
             if !as_names.contains(group.as_str()) {
                 return Err(MetricQueryError::GroupBy(group.clone()));
+            }
+        }
+
+        if self.fields.iter().any(|field| field.agg.is_some()) {
+            for field in &self.fields {
+                let derived = field.agg.is_some() || field.divide.is_some();
+                if !derived && !self.group_by.contains(&field.as_name) {
+                    return Err(MetricQueryError::Ungrouped(field.as_name.clone()));
+                }
             }
         }
 
@@ -863,6 +877,42 @@ mod tests {
 
     fn people() -> People {
         People::new("identity")
+    }
+
+    #[test]
+    fn a_plain_column_selected_beside_an_aggregate_must_be_grouped() {
+        let mixed = query(json!({
+            "table": "events",
+            "fields": [
+                { "json": "author", "type": "string", "as_name": "author" },
+                { "json": "lines", "type": "int", "agg": "sum", "as_name": "lines" }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        let refusal = mixed.compile(&people());
+
+        assert!(
+            matches!(&refusal, Err(MetricQueryError::Ungrouped(name)) if name == "author"),
+            "ClickHouse would refuse this itself, and only after the caller got a 500: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn a_ratio_over_two_aggregates_needs_no_group_by_of_its_own() {
+        let rate = query(json!({
+            "table": "events",
+            "fields": [
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "passed" },
+                { "column": "value", "type": "int", "agg": "sum", "as_name": "runs" },
+                { "type": "float", "as_name": "rate", "divide": ["passed", "runs"], "percent": true }
+            ],
+            "group_by": [],
+            "filters": []
+        }));
+
+        assert!(rate.compile(&people()).is_ok());
     }
 
     fn merged_by_author(person: &str) -> MetricQuery {

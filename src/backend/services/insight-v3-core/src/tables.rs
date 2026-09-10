@@ -6,6 +6,9 @@ use thiserror::Error;
 
 pub(crate) const MAX_TABLE_NAME_CHARS: usize = 128;
 const TABLE_CREATE_TIMEOUT_SECS: u64 = 35;
+/// Catalogue reads answer from `system.tables` or twenty rows, so they get a
+/// tighter bound than the DDL above. They run on the chat path.
+const TABLE_READ_TIMEOUT_SECS: u64 = 10;
 const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS ? (
     id UUID,
     table_name String,
@@ -57,14 +60,25 @@ impl TableName {
 
 pub(crate) struct TableStore {
     client: insight_clickhouse::Client,
-    timeout: Duration,
+    create_timeout: Duration,
+    read_timeout: Duration,
 }
 
 impl TableStore {
     pub(crate) fn new(client: insight_clickhouse::Client) -> Self {
         Self {
             client,
-            timeout: Duration::from_secs(TABLE_CREATE_TIMEOUT_SECS),
+            create_timeout: Duration::from_secs(TABLE_CREATE_TIMEOUT_SECS),
+            read_timeout: Duration::from_secs(TABLE_READ_TIMEOUT_SECS),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_read_timeout(client: insight_clickhouse::Client, read_timeout: Duration) -> Self {
+        Self {
+            client,
+            create_timeout: Duration::from_secs(TABLE_CREATE_TIMEOUT_SECS),
+            read_timeout,
         }
     }
 
@@ -75,7 +89,7 @@ impl TableStore {
             .query(CREATE_TABLE)
             .bind(Identifier(table.as_str()));
 
-        tokio::time::timeout(self.timeout, query.execute())
+        tokio::time::timeout(self.create_timeout, query.execute())
             .await
             .map_err(|_| TableStoreError::Timeout)??;
 
@@ -84,12 +98,11 @@ impl TableStore {
 
     /// Every table data has been ingested into.
     pub(crate) async fn list(&self) -> Result<Vec<String>, TableStoreError> {
-        Ok(self
-            .client
-            .inner()
-            .query(LIST_TABLES)
-            .fetch_all::<String>()
-            .await?)
+        let names = self.client.inner().query(LIST_TABLES).fetch_all::<String>();
+
+        Ok(tokio::time::timeout(self.read_timeout, names)
+            .await
+            .map_err(|_| TableStoreError::Timeout)??)
     }
 
     /// Field names and inferred types, read from the most recent rows.
@@ -102,12 +115,10 @@ impl TableStore {
             table.as_str()
         );
 
-        let payloads = self
-            .client
-            .inner()
-            .query(&sql)
-            .fetch_all::<String>()
-            .await?;
+        let rows = self.client.inner().query(&sql).fetch_all::<String>();
+        let payloads = tokio::time::timeout(self.read_timeout, rows)
+            .await
+            .map_err(|_| TableStoreError::Timeout)??;
         let mut fields: Vec<(String, &'static str)> = Vec::new();
 
         for payload in payloads {
@@ -138,7 +149,8 @@ impl fmt::Debug for TableStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TableStore")
-            .field("timeout", &self.timeout)
+            .field("create_timeout", &self.create_timeout)
+            .field("read_timeout", &self.read_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -155,11 +167,13 @@ pub(crate) enum TableError {
     InvalidName,
 }
 
+/// Shared by creation, listing and sampling, so neither message names one of
+/// the three — the route that only ever creates says so in its own reply.
 #[derive(Debug, Error)]
 pub(crate) enum TableStoreError {
-    #[error("table creation timed out")]
+    #[error("the warehouse did not answer in time")]
     Timeout,
-    #[error("table creation failed")]
+    #[error("the warehouse refused the request")]
     ClickHouse(#[from] clickhouse::error::Error),
 }
 
@@ -202,6 +216,71 @@ mod tests {
         assert!(query.contains("raw_data String"));
         assert!(query.contains("received_at DateTime64(3, 'UTC')"));
         assert!(query.contains("ORDER BY (table_name, received_at, id)"));
+    }
+
+    #[tokio::test]
+    async fn a_hung_listing_is_time_bounded() {
+        let (address, server) = hanging_warehouse().await;
+        let store = TableStore::with_read_timeout(
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                format!("http://{address}"),
+                "insight",
+            )),
+            Duration::from_millis(25),
+        );
+
+        let result = tokio::time::timeout(Duration::from_secs(1), store.list()).await;
+        server.abort();
+
+        assert!(matches!(result, Ok(Err(TableStoreError::Timeout))));
+    }
+
+    #[tokio::test]
+    async fn a_hung_field_sample_is_time_bounded() {
+        let (address, server) = hanging_warehouse().await;
+        let store = TableStore::with_read_timeout(
+            insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                format!("http://{address}"),
+                "insight",
+            )),
+            Duration::from_millis(25),
+        );
+        let table = TableName::parse("events_2026").unwrap_or_else(|error| panic!("name: {error}"));
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), store.sample_fields(&table)).await;
+        server.abort();
+
+        assert!(matches!(result, Ok(Err(TableStoreError::Timeout))));
+    }
+
+    #[test]
+    fn no_failure_of_a_read_claims_a_creation_failed() {
+        assert!(!TableStoreError::Timeout.to_string().contains("creation"));
+        assert!(
+            !TableStoreError::ClickHouse(clickhouse::error::Error::Custom("x".to_owned()))
+                .to_string()
+                .contains("creation")
+        );
+    }
+
+    /// Accepts the connection and then answers nothing at all.
+    async fn hanging_warehouse() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap_or_else(|error| panic!("test listener must bind: {error}"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("test listener must have an address: {error}"));
+        let server = tokio::spawn(async move {
+            let _connection = listener
+                .accept()
+                .await
+                .unwrap_or_else(|error| panic!("test server must accept: {error}"));
+            futures::future::pending::<()>().await;
+        });
+
+        (address, server)
     }
 
     #[test]

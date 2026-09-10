@@ -44,6 +44,29 @@ describe("<CustomChat>", () => {
     expect(onCreated).not.toHaveBeenCalled();
   });
 
+  it("keeps a second question in the box while the first is still in flight", async () => {
+    let answer: (reply: ChatReply) => void = () => {};
+    vi.mocked(customClient.sendChat).mockImplementation(
+      () =>
+        new Promise<ChatReply>((resolve) => {
+          answer = resolve;
+        })
+    );
+
+    render(<CustomChat onCreated={vi.fn()} />, { wrapper });
+    const box = screen.getByRole("textbox");
+    await userEvent.type(box, "how many lines?{Enter}");
+    // The send button is disabled now; Enter is not, and impatience is the
+    // normal case in a chat.
+    await userEvent.type(box, "and how many commits?{Enter}");
+
+    expect(customClient.sendChat).toHaveBeenCalledTimes(1);
+    expect(box).toHaveValue("and how many commits?");
+
+    answer({ reply: "59" });
+    expect(await screen.findByText("59")).toBeInTheDocument();
+  });
+
   it("shows the reply and calls onCreated when a reply creates definitions", async () => {
     vi.mocked(customClient.sendChat).mockResolvedValue({
       reply: "Added a chart",

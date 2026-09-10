@@ -61,7 +61,9 @@ export function CustomChat({ onCreated }: CustomChatProps) {
 
   async function handleSend() {
     const question = message.trim();
-    if (!question) return;
+    // The send button is disabled while one is in flight; Enter is not, so
+    // the check lives here rather than beside the button.
+    if (!question || sendChat.isPending) return;
 
     const id = Date.now() + Math.random();
     const history = exchanges.flatMap((exchange) =>

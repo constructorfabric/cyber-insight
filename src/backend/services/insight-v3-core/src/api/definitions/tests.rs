@@ -49,7 +49,7 @@ impl TestHarness {
                 insight_clickhouse::Client::new(insight_clickhouse::Config::new(url, "insight")),
                 crate::metric_query::People::new("identity"),
             ),
-            ChatClient::canned(),
+            ChatClient::keyless(),
             crate::identity::IdentityClient::fixed(is_admin),
             crate::catalog::Catalog::new(
                 insight_clickhouse::Client::new(insight_clickhouse::Config::new(
@@ -285,7 +285,7 @@ async fn put_then_get_a_widget_definition_round_trips() {
     let put = harness
         .put_json(
             "/v1/widgets/commits_table",
-            json!({ "type": "table", "metric": "commits_per_day" }),
+            json!({ "type": "table", "metric": "commits_per_day", "columns": ["day"] }),
         )
         .await;
     assert_eq!(put.status(), StatusCode::NO_CONTENT);
@@ -294,7 +294,7 @@ async fn put_then_get_a_widget_definition_round_trips() {
     assert_eq!(got.status(), StatusCode::OK);
     assert_eq!(
         got.json().await,
-        json!({ "type": "table", "metric": "commits_per_day" })
+        json!({ "type": "table", "metric": "commits_per_day", "columns": ["day"] })
     );
 }
 
