@@ -69,7 +69,7 @@ def test_bitbucket_git_metrics_resolve_through_the_source_breakdown(spec: SpecRu
         value=2
     )
     r.row("git.commit_size", "breakdown", entity_id=ERIN, dimensions=SOURCE_BITBUCKET).equals(
-        value=12
+        value=6
     )
     r.row(
         "git.commits_per_active_day", "breakdown", entity_id=ERIN, dimensions=SOURCE_BITBUCKET

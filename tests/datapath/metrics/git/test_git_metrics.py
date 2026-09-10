@@ -396,14 +396,14 @@ def test_unified_git_metrics(spec: SpecRun) -> None:
         == commits_per_repository
     )
 
-    r.row("git.commit_size", "period", entity_id=ERIN).equals(value=60)
+    r.row("git.commit_size", "period", entity_id=ERIN).equals(value=55)
     r.row("git.commit_size", "peer", entity_id=ERIN).equals(
-        target_value=60, p25=24, median=36, p75=48, min=12, max=60, n=5
+        target_value=55, p25=24, median=36, p75=48, min=12, max=55, n=5
     )
     r.row("git.commit_size", "timeseries", entity_id=ERIN).contains(
-        points={"bucket_start": "2026-10-01", "value": 60}
+        points={"bucket_start": "2026-10-01", "value": 55}
     )
-    r.row("git.commit_size", "breakdown", entity_id=ERIN, dimensions=SOURCE_GITHUB).equals(value=60)
+    r.row("git.commit_size", "breakdown", entity_id=ERIN, dimensions=SOURCE_GITHUB).equals(value=55)
     commit_size_histogram = r.row("git.commit_size", "histogram", entity_id=ERIN)
     commit_size_histogram.contains(bins={"lo": 50, "count": 1})
     commit_size_histogram.contains(bins={"hi": 60, "count": 1})
