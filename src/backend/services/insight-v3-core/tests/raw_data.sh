@@ -12,6 +12,8 @@ token="${INSIGHT_V3_CORE_TEST_TOKEN:-synthetic-test-token-0123456789abcdef}"
 table_name="synthetic_events_$$"
 log_file="$(mktemp)"
 pid=""
+identity_port="${INSIGHT_V3_CORE_TEST_IDENTITY_PORT:-18099}"
+identity_pid=""
 table_created="false"
 
 cleanup() {
@@ -20,6 +22,10 @@ cleanup() {
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+  fi
+  if [[ -n "$identity_pid" ]]; then
+    kill "$identity_pid" 2>/dev/null || true
+    wait "$identity_pid" 2>/dev/null || true
   fi
   if [[ "$table_created" == "true" ]]; then
     clickhouse_query "DROP TABLE IF EXISTS $table_name" >/dev/null 2>&1 || true
@@ -37,7 +43,21 @@ trap cleanup EXIT
 # to the compose stand's, and identity is only dialed by a request that needs a
 # person resolved — no live service is required to boot.
 database_url="${INTEGRATION_TESTS_MARIADB_URL:-mysql://insight:insight@127.0.0.1:3306/insight_v3}"
-identity_url="${INTEGRATION_TESTS_IDENTITY_URL:-http://identity.invalid}"
+identity_url="${INTEGRATION_TESTS_IDENTITY_URL:-http://127.0.0.1:$identity_port}"
+
+# Creating a table is admin-only and the role is read from identity, which by
+# design refuses rather than permits when it cannot be reached. The stub is
+# that service for the length of this test.
+python3 "$service_dir/tests/identity-stub.py" "$identity_port" &
+identity_pid=$!
+for _ in $(seq 1 50); do
+  if curl --silent --output /dev/null --max-time 1 \
+    --header "authorization: Bearer probe" \
+    "http://127.0.0.1:$identity_port/v1/me"; then
+    break
+  fi
+  sleep 0.1
+done
 
 app_env=(
   env
