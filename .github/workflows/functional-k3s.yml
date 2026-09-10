@@ -305,9 +305,9 @@ jobs:
             -o jsonpath='{.data.token}' | base64 -d)
           test -n "${core_token}"
 
-          curl -fsS -X PUT \
-            -H "X-Insight-Token: ${core_token}" \
-            "http://localhost:${EDGE_PORT}/api/core/v1/tables/functional_ci_events"
+          # No table is created first: creating one is admin-only, and a
+          # connector holds a token rather than a session. The write brings the
+          # stream's table into being, which is the whole path a connector has.
           curl -fsS -X POST \
             -H "X-Insight-Token: ${core_token}" \
             -H 'Content-Type: application/json' \

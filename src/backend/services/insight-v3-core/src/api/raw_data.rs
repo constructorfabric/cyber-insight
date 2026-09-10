@@ -128,6 +128,10 @@ fn store_error(error: &StoreError) -> CanonicalError {
             tracing::error!(error = ?source, "raw data insert failed");
             internal_error()
         }
+        StoreError::Create(source) => {
+            tracing::error!(error = ?source, "the stream's table could not be created");
+            internal_error()
+        }
         StoreError::NoTable => RawDataApiError::failed_precondition()
             .with_precondition_violation(
                 "table",

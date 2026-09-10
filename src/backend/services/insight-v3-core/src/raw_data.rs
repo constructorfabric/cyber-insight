@@ -51,12 +51,14 @@ impl RawDataRecord {
 
 pub(crate) struct RawDataStore {
     client: insight_clickhouse::Client,
+    tables: crate::tables::TableStore,
     timeouts: InsertTimeouts,
 }
 
 impl RawDataStore {
     pub(crate) fn new(client: insight_clickhouse::Client) -> Self {
         Self {
+            tables: crate::tables::TableStore::new(client.clone()),
             client,
             timeouts: InsertTimeouts::production(),
         }
@@ -64,24 +66,48 @@ impl RawDataStore {
 
     #[cfg(test)]
     fn with_timeouts(client: insight_clickhouse::Client, timeouts: InsertTimeouts) -> Self {
-        Self { client, timeouts }
+        Self {
+            tables: crate::tables::TableStore::new(client.clone()),
+            client,
+            timeouts,
+        }
     }
 
+    /// A stream's first write creates the table it lands in.
+    ///
+    /// The shape is ours and fixed and the name was already constrained to
+    /// `^[A-Za-z0-9_]{1,128}$`, so there is nothing for the caller to describe
+    /// and nothing unsafe to interpolate. Creating it here rather than only
+    /// behind the admin-only route is what lets a connector write with its
+    /// ingest token alone.
     pub(crate) async fn insert(&self, record: RawDataRecord) -> Result<(), StoreError> {
-        tokio::time::timeout(self.timeouts.total, self.insert_with_timeouts(record))
+        let (table, row) = record.into_parts();
+
+        match self.insert_once(&table, &row).await {
+            Err(StoreError::NoTable) => {}
+            other => return other,
+        }
+
+        let name = crate::tables::TableName::parse(&table).map_err(|_| StoreError::NoTable)?;
+        self.tables.create(&name).await?;
+
+        self.insert_once(&table, &row).await
+    }
+
+    async fn insert_once(&self, table: &str, row: &RawDataRow) -> Result<(), StoreError> {
+        tokio::time::timeout(self.timeouts.total, self.insert_with_timeouts(table, row))
             .await
             .map_err(|_| StoreError::Timeout)?
     }
 
-    async fn insert_with_timeouts(&self, record: RawDataRecord) -> Result<(), StoreError> {
-        let (table, row) = record.into_parts();
+    async fn insert_with_timeouts(&self, table: &str, row: &RawDataRow) -> Result<(), StoreError> {
         let mut insert = self
             .client
             .inner()
-            .insert::<RawDataRow>(&table)
+            .insert::<RawDataRow>(table)
             .await?
             .with_timeouts(Some(self.timeouts.send), Some(self.timeouts.end));
-        insert.write(&row).await?;
+        insert.write(row).await?;
         insert.end().await?;
 
         Ok(())
@@ -130,11 +156,15 @@ pub(crate) enum StoreError {
     Timeout,
     #[error("there is no table for this stream yet")]
     NoTable,
+    #[error("the stream's table could not be created")]
+    Create(#[from] crate::tables::TableStoreError),
 }
 
-/// `ClickHouse` reports a missing relation as error 60 in a message, not as a
-/// variant, so the code is matched on the text it arrives in.
-const UNKNOWN_TABLE_CODE: &str = "Code: 60.";
+/// `ClickHouse` reports a missing relation as error 60 inside a message rather
+/// than as a variant, and the text differs between a real server ("Code: 60.
+/// DB::Exception: Table … does not exist") and a header-only reply, so the
+/// match is on the code alone.
+const UNKNOWN_TABLE_CODE: &str = "Code: 60";
 
 impl From<clickhouse::error::Error> for StoreError {
     fn from(error: clickhouse::error::Error) -> Self {
@@ -235,6 +265,29 @@ mod tests {
         assert_eq!(rows[0].table_name, "synthetic_events");
         assert_eq!(rows[0].raw_data, r#"{"nested":[1,true,null]}"#);
         assert_ne!(rows[0].id, uuid::Uuid::nil());
+    }
+
+    #[tokio::test]
+    async fn a_streams_first_write_creates_the_table_it_lands_in() {
+        let mock = Mock::new();
+        mock.add(handlers::exception(60));
+        let ddl = mock.add(handlers::record_ddl());
+        mock.add(handlers::record::<RawDataRow>());
+        let store = RawDataStore::new(insight_clickhouse::Client::new(
+            insight_clickhouse::Config::new(mock.url(), "insight"),
+        ));
+        let record = RawDataRecord::parse("first_write_stream", &json!({"a": 1}))
+            .unwrap_or_else(|error| panic!("record must parse: {error}"));
+
+        store.insert(record).await.unwrap_or_else(|error| {
+            panic!("the write should land after the table exists: {error}")
+        });
+        let statement = ddl.query().await;
+
+        assert!(
+            statement.contains("CREATE TABLE IF NOT EXISTS `first_write_stream`"),
+            "the stream's own table was not created: {statement}"
+        );
     }
 
     #[test]
