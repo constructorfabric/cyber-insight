@@ -3085,23 +3085,10 @@ pub(crate) mod tests {
             "one failed purge is a retry, not an eviction"
         );
 
-        // `purge_if_drifted` measures under an opportunistic read lock and
-        // returns without attempting anything when that wait expires, so a
-        // loaded machine can answer this call with a no-op that records no
-        // failure. Retried until the eviction lands, or until it is fair to
-        // say it never will.
-        let mut evicted = false;
-        for _ in 0..200u32 {
-            rewind_drift_throttle(&failing).await;
-            failing.purge_if_drifted(&k).await;
-            if !entry_dir.exists() {
-                evicted = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        rewind_drift_throttle(&failing).await;
+        failing.purge_if_drifted(&k).await;
         assert!(
-            evicted,
+            !entry_dir.exists(),
             "the second consecutive failure must evict the entry"
         );
 
