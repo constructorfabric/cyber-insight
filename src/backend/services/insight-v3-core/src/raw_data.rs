@@ -161,9 +161,8 @@ pub(crate) enum StoreError {
 }
 
 /// `ClickHouse` reports a missing relation as error 60 inside a message rather
-/// than as a variant, and the text differs between a real server ("Code: 60.
-/// DB::Exception: Table … does not exist") and a header-only reply, so the
-/// match is on the code alone.
+/// than as a variant, and only the code is stable across a real server's text
+/// and a header-only reply.
 const UNKNOWN_TABLE_CODE: &str = "Code: 60";
 
 impl From<clickhouse::error::Error> for StoreError {

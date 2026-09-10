@@ -132,13 +132,10 @@ fn store_error(error: &StoreError) -> CanonicalError {
             tracing::error!(error = ?source, "the stream's table could not be created");
             internal_error()
         }
-        StoreError::NoTable => RawDataApiError::failed_precondition()
-            .with_precondition_violation(
-                "table",
-                "no table holds this stream yet; create it with PUT /v1/tables/{table}",
-                "table_missing",
-            )
-            .create(),
+        StoreError::NoTable => {
+            tracing::error!("the stream's table is absent after it was created");
+            internal_error()
+        }
     }
 }
 
