@@ -539,6 +539,36 @@ impl MetricQuery {
 
     /// Each field as it is selected, with whatever joining in a person's
     /// name takes with it.
+    /// Both directions of the `GROUP BY`: every group names a selected
+    /// column, and every plain column selected beside an aggregate is
+    /// grouped. Without the second, `ClickHouse` refuses the SQL instead —
+    /// too late to tell the caller which column to fix.
+    fn check_grouping(&self, as_names: &HashSet<&str>) -> Result<(), MetricQueryError> {
+        for group in &self.group_by {
+            if !is_identifier(group) {
+                return Err(MetricQueryError::Identifier(group.clone()));
+            }
+            if !as_names.contains(group.as_str()) {
+                return Err(MetricQueryError::GroupBy(group.clone()));
+            }
+        }
+
+        if !self.fields.iter().any(|field| field.agg.is_some()) {
+            return Ok(());
+        }
+
+        for field in &self.fields {
+            // A ratio reads two fields this query already selects, so it
+            // stands or falls with them.
+            let derived = field.agg.is_some() || field.divide.is_some();
+            if !derived && !self.group_by.contains(&field.as_name) {
+                return Err(MetricQueryError::Ungrouped(field.as_name.clone()));
+            }
+        }
+
+        Ok(())
+    }
+
     fn selection(&self, qualifier: Option<&str>) -> Result<Selection<'_>, MetricQueryError> {
         let mut selection = Selection {
             parts: Vec::with_capacity(self.fields.len()),
@@ -626,23 +656,7 @@ impl MetricQuery {
             mut binds,
         } = self.selection(qualifier)?;
 
-        for group in &self.group_by {
-            if !is_identifier(group) {
-                return Err(MetricQueryError::Identifier(group.clone()));
-            }
-            if !as_names.contains(group.as_str()) {
-                return Err(MetricQueryError::GroupBy(group.clone()));
-            }
-        }
-
-        if self.fields.iter().any(|field| field.agg.is_some()) {
-            for field in &self.fields {
-                let derived = field.agg.is_some() || field.divide.is_some();
-                if !derived && !self.group_by.contains(&field.as_name) {
-                    return Err(MetricQueryError::Ungrouped(field.as_name.clone()));
-                }
-            }
-        }
+        self.check_grouping(&as_names)?;
 
         let mut where_parts = Vec::with_capacity(self.filters.len());
         binds.reserve(self.filters.len());
