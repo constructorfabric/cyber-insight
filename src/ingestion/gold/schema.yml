@@ -158,7 +158,9 @@ models:
     description: >
       Commits that reached a repository's default branch, either through a
       merged pull request or by carrying content a default-branch commit also
-      carries at the same path: one row per tenant/source/project/repo/commit.
+      carries at the same path, unless the default branch already held that
+      content when the commit was written: one row per
+      tenant/source/project/repo/commit.
       Materialized so the membership joins run once per build in their own
       query budget; the git evidence build reads it as a semi-join set
       alongside the sync-time is_default_branch flag.
