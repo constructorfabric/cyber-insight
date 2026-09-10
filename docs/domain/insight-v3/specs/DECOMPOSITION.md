@@ -16,27 +16,26 @@ date: 2026-09-07
   - [2.5 Alerts - MEDIUM](#25-alerts---medium)
   - [2.6 AI - HIGH](#26-ai---high)
   - [2.7 Data Access - HIGH](#27-data-access---high)
-  - [2.8 Definition Lifecycle - HIGH](#28-definition-lifecycle---high)
-  - [2.9 Definition Catalogue - HIGH](#29-definition-catalogue---high)
-  - [2.10 Authoring over MCP - HIGH](#210-authoring-over-mcp---high)
-  - [2.11 Access Control - HIGH](#211-access-control---high)
-  - [2.12 People in Metrics - MEDIUM](#212-people-in-metrics---medium)
+  - [2.8 Definition Management - HIGH](#28-definition-management---high)
+  - [2.9 Authoring over MCP - HIGH](#29-authoring-over-mcp---high)
+  - [2.10 Access Control - HIGH](#210-access-control---high)
+  - [2.11 People in Metrics - MEDIUM](#211-people-in-metrics---medium)
 - [3. Feature Dependencies](#3-feature-dependencies)
 
 <!-- /toc -->
 
 ## 1. Overview
 
-Twelve features: data in, data out, metrics over it, widgets, dashboards, alerts, and a chat over
-all of it — plus what it takes to keep a growing set of definitions usable: editing them, finding
-them, authoring them from an agent, deciding who may, and naming people in them.
+Eleven features: data in, data out, metrics over it, widgets, dashboards, alerts, and a chat over
+all of it — plus what every definition kind shares, an agent-facing way to author them, who is
+allowed to, and naming people in them.
 
 The path runs end to end today: data arrives, a metric is written over it, a widget draws the
 metric, a dashboard holds the widget, and a reader opens that board in the portal — from the
 browser, from the chat, or from an agent over MCP. Alerts and report download are the two entries
 nothing is built for.
 
-2.8 to 2.12 were built before they were written down here, so their requirements are named in the
+2.8 to 2.11 were built before they were written down here, so their requirements are named in the
 code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resolution),
 [§5.3](./PRD.md#53-access-control) and [§5.7](./PRD.md#57-platform-usage) are still TBD.
 
@@ -155,41 +154,34 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
   - [ ] `p1` - `cpt-insightspec-v3-fr-read-data`
   - [ ] `p2` - `cpt-insightspec-v3-fr-download-report`
 
-### 2.8 Definition Lifecycle - HIGH
+### 2.8 Definition Management - HIGH
 
-- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-lifecycle`
+- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-management`
 
-- **Purpose**: Change a definition after it exists — replace its body, rename it, delete it.
-  Deletion is refused while another definition draws it, and a rename carries the dependents with
-  it, so a board cannot be broken from underneath.
+- **Purpose**: What a metric, a widget, a dashboard and later an alert all share: one store keyed
+  by kind and name, editing and renaming and deleting, and a page at a time with a total and a
+  search when there are hundreds.
 
-- **Depends On**: 2.2, 2.3, 2.4
-
-- **Requirements Covered**: TBD — no PRD requirement names editing yet.
-
-### 2.9 Definition Catalogue - HIGH
-
-- [x] `p1` - **ID**: `cpt-insightspec-v3-feature-definition-catalogue`
-
-- **Purpose**: Find a definition among hundreds: a page at a time with the total, and a search over
-  names and bodies.
+  It is one entry rather than a line in each of 2.2 to 2.5 because the rules run between kinds: a
+  metric cannot be deleted while a widget draws it, and renaming it rewrites the widgets that name
+  it.
 
 - **Depends On**: 2.2, 2.3, 2.4
 
-- **Requirements Covered**: TBD — no PRD requirement names browsing yet.
+- **Requirements Covered**: TBD — no PRD requirement names editing or browsing yet.
 
-### 2.10 Authoring over MCP - HIGH
+### 2.9 Authoring over MCP - HIGH
 
 - [x] `p1` - **ID**: `cpt-insightspec-v3-feature-mcp-authoring`
 
 - **Purpose**: Let an agent do what an author does — read the table catalogue, write a metric, run
   it, draw it, arrange a board — through MCP rather than the browser.
 
-- **Depends On**: 2.2, 2.3, 2.4, 2.8, 2.9, 2.11
+- **Depends On**: 2.2, 2.3, 2.4, 2.8, 2.10
 
 - **Requirements Covered**: TBD — the PRD describes the chat, not an agent-facing surface.
 
-### 2.11 Access Control - HIGH
+### 2.10 Access Control - HIGH
 
 - [x] `p1` - **ID**: `cpt-insightspec-v3-feature-access-control`
 
@@ -201,7 +193,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Requirements Covered**: TBD — [PRD §5.3](./PRD.md#53-access-control) is not written yet.
 
-### 2.12 People in Metrics - MEDIUM
+### 2.11 People in Metrics - MEDIUM
 
 - [x] `p2` - **ID**: `cpt-insightspec-v3-feature-people-in-metrics`
 
@@ -218,19 +210,18 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 ## 3. Feature Dependencies
 
 ```text
-2.11 Access Control
+2.10 Access Control
  |
 2.1 Data Ingestion
  |
  +-- 2.7 Data Access
  +-- 2.2 Semantic Layer
       |
-      +-- 2.12 People in Metrics
+      +-- 2.11 People in Metrics
       +-- 2.5 Alerts
       +-- 2.3 Widgets --- 2.4 Dashboards
                            |
-                           +-- 2.8 Definition Lifecycle
-                           +-- 2.9 Definition Catalogue
+                           +-- 2.8 Definition Management
                            +-- 2.6 AI (over 2.2-2.5)
-                           +-- 2.10 Authoring over MCP (over 2.2-2.4, 2.8, 2.9)
+                           +-- 2.9 Authoring over MCP (over 2.2-2.4, 2.8)
 ```
