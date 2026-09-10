@@ -32,12 +32,12 @@ name: E2E bronze to API
 on:
   # Merge-queue builds: the queue's gh-readonly-queue/* branches emit merge_group,
   # and the required "Run E2E suite" check must report there or every queued PR
-  # times out and is evicted. On a pull request the umbrella below emits the same
-  # check as a deferral to the queue, so one workflow owns the name in both places.
+  # times out and is evicted.
   merge_group:
-  # No `paths:` filter: GitHub leaves a required check whose workflow never ran
-  # pending forever, so every pull request runs the cheap `changes` job and the
-  # umbrella, which defers the suite itself to the queue.
+  # The suite runs in the queue, not on the pull request. The trigger stays, with
+  # no `paths:` filter, so the required check exists on every PR: every job is
+  # skipped there, and a skipped required check counts as passed. A workflow
+  # that never ran would leave the check pending forever.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -57,8 +57,7 @@ permissions:
   actions: read
 
 jobs:
-  # `e2e-suite` is the aggregate that emits the stable "Run E2E suite" check:
-  # a deferral on a pull request, the verdict in the merge queue.
+  # `e2e-suite` is the aggregate that emits the stable "Run E2E suite" check.
   #
   # Skipping cascades by default `needs` semantics: `changes` says irrelevant →
   # `e2e-datapath` skips → `metric-coverage-gate` skips. The umbrella tells that
@@ -88,6 +87,7 @@ jobs:
   # src/frontend/ and docs/ are absent on purpose: nothing here loads them.
   changes:
     name: Detect changes
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -166,7 +166,7 @@ jobs:
   build-backend:
     name: Build backend
     needs: changes
-    if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -190,7 +190,7 @@ jobs:
     # `!cancelled()` so a skipped build-backend (backend untouched → pinned
     # images) does not skip the shards along with it; the result check keeps a
     # FAILED build from letting them run against stale binaries.
-    if: ${{ !cancelled() && needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request' && (needs.build-backend.result == 'success' || needs.build-backend.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.changes.outputs.relevant == 'true' && (needs.build-backend.result == 'success' || needs.build-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -392,7 +392,7 @@ jobs:
       - build-backend
       - e2e-datapath
       - metric-coverage-gate
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -404,7 +404,6 @@ jobs:
       # two apart, and it would also fold in `changes`'s own result.
       - name: Require every data-path shard and the gate to have succeeded
         env:
-          EVENT: ${{ github.event_name }}
           CHANGES: ${{ needs.changes.result }}
           RELEVANT: ${{ needs.changes.outputs.relevant }}
           BACKEND: ${{ needs.changes.outputs.backend }}
@@ -416,7 +415,7 @@ jobs:
           GATE: ${{ needs.metric-coverage-gate.result }}
         run: |
           set -euo pipefail
-          echo "event=$EVENT changes=$CHANGES relevant=$RELEVANT backend=$BACKEND build=$BUILD suite=$SUITE gate=$GATE"
+          echo "changes=$CHANGES relevant=$RELEVANT backend=$BACKEND build=$BUILD suite=$SUITE gate=$GATE"
 
           # Fail closed. A `changes` job that did not succeed leaves `relevant`
           # empty, which would otherwise read as "irrelevant" and green a
@@ -426,9 +425,7 @@ jobs:
             exit 1
           fi
 
-          if [ "$EVENT" = "pull_request" ]; then
-            echo "the data-path suite runs in the merge queue; deferred there."
-          elif [ "$RELEVANT" != "true" ]; then
+          if [ "$RELEVANT" != "true" ]; then
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed — nothing to prove."
           else
             if [ "$BACKEND" = "true" ] && [ "$BUILD" != "success" ]; then

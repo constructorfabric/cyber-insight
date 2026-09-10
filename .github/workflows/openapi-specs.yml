@@ -1,4 +1,4 @@
-name: OpenAPI Specs
+name: OpenAPI specs
 
 # Offline OpenAPI contract drift gate — checks that the committed OpenAPI docs
 # under docs/components/backend/<service>/ still correspond to the backend code.
@@ -17,12 +17,19 @@ name: OpenAPI Specs
 #     see api::openapi_document), same shape as analytics.
 
 on:
-  # Deliberately NO `paths:` filter — this is meant to be a required status
-  # check on main, and a path-filtered required check never reports on PRs
-  # outside the filter (they hang on "Expected" forever). Running on every PR
-  # keeps the gate uniform.
+  # Not a required status check, so a `paths:` filter is safe: a PR outside it
+  # gets no run and no pending check.
   pull_request:
     branches: [main]
+    paths:
+      - "src/backend/**"
+      - "docs/components/backend/**"
+      - "scripts/ci/openapi_spec.py"
+      - "tests/generate_schemas.py"
+      - "tests/stand/api/schemas/**"
+      - "tests/pyproject.toml"
+      - "tests/uv.lock"
+      - ".github/workflows/openapi-specs.yml"
   push:
     branches: [main]
     paths:
@@ -31,6 +38,8 @@ on:
       - "scripts/ci/openapi_spec.py"
       - "tests/generate_schemas.py"
       - "tests/stand/api/schemas/**"
+      - "tests/pyproject.toml"
+      - "tests/uv.lock"
       - ".github/workflows/openapi-specs.yml"
   workflow_dispatch:
 
@@ -47,6 +56,7 @@ jobs:
   changes:
     name: Detect affected OpenAPI checks
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       analytics: ${{ steps.all.outputs.all || steps.filter.outputs.analytics || steps.filter.outputs.shared_backend }}
       authenticator: ${{ steps.all.outputs.all || steps.filter.outputs.authenticator || steps.filter.outputs.shared_backend }}
@@ -54,7 +64,6 @@ jobs:
       git_cli_proxy: ${{ steps.all.outputs.all || steps.filter.outputs.git_cli_proxy || steps.filter.outputs.shared_backend }}
       previews: ${{ steps.all.outputs.all || steps.filter.outputs.previews || steps.filter.outputs.shared_backend }}
       generated_models: ${{ steps.all.outputs.all || steps.filter.outputs.generated_models }}
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,6 +98,8 @@ jobs:
               - 'docs/components/backend/**/openapi.json'
               - 'tests/generate_schemas.py'
               - 'tests/stand/api/schemas/**'
+              - 'tests/pyproject.toml'
+              - 'tests/uv.lock'
               - '.github/workflows/openapi-specs.yml'
       - name: Select every check
         if: github.event_name == 'workflow_dispatch'
@@ -100,7 +111,7 @@ jobs:
   analytics:
     needs: changes
     if: needs.changes.outputs.analytics == 'true'
-    name: OpenAPI spec drift gate
+    name: Analytics OpenAPI spec drift gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
