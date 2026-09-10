@@ -99,6 +99,11 @@ global:
     enabled: false
     # Public origin of this Insight instance, for example https://insight.example.com.
     publicUrl: ""
+    # Permits an http:// publicUrl on a private address. Both the authenticator,
+    # which issues the tokens, and insight-v3-core, which verifies them, refuse
+    # one otherwise — so a cluster with no TLS at its edge cannot serve MCP
+    # without this.
+    allowInsecurePrivateNetwork: false
   # Global (not `previews.deploy`) so one knob controls both the previews
   # subchart and the gateway's /api/previews route: a route left pointing at a
   # Service the release does not create keeps nginx from loading its config.
