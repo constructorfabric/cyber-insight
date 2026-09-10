@@ -128,12 +128,23 @@ pub(crate) enum StoreError {
     ClickHouse(#[source] clickhouse::error::Error),
     #[error("raw data insert timed out")]
     Timeout,
+    #[error("there is no table for this stream yet")]
+    NoTable,
 }
+
+/// `ClickHouse` reports a missing relation as error 60 in a message, not as a
+/// variant, so the code is matched on the text it arrives in.
+const UNKNOWN_TABLE_CODE: &str = "Code: 60.";
 
 impl From<clickhouse::error::Error> for StoreError {
     fn from(error: clickhouse::error::Error) -> Self {
         match error {
             clickhouse::error::Error::TimedOut => Self::Timeout,
+            clickhouse::error::Error::BadResponse(ref message)
+                if message.contains(UNKNOWN_TABLE_CODE) =>
+            {
+                Self::NoTable
+            }
             error => Self::ClickHouse(error),
         }
     }
@@ -224,6 +235,28 @@ mod tests {
         assert_eq!(rows[0].table_name, "synthetic_events");
         assert_eq!(rows[0].raw_data, r#"{"nested":[1,true,null]}"#);
         assert_ne!(rows[0].id, uuid::Uuid::nil());
+    }
+
+    #[test]
+    fn a_write_to_a_stream_with_no_table_is_the_callers_to_fix() {
+        let refusal = StoreError::from(clickhouse::error::Error::BadResponse(
+            "Code: 60. DB::Exception: Table insight.absent_stream does not exist. (UNKNOWN_TABLE)"
+                .to_owned(),
+        ));
+
+        assert!(
+            matches!(refusal, StoreError::NoTable),
+            "a missing table answered 500 and leaked the database's own text: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn any_other_bad_response_stays_a_server_error() {
+        let refusal = StoreError::from(clickhouse::error::Error::BadResponse(
+            "Code: 241. DB::Exception: Memory limit exceeded".to_owned(),
+        ));
+
+        assert!(matches!(refusal, StoreError::ClickHouse(_)));
     }
 
     #[tokio::test]
