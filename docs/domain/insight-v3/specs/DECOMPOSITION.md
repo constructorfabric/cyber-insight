@@ -30,14 +30,7 @@ Eleven features: data in, data out, metrics over it, widgets, dashboards, alerts
 all of it — plus what every definition kind shares, an agent-facing way to author them, who is
 allowed to, and naming people in them.
 
-The path runs end to end today: data arrives, a metric is written over it, a widget draws the
-metric, a dashboard holds the widget, and a reader opens that board in the portal — from the
-browser, from the chat, or from an agent over MCP. Alerts and report download are the two entries
-nothing is built for.
-
-2.8 to 2.11 were built before they were written down here, so their requirements are named in the
-code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resolution),
-[§5.3](./PRD.md#53-access-control) and [§5.7](./PRD.md#57-platform-usage) are still TBD.
+The platform-usage requirements in [PRD §5.7](./PRD.md#57-platform-usage) are not decomposed yet.
 
 ## 2. Entries
 
@@ -144,8 +137,7 @@ code and its tests rather than in the PRD; [§5.2](./PRD.md#52-identity-resoluti
 
 - **Purpose**: Get data out. Name is provisional.
 
-- **Status**: rows come out of a metric run; there is no download, and no way to read raw rows back
-  without a metric over them.
+- **Status**: rows come out only through a metric run — no raw read, no download.
 
 - **Depends On**: 2.1, 2.2
 
