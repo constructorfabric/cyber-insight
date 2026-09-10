@@ -633,6 +633,8 @@ insightV3Core:
   resources:
     requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 64Mi}
     limits: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
+  databaseName: insight_v3
+  clickhouseReaderUsername: insight_v3_reader
   existingSecret: "insight-v3-core-config"
   # Hook-rendered twin for fresh imperative installs. GitOps pre-creates the
   # main config Secret, so this reference is optional there.

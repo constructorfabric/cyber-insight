@@ -86,6 +86,12 @@ gateway:
       auth: instance_token
       timeoutMs: 40000
       stripPrefix: true
+    # Same service, browser session: the portal's custom surfaces. Ingest is
+    # not reachable through it — raw_data carries its own instance-token check.
+    - prefix: /api/v3
+      upstream: 'http://{{ .Release.Name }}-v3-core:8086'
+      timeoutMs: 40000
+      stripPrefix: true
     - prefix: /api/identity
       upstream: 'http://{{ .Release.Name }}-identity-resolution:8082'
       stripPrefix: true

@@ -85,6 +85,8 @@ RD_PORT=$( yq -r '.redis.port       // 6379' "$VALUES")
 TENANT_DEFAULT=$(yq -r '.global.tenantDefaultId          // ""' "$VALUES")
 IDENTITY_RESOLUTION_BOOTSTRAP_ADMIN=$(yq -r '.identityResolution.bootstrapAdminPersonId // ""' "$VALUES")
 IDENTITY_RESOLUTION_DB=$(yq -r '.identityResolution.databaseName // "identity"' "$VALUES")
+CORE_DB=$(yq -r '.insightV3Core.databaseName // "insight_v3"' "$VALUES")
+CORE_CH_READER=$(yq -r '.insightV3Core.clickhouseReaderUsername // "insight_v3_reader"' "$VALUES")
 # The identity URL ANALYTICS calls. Empty = the identity-resolution Service
 # (constructorfabric/insight#1602). The AUTHENTICATOR does NOT use this —
 # see AUTHENTICATOR_IDENTITY_URL below.
@@ -268,7 +270,10 @@ done
 # band. Environments pinned before insight-v3-core opt in by leaving
 # insightV3Core.existingSecret unset.
 CORE_TOKEN=""
+CORE_CH_READER_PW=""
 if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
+  CORE_CH_READER_PW=$(kubectl -n "$NS_APP" get secret insight-db-creds \
+    -o jsonpath='{.data.clickhouse-v3-reader-password}' 2>/dev/null | base64 -d 2>/dev/null || true)
   for _ in $(seq 1 30); do
     kubectl -n "$NS_APP" get secret insight-v3-core-token >/dev/null 2>&1 && break
     sleep 1
@@ -335,7 +340,11 @@ if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
     --from-literal=APP__gears__insight_v3_core__config__clickhouse_database="${CH_DB}" \
     --from-literal=APP__gears__insight_v3_core__config__clickhouse_user="${CH_USER}" \
     --from-literal=APP__gears__insight_v3_core__config__clickhouse_password="${CH_PW}" \
+    --from-literal=APP__gears__insight_v3_core__config__database_url="mysql://${MDB_USER}:${MDB_PW}@${MDB_HOST}:${MDB_PORT}/${CORE_DB}" \
+    --from-literal=APP__gears__insight_v3_core__config__identity_url="${IDENTITY_URL}" \
     --from-literal=APP__gears__insight_v3_core__config__ingest_token="${CORE_TOKEN}" \
+    ${CORE_CH_READER_PW:+--from-literal=APP__gears__insight_v3_core__config__clickhouse_query_user="${CORE_CH_READER}"} \
+    ${CORE_CH_READER_PW:+--from-literal=APP__gears__insight_v3_core__config__clickhouse_query_password="${CORE_CH_READER_PW}"} \
     --dry-run=client -o yaml \
     | kubectl -n "$NS_APP" apply -f - >/dev/null
   kubectl -n "$NS_APP" annotate secret "$CORE_CONFIG_SECRET" \
@@ -428,4 +437,4 @@ EOF
 echo "composed → $NS_APP/insight-identity-resolution-config"
 
 # Don't echo any of the passwords; clear the shell env explicitly.
-unset MDB_PW CH_PW RD_PW REDIS_URL CH_ANALYTICS_PW CORE_TOKEN
+unset MDB_PW CH_PW RD_PW REDIS_URL CH_ANALYTICS_PW CORE_TOKEN CORE_CH_READER_PW
