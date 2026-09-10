@@ -381,6 +381,28 @@ for _git_source in github gitlab bitbucket_cloud; do
   heal_git_pr_author_account "${_git_source}__pull_requests"
 done
 
+echo "=== Healing git pull-request reported close-time column ==="
+# Same positional invariant: every projection feeding class_git_pull_requests
+# gained closed_on_reported after closed_on — the close time as the source
+# stated it, which the duration measures read so a recovered one cannot pose as
+# a measurement (#3362). The silver side heals in migrations/*.sql; staging
+# heals here because these tables exist only after a connector has run. Existing
+# rows heal to NULL and carry a time from the first sync that re-collects them.
+# Idempotent.
+heal_git_pr_close_time_reported() {
+  local table="$1"
+  ch_table_is_real staging "${table}" || return 0
+  echo "  staging.${table}"
+  run_ch <<SQL
+ALTER TABLE staging.${table} ADD COLUMN IF NOT EXISTS closed_on_reported Nullable(DateTime) AFTER closed_on;
+ALTER TABLE staging.${table} MODIFY COLUMN closed_on_reported Nullable(DateTime) AFTER closed_on;
+SQL
+}
+
+for _git_source in github gitlab bitbucket_cloud; do
+  heal_git_pr_close_time_reported "${_git_source}__pull_requests"
+done
+
 echo "=== Healing git repository default-branch column ==="
 # class_git_repositories gained `default_branch` at the projection tail; the
 # silver side heals in migrations/*.sql, the staging members heal here because
