@@ -26,5 +26,5 @@ dependencies:
 - name: insight-frontend
   repository: file://../../src/frontend/helm
   version: 0.1.0
-digest: sha256:16590226813c02d155ca95762643d1d476a9c6113b814af36184c42963baa03b
-generated: "2026-09-09T18:56:24.385317+08:00"
+digest: sha256:f1e0fd1a3c2ea59c0a5c79aa88b057d14fa22bb0bb33a6ab18f17d751c0c7282
+generated: "2026-09-10T16:05:38.77826+08:00"
