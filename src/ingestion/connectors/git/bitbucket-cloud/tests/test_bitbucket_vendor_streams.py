@@ -17,7 +17,7 @@ import json
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
-from urllib.parse import unquote_plus
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import freezegun
 import pytest
@@ -38,7 +38,11 @@ _FROZEN = "2026-07-01T00:00:00Z"
 
 
 def _instant(stamp: str) -> datetime:
-    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    normalized = stamp.replace("Z", "+00:00")
+    try:
+        return datetime.strptime(normalized, "%Y-%m-%dT%H:%M:%S.%f%z")
+    except ValueError:
+        return datetime.strptime(normalized, "%Y-%m-%dT%H:%M:%S%z")
 
 
 def _no_literal_none(records: Iterable[AirbyteMessage]) -> None:
@@ -742,6 +746,114 @@ def test_commit_authors_drops_an_email_with_no_bitbucket_account(
 
     assert not output.errors
     assert len(output.records) == 0, "an unmatched e-mail claims no account"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_commit_authors_state_carries_the_authors_since_date(http_mocker: HttpMocker) -> None:
+    """The child carries a cursor so the author list's state persists. Without
+    it every sync re-lists every author since the start date and re-resolves
+    each one against Bitbucket; with it, the run emits the date the next run
+    lists from."""
+    config = BitbucketCloudConfigBuilder().build()
+    committed = "2026-06-15T10:00:00+00:00"
+    http_mocker.get(
+        HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+    )
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+        _authors_page(_author_row("ada@example.com", "a" * 40)),
+    )
+    http_mocker.get(
+        HttpRequest(f"{BB_URL}/repositories/acme/app/commit/{'a' * 40}", query_params=ANY_QUERY_PARAMS),
+        _resolved_commit("a" * 40, "ada@example.com", "acc-42"),
+    )
+
+    output = read_stream(_CONNECTOR, "commit_authors", config)
+
+    assert not output.errors
+    assert len(output.records) == 1
+    # The record has no date of its own; it carries the author's last commit
+    # date, which is what the cursor observes.
+    assert output.records[0].record.data["last_committed_date"] == committed
+    assert output.state_messages, "an incremental child must emit state"
+    state = output.state_messages[-1].state.stream.stream_state.__dict__
+    resumed = state["parent_state"]["repository_authors"]["state"]["last_committed_date"]
+    assert _instant(resumed) == _instant(committed), f"parent state must carry the author's date: {state}"
+    assert_records_conform(output.records, _CONNECTOR, "commit_authors", strict=True)
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_resumed_commit_authors_sync_lists_only_authors_active_since(
+    http_mocker: HttpMocker,
+) -> None:
+    """The start date is a floor paid once. A run carrying state asks the proxy
+    for the authors who committed since the saved date, so the Bitbucket
+    lookups it spends follow the day's activity rather than the whole history."""
+    config = BitbucketCloudConfigBuilder().build()  # start date 2026-06-01
+    committed = "2026-06-15T10:00:00+00:00"
+    http_mocker.get(
+        HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+    )
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+        _authors_page(_author_row("ada@example.com", "a" * 40)),
+    )
+    http_mocker.get(
+        HttpRequest(f"{BB_URL}/repositories/acme/app/commit/{'a' * 40}", query_params=ANY_QUERY_PARAMS),
+        _resolved_commit("a" * 40, "ada@example.com", "acc-42"),
+    )
+    first = read_stream(_CONNECTOR, "commit_authors", config)
+    assert not first.errors
+    state = [m.state for m in first.state_messages][-1:]
+
+    resume_mocker = HttpMocker()
+    with resume_mocker:
+        resume_mocker.get(
+            HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+            HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+        )
+        resume_mocker.get(
+            HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+            _authors_page(),
+        )
+
+        second = read_stream(_CONNECTOR, "commit_authors", config, state=state)
+
+        assert not second.errors
+        since = [
+            parse_qs(urlparse(r.url).query)["since"][0]
+            for r in resume_mocker._mocker.request_history
+            if r.url.startswith(f"{PROXY_URL}/v1/authors")
+        ]
+        assert since, "the resumed run must list authors"
+        assert all(_instant(value) == _instant(committed) for value in since), since
+        lookups = [r.url for r in resume_mocker._mocker.request_history if "/commit/" in r.url]
+        assert not lookups, "no author committed since, so nothing to resolve"
+
+
+def _resolved_commit(sha: str, email: str, account_id: str) -> HttpResponse:
+    return HttpResponse(
+        body=json.dumps(
+            {
+                "hash": sha,
+                "date": "2026-06-15T10:00:00+00:00",
+                "message": "feat: x",
+                "author": {
+                    "raw": f"Dev <{email}>",
+                    "user": {
+                        "account_id": account_id,
+                        "uuid": "{u-42}",
+                        "nickname": "dev",
+                        "display_name": "Dev",
+                    },
+                },
+                "parents": [],
+            }
+        ),
+        status_code=200,
+    )
 
 
 def _pr_listing(pr_id: int, updated_on: str) -> HttpResponse:

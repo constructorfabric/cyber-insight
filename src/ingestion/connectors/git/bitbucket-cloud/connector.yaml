@@ -3312,6 +3312,7 @@ streams:
           author_nickname: {type: [string, "null"]}
           author_display_name: {type: [string, "null"]}
           sample_sha: {type: [string, "null"]}
+          last_committed_date: {type: [string, "null"]}
         required:
           - unique_key
         additionalProperties: true
@@ -3374,9 +3375,13 @@ streams:
           - type: ParentStreamConfig
             parent_key: sample_sha
             partition_field: commit_sha
+            # INVARIANT: the parent's `since` cursor persists only because this child
+            # is itself incremental; the CDK seeds parent state from the child's.
+            incremental_dependency: true
             extra_fields:
               - [repo_full_name]
               - [author_email]
+              - [last_committed_date]
             stream:
               type: DeclarativeStream
               name: repository_authors
@@ -3515,6 +3520,17 @@ streams:
                       path: [repo_full_name]
                       value: "{{ stream_slice.extra_fields['full_name'] }}"
                       value_type: string
+    incremental_sync:
+      type: DatetimeBasedCursor
+      cursor_field: last_committed_date
+      datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      cursor_datetime_formats:
+        - "%Y-%m-%dT%H:%M:%S%z"
+        - "%Y-%m-%dT%H:%M:%SZ"
+      start_datetime:
+        type: MinMaxDatetime
+        datetime: "{{ config['bitbucket_start_date'] }}"
+        datetime_format: "%Y-%m-%d"
     transformations:
       - type: AddFields
         fields:
@@ -3544,6 +3560,10 @@ streams:
           - type: AddedFieldDefinition
             path: [sample_sha]
             value: "{{ stream_partition.commit_sha }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [last_committed_date]
+            value: "{{ stream_slice.extra_fields['last_committed_date'] }}"
             value_type: string
           - type: AddedFieldDefinition
             path: [author_account_id]
