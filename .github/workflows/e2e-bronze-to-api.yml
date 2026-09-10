@@ -1,4 +1,4 @@
-name: E2E — Bronze to API
+name: E2E bronze to API
 
 # End-to-end data-path tests: a spec seeds bronze, dbt builds staging, silver
 # and gold on a ClickHouse the stand raised, identity mints the spec's people
@@ -87,7 +87,7 @@ jobs:
   #
   # src/frontend/ and docs/ are absent on purpose: nothing here loads them.
   changes:
-    name: changes
+    name: Detect changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -164,7 +164,7 @@ jobs:
   # compiling the same workspace. Five identical compiles per queue entry is
   # what pushed backend-touching entries past the merge queue's check timeout.
   build-backend:
-    name: Build backend binaries
+    name: Build backend
     needs: changes
     if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
@@ -185,7 +185,7 @@ jobs:
           if-no-files-found: error
 
   e2e-datapath:
-    name: data path (shard ${{ matrix.shard }})
+    name: Data path (${{ matrix.shard }})
     needs: [changes, build-backend]
     # `!cancelled()` so a skipped build-backend (backend untouched → pinned
     # images) does not skip the shards along with it; the result check keeps a
@@ -264,7 +264,7 @@ jobs:
 
       # `test-stand test` picks the suite's own dependency group for a tree
       # under tests/datapath and aims it at the stand it just raised.
-      - name: Data-path suite — shard
+      - name: Run the data-path shard
         id: suite
         env:
           SHARD: ${{ matrix.shard }}
