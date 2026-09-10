@@ -8,6 +8,9 @@ revocation, and upgrade behavior.
 For token-authenticated, read-only SQL execution, see the
 [SQL query API guide](../../deploy/SQL_QUERY_API.md).
 
+For raw-data ingestion and rotating its instance token, see the
+[raw-data ingest guide](../../deploy/RAW_DATA_INGEST.md).
+
 - **Chart**: `insight`
 - **Version**: see `Chart.yaml` → `version`
 - **App version**: see `Chart.yaml` → `appVersion` (matches image tags)
@@ -91,7 +94,7 @@ Before going to prod:
   - Rendering under a GitOps controller (`helm template`): set `deploymentMode: gitops` and `autoGenerate: false`, and supply the config Secrets out-of-band — the validator refuses `gitops` + `autoGenerate: true`.
 - [ ] Configure OIDC under `authenticator.oidc.*`: `issuerUrl`, `clientId`, `redirectUri`, and the client secret via a Secret (never inline in a committed values file).
 - [ ] Provide `insight-authenticator-signing-keys` (ES256 `current.pem`) — not auto-generated.
-- [ ] With `global.insightV3Core.deploy` on, on every install path — GitOps or imperative — provide `insight-v3-core-token` with a `token` key of at least 32 bytes (`openssl rand -hex 32`). The v3 Deployment reads it by `secretKeyRef` (`insightV3Core.ingest.tokenSecret` / `.tokenKey`); without the Secret the pod does not start.
+- [ ] With `global.insightV3Core.deploy` on, on every install path — GitOps or imperative — provide `insight-v3-core-token` with a `token` key of at least 32 bytes (`openssl rand -hex 32`). The v3 Deployment reads it by `secretKeyRef` (`insightV3Core.ingest.tokenSecret` / `.tokenKey`); without the Secret the pod does not start. Rotation: [raw-data ingest guide](../../deploy/RAW_DATA_INGEST.md).
 - [ ] Attach routes to the shared Gateway: `gateway.route`, `frontend.route` (TLS terminates at the Gateway listener)
 - [ ] Bump resources where needed (default `requests` are conservative)
 - [ ] Provision the L2 infra (ClickHouse / MariaDB / Redis / Redpanda) out-of-chart and fill `<dep>.host` / `.port` / `.passwordSecret`. App-service URLs follow automatically (resolved by helpers).
