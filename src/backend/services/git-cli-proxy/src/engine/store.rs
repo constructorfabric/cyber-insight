@@ -2251,7 +2251,10 @@ pub(crate) mod tests {
         key: &CacheKey,
         freshness: Freshness,
     ) -> RepoGuard {
-        for _ in 0..100u32 {
+        // 60s, not the 5s this waited before: the clone races 200-odd other
+        // tests for a core, and under `llvm-cov` it loses often enough to fail
+        // the suite on timing alone.
+        for _ in 0..1200u32 {
             let freshness = freshness.clone();
             match fixture.store.open(key, &creds(), freshness).await {
                 Ok(guard) => return guard,
