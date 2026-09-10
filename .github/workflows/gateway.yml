@@ -105,6 +105,7 @@ jobs:
             --add-host identity-resolution:127.0.0.1 \
             --add-host authenticator:127.0.0.1 \
             --add-host insight-front:127.0.0.1 \
+            --add-host insight-v3-core:127.0.0.1 \
             -e GATEWAY_VALIDATE_ONLY=1 \
             -e GATEWAY_AUTHENTICATOR_URL=http://authenticator:8083 \
             -e GATEWAY_FRONT_URL=http://insight-front:8080 \
