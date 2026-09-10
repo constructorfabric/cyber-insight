@@ -103,10 +103,8 @@ INGEST_TOKEN = "APP__gears__insight_v3_core__config__ingest_token"
 
 
 def test_the_ingest_token_arrives_by_reference_to_an_operator_owned_secret():
-    """Never rendered as a value: `helm template` sees nothing from `lookup`,
-    so a token this chart produced would differ on every render and lock out
-    every client already holding one. Same shape as the analytics SQL API's
-    `insight-sql-api-creds`."""
+    """`helm template` sees nothing from `lookup`, so a token this chart
+    rendered as a value would differ per render and lock out every client."""
     docs = render(ingest__tokenSecret="v3-token", ingest__tokenKey="ingest")
     entry = next(e for e in container(docs)["env"] if e["name"] == INGEST_TOKEN)
 
@@ -115,17 +113,13 @@ def test_the_ingest_token_arrives_by_reference_to_an_operator_owned_secret():
 
 
 def test_no_rendered_object_carries_the_token_as_a_value():
-    """Guards the whole render, not just the Deployment: the pre-install
-    migrate Secret carried a generated copy of this key before the token
-    became operator-owned."""
     for doc in render():
         for field in ("data", "stringData"):
             assert INGEST_TOKEN not in (doc.get(field) or {}), f"{doc['kind']} carries the token"
 
 
 def test_the_migrate_hook_takes_no_ingest_token():
-    """`migrate` validates its two stores only (config::validate_stores), so
-    the hook has no token to be given and no crash to suffer without one."""
+    """`migrate` validates its two stores only — config::validate_stores."""
     job = one(render(), "Job")
 
     assert INGEST_TOKEN not in [e["name"] for e in job["spec"]["template"]["spec"]["containers"][0].get("env", [])]

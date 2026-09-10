@@ -41,8 +41,15 @@ spec:
                 optional: true
             - secretRef:
                 name: {{ required "existingSecret is required" .Values.existingSecret | quote }}
-          {{- if ((.Values.global).mcp).enabled }}
           env:
+            # An explicit `env` entry beats the same name arriving via
+            # `envFrom`, so this wins over a stale copy in `existingSecret`.
+            - name: APP__gears__insight_v3_core__config__ingest_token
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "ingest.tokenSecret is required" (.Values.ingest).tokenSecret | quote }}
+                  key: {{ required "ingest.tokenKey is required" (.Values.ingest).tokenKey | quote }}
+            {{- if ((.Values.global).mcp).enabled }}
             - name: APP__gears__insight_v3_core__config__mcp__enabled
               value: "true"
             - name: APP__gears__insight_v3_core__config__mcp__bind_addr
@@ -51,7 +58,7 @@ spec:
               value: {{ required "global.mcp.publicUrl is required when MCP is enabled" .Values.global.mcp.publicUrl | quote }}
             - name: APP__gears__insight_v3_core__config__mcp__allow_insecure_private_network
               value: {{ or (((.Values.global).mcp).allowInsecurePrivateNetwork) .Values.mcp.allowInsecurePrivateNetwork | quote }}
-          {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

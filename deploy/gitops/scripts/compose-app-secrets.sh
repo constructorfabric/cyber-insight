@@ -26,8 +26,8 @@
 #   .clickhouse.host .clickhouse.port .clickhouse.username .clickhouse.database
 #   .redis.host      .redis.port
 #   .identityResolution.databaseName (defaults to "identity")
-#   .insightV3Core.existingSecret (optional; when set, compose that Secret
-#                                  using insight-v3-core-token.token)
+#   .insightV3Core.existingSecret (optional; when set, compose that Secret and
+#                                  require insight-v3-core-token to exist)
 #   .global.tenantDefaultId      (optional; empty disables the resolver
 #                                 on both identity-resolution and
 #                                 analytics. Single source of truth for
@@ -269,7 +269,9 @@ done
 # acquisition flow: operators seal it once and API clients receive it out of
 # band. Environments pinned before insight-v3-core opt in by leaving
 # insightV3Core.existingSecret unset.
-CORE_TOKEN=""
+#
+# The Deployment takes the token by secretKeyRef, so it is read here only to
+# fail the apply with a named Secret rather than a pod that never starts.
 CORE_CH_READER_PW=""
 if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
   CORE_CH_READER_PW=$(kubectl -n "$NS_APP" get secret insight-db-creds \
@@ -288,6 +290,7 @@ if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
     echo "ERROR: $NS_APP/insight-v3-core-token.token is empty" >&2
     exit 1
   }
+  unset CORE_TOKEN
 fi
 
 # Redis password is optional in principle; compose the URL without auth
@@ -342,7 +345,6 @@ if [ -n "$CORE_CONFIG_SECRET" ] && [ "$CORE_CONFIG_SECRET" != "null" ]; then
     --from-literal=APP__gears__insight_v3_core__config__clickhouse_password="${CH_PW}" \
     --from-literal=APP__gears__insight_v3_core__config__database_url="mysql://${MDB_USER}:${MDB_PW}@${MDB_HOST}:${MDB_PORT}/${CORE_DB}" \
     --from-literal=APP__gears__insight_v3_core__config__identity_url="${IDENTITY_URL}" \
-    --from-literal=APP__gears__insight_v3_core__config__ingest_token="${CORE_TOKEN}" \
     ${CORE_CH_READER_PW:+--from-literal=APP__gears__insight_v3_core__config__clickhouse_query_user="${CORE_CH_READER}"} \
     ${CORE_CH_READER_PW:+--from-literal=APP__gears__insight_v3_core__config__clickhouse_query_password="${CORE_CH_READER_PW}"} \
     --dry-run=client -o yaml \

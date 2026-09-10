@@ -646,6 +646,12 @@ insightV3Core:
     limits: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
   databaseName: insight_v3
   clickhouseReaderUsername: insight_v3_reader
+  # The raw-data ingest token. Operator-supplied like
+  # `analytics.sqlApi.tokenSecret` — create it before enabling the service
+  # (`openssl rand -hex 32`; under 32 bytes is refused at boot).
+  ingest:
+    tokenSecret: "insight-v3-core-token"
+    tokenKey: "token"
   existingSecret: "insight-v3-core-config"
   # Hook-rendered twin for fresh imperative installs. GitOps pre-creates the
   # main config Secret, so this reference is optional there.

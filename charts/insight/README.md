@@ -91,7 +91,7 @@ Before going to prod:
   - Rendering under a GitOps controller (`helm template`): set `deploymentMode: gitops` and `autoGenerate: false`, and supply the config Secrets out-of-band — the validator refuses `gitops` + `autoGenerate: true`.
 - [ ] Configure OIDC under `authenticator.oidc.*`: `issuerUrl`, `clientId`, `redirectUri`, and the client secret via a Secret (never inline in a committed values file).
 - [ ] Provide `insight-authenticator-signing-keys` (ES256 `current.pem`) — not auto-generated.
-- [ ] With `global.insightV3Core.deploy` on in GitOps mode, provide `insight-v3-core-token` with a non-empty `token` key — the chart never reads that Secret; `deploy/gitops/scripts/compose-app-secrets.sh` composes `insight-v3-core-config` from it. Imperative installs generate the token into `insight-v3-core-config` and reuse it on upgrade.
+- [ ] With `global.insightV3Core.deploy` on, on every install path — GitOps or imperative — provide `insight-v3-core-token` with a `token` key of at least 32 bytes (`openssl rand -hex 32`). The v3 Deployment reads it by `secretKeyRef` (`insightV3Core.ingest.tokenSecret` / `.tokenKey`); without the Secret the pod does not start.
 - [ ] Attach routes to the shared Gateway: `gateway.route`, `frontend.route` (TLS terminates at the Gateway listener)
 - [ ] Bump resources where needed (default `requests` are conservative)
 - [ ] Provision the L2 infra (ClickHouse / MariaDB / Redis / Redpanda) out-of-chart and fill `<dep>.host` / `.port` / `.passwordSecret`. App-service URLs follow automatically (resolved by helpers).
@@ -118,7 +118,7 @@ Key groups:
 - `global.*` — cluster-wide defaults (pull secrets, storage class, `tenantDefaultId`, `observability.logs.{level,format}`, `observability.otlp.endpoint`)
 - `<dep>.host` / `<dep>.port` / `<dep>.passwordSecret` (Redpanda: `<dep>.brokers`) — external-infra wiring for ClickHouse, MariaDB, Redis, Redpanda
 - `gateway` / `authenticator` / `analytics` — **mandatory** app services (no deploy flag; the gateway is the single entrance and the product is one unit)
-- `global.insightV3Core.deploy` + `insightV3Core.*` — insight-v3-core, off by default (it needs a sealed ingest token first); the same flag drops the gateway's v3 routes
+- `global.insightV3Core.deploy` + `insightV3Core.*` — insight-v3-core, off by default (it needs `insightV3Core.ingest.tokenSecret` to exist first); the same flag drops the gateway's v3 routes
 - `authenticator.oidc.*` — OIDC upstream and login-resolution mode (`resolveBy: external_id | email`)
 - `identityResolution.*` — identity-resolution service (must stay deployed; `rosterSourceType` for email-mode logins)
 - `keycloak.deploy` + `keycloakConfig.*` — the in-stack identity broker and its realms-as-code hook

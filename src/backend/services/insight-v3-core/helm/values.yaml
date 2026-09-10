@@ -29,12 +29,16 @@ service:
   type: ClusterIP
   port: 8086
 
+# The raw-data ingest token. Operator-supplied; absent, the pod does not start.
+ingest:
+  tokenSecret: insight-v3-core-token
+  tokenKey: token
+
 # Pre-created Secret carrying these gears-rust leaf overrides:
 #   APP__gears__insight_v3_core__config__clickhouse_url
 #   APP__gears__insight_v3_core__config__clickhouse_database
 #   APP__gears__insight_v3_core__config__clickhouse_user
 #   APP__gears__insight_v3_core__config__clickhouse_password
-#   APP__gears__insight_v3_core__config__ingest_token
 existingSecret: ""
 
 # Optional hook Secret for fresh umbrella installs. GitOps deployments
