@@ -48,8 +48,19 @@ description: >
     20 squash       flagged  feature.rs Y +5
     21 carry-trunk  flagged  carry.rs   P +7
     23 twice-late   flagged  twice.rs   W +2
+    -- blind-undated  flagged  blind.rs   S +21  neither date parses
+    10 blind-work    branch   blind.rs   S +21  one carrier of that content is
+                                               undated, so the arrival is
+                                               unknown and refuses: does not
+                                               land
+    22 blind-later   flagged  blind.rs   S +21  dated after blind-work, and on
+                                               its own it would promote
 
-  So eleven commits land and two do not. Lines follow the earliest carrier of
+  So twelve commits land and three do not — the undated carrier reaches no
+  commit measure at all, because a commit no source dated is not an authored
+  commit.
+
+  Twelve and three, not eleven and two: Lines follow the earliest carrier of
   each content, which puts 2 + 3 + 6 + 13 + 5 + 7 + 11 on the default side and
   leaves only.rs alone on the other: restore's own copy of shared.rs loses the
   dedup to the trunk commit that held it first. That is the shape of the harm —
@@ -68,6 +79,11 @@ description: >
   INVARIANT: all three twice.rs rows carry the same pre-image id. Content
   identity reads the post image alone, and this keeps the case from resting on
   that.
+
+  INVARIANT: blind-undated must keep BOTH dates unparseable, and blind-later must
+  stay dated after blind-work. An aggregate over arrival times skips nulls, so
+  it is blind-later that would answer for the content and promote blind-work;
+  date blind-undated and the case proves nothing.
 
 bronze:
   bronze_bamboohr.employees:
@@ -91,6 +107,14 @@ bronze:
     - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-carry-work, repository: "https://github.com/acme/border.git", sha: bco-carry-work, authored_date: "2026-10-01T18:00:00Z", committed_date: "2026-10-01T18:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 18, changed_files: 2, is_in_default_branch: false}
     - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-squash, repository: "https://github.com/acme/border.git", sha: bco-squash, authored_date: "2026-10-01T20:00:00Z", committed_date: "2026-10-01T20:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 5, changed_files: 1, is_in_default_branch: true}
     - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-carry-trunk, repository: "https://github.com/acme/border.git", sha: bco-carry-trunk, authored_date: "2026-10-01T21:00:00Z", committed_date: "2026-10-01T21:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 7, changed_files: 1, is_in_default_branch: true}
+    # Neither date parses, so the class has none: the arrival of its content is
+    # unknown, and unknown has to refuse rather than let the later carrier
+    # below answer instead. It is not an authored commit either, so it reaches
+    # no commit measure. The cursor field is never absent in bronze, so an
+    # empty string is what a date the source could not give looks like.
+    - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-blind-undated, repository: "https://github.com/acme/border.git", sha: bco-blind-undated, authored_date: null, committed_date: "", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 21, changed_files: 1, is_in_default_branch: true}
+    - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-blind-work, repository: "https://github.com/acme/border.git", sha: bco-blind-work, authored_date: "2026-10-01T10:00:00Z", committed_date: "2026-10-01T10:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 21, changed_files: 1, is_in_default_branch: false}
+    - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-blind-later, repository: "https://github.com/acme/border.git", sha: bco-blind-later, authored_date: "2026-10-01T22:00:00Z", committed_date: "2026-10-01T22:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 21, changed_files: 1, is_in_default_branch: true}
     - {$ref: ../templates/git_activity.yaml#/templates/commit, unique_key: bco-twice-late, repository: "https://github.com/acme/border.git", sha: bco-twice-late, authored_date: "2026-10-01T23:00:00Z", committed_date: "2026-10-01T23:00:00Z", author_name: heidi, author_email: heidi@example.com, committer_name: heidi, committer_email: heidi@example.com, additions: 2, changed_files: 1, is_in_default_branch: true}
 
   bronze_github.file_changes:
@@ -118,4 +142,9 @@ bronze:
     # of the two is enough, and both files' lines cross.
     - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-carry-work, repository: "https://github.com/acme/border.git", sha: bco-carry-work, filename: src/carry.rs, status: added, additions: 7, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000p}
     - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-extra, repository: "https://github.com/acme/border.git", sha: bco-carry-work, filename: src/extra.rs, status: added, additions: 11, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000q}
+    # src/blind.rs — three carriers of one content, and the earliest of them
+    # is the one nobody dated.
+    - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-blind-undated, repository: "https://github.com/acme/border.git", sha: bco-blind-undated, filename: src/blind.rs, status: modified, additions: 21, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000s}
+    - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-blind-work, repository: "https://github.com/acme/border.git", sha: bco-blind-work, filename: src/blind.rs, status: modified, additions: 21, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000s}
+    - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-blind-later, repository: "https://github.com/acme/border.git", sha: bco-blind-later, filename: src/blind.rs, status: modified, additions: 21, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000s}
     - {$ref: ../templates/git_activity.yaml#/templates/file_change, unique_key: bco-f-carry-trunk, repository: "https://github.com/acme/border.git", sha: bco-carry-trunk, filename: src/carry.rs, status: modified, additions: 7, deletions: 0, post_image_oid: bc0000000000000000000000000000000000000p}

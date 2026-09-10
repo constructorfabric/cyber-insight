@@ -68,6 +68,11 @@ repository_default_branches AS (
 -- object was written — a rebase and a cherry-pick both preserve the author
 -- date. It arrived on the class after the column it falls back to and is not
 -- backfilled, so a row synced before then answers with the author date.
+--
+-- SAFETY: one undated carrier makes the whole arrival unknown. `min` SKIPS
+-- nulls, so without the guard an undated carrier would be invisible and a
+-- later dated one would answer for it — promoting a commit the default branch
+-- may well have preceded. Unknown must refuse, not guess.
 landed_content AS (
     SELECT
         landed_change.tenant_id AS tenant_id,
@@ -76,7 +81,11 @@ landed_content AS (
         landed_change.repo_slug AS repo_slug,
         landed_change.file_path AS file_path,
         {{ git_file_content_identity('landed_change.post_image_oid', 'landed_change.pre_image_oid') }} AS content_identity,
-        min(coalesce(carrier.committer_date, carrier.date)) AS arrived_at
+        if(
+            countIf(coalesce(carrier.committer_date, carrier.date) IS NULL) > 0,
+            CAST(NULL AS Nullable(DateTime)),
+            min(coalesce(carrier.committer_date, carrier.date))
+        ) AS arrived_at
     FROM {{ ref('class_git_file_changes') }} AS landed_change FINAL
     INNER JOIN {{ ref('class_git_commits') }} AS carrier FINAL
         ON carrier.tenant_id IS NOT DISTINCT FROM landed_change.tenant_id
