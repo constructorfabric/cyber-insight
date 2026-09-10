@@ -3753,6 +3753,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "insight-v3-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "cf-gears-api-gateway",
+ "cf-gears-authn-resolver",
+ "cf-gears-authz-resolver",
+ "cf-gears-gear-orchestrator",
+ "cf-gears-grpc-hub",
+ "cf-gears-oidc-authn-plugin",
+ "cf-gears-single-tenant-tr-plugin",
+ "cf-gears-static-authz-plugin",
+ "cf-gears-tenant-resolver",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-types-registry",
+ "chrono",
+ "clap",
+ "clickhouse",
+ "futures",
+ "insight-clickhouse",
+ "insight-log-context",
+ "jsonwebtoken",
+ "p256 0.14.0",
+ "reqwest 0.12.28",
+ "rmcp",
+ "schemars 1.2.2",
+ "sea-orm",
+ "sea-orm-migration",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "inventory"
 version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"

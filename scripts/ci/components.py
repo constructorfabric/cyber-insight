@@ -71,6 +71,24 @@ COMPONENTS = [
         "paths": ["src/backend/services/analytics"],
         "triggered_by": ["insight-migration"],
     },
+    # cover=False: readiness and real ClickHouse migration/insert behavior are
+    # exercised by the live shell test below rather than llvm-cov. Formatting,
+    # Clippy, package tests, and the live test still gate every service change.
+    {
+        "name": "insight-v3-core",
+        "lang": "rust",
+        "root": "src/backend",
+        "package": "insight-v3-core",
+        "cover": False,
+        "live_ch": True,
+        # The definition store is MariaDB, and the service refuses to start
+        # without it — the live test boots the real binary, so it needs one.
+        "live_db": True,
+        "live_db_name": "insight_v3",
+        "live_test": "services/insight-v3-core/tests/ci.sh",
+        "paths": ["src/backend/services/insight-v3-core"],
+        "triggered_by": ["insight-clickhouse"],
+    },
     # cover=False: the api/ and repository layers are still thin on tests, so the
     # 80% gate would block every change to this crate rather than the ones that
     # deserve blocking. fmt + clippy + tests run and gate the pipeline meanwhile.

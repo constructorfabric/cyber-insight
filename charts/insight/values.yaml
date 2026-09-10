@@ -38,6 +38,10 @@
 ##    only entrance to the cluster internals; the other services are
 ##    reachable only through it. This matches the Constructor Platform
 ##    integration contract.
+##    `global.insightV3Core.deploy` is OPTIONAL and off by default: the service
+##    cannot boot until its instance's ingest token is sealed, so an instance
+##    opts in once that exists. The switch also drops the gateway's three v3
+##    routes.
 ##    Identity Resolution (`identityResolution`) is OPTIONAL (deploy-flag,
 ##    off by default) — it is the Rust persons-store service that owns the
 ##    `identity` MariaDB database (per ADR-0006), reads observation history
@@ -99,6 +103,13 @@ global:
     enabled: false
     # Public origin of this Insight instance, for example https://insight.example.com.
     publicUrl: ""
+    # Permits an http:// publicUrl on a private address. Both the authenticator,
+    # which issues the tokens, and insight-v3-core, which verifies them, refuse
+    # one otherwise — so a cluster with no TLS at its edge cannot serve MCP
+    # without this.
+    allowInsecurePrivateNetwork: false
+  insightV3Core:
+    deploy: false
   # Global (not `previews.deploy`) so one knob controls both the previews
   # subchart and the gateway's /api/previews route: a route left pointing at a
   # Service the release does not create keeps nginx from loading its config.
@@ -207,14 +218,14 @@ ingestion:
   # `serviceaccount "argo-workflow" not found`.
   templates:
     enabled: true
-  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.09.09.10.03-3196b84" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
+  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.09.10.19.30-2fc5e39" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
   # The sample-data seeder's image, for TEST stands only. Nothing in the chart
   # runs it: `src/ingestion/tools/seed/seed-stand.sh` reads this value to render
   # a one-shot Job. Its own image rather than the toolbox on purpose — the
   # toolbox runs migrations on real stands and does not carry demo data. Empty
   # (the default) means the stand cannot be seeded until an operator names an
   # image, either here or with the script's `--image` flag.
-  seedImage: "ghcr.io/constructorfabric/insight-seed:2026.09.09.10.03-3196b84" # e.g. "ghcr.io/constructorfabric/insight-seed:2026.04.28.10.34-b08b460"
+  seedImage: "ghcr.io/constructorfabric/insight-seed:2026.09.10.19.30-2fc5e39" # e.g. "ghcr.io/constructorfabric/insight-seed:2026.04.28.10.34-b08b460"
   # airbyte-sync poll-job tunables — see templates/ingestion/airbyte-sync.yaml.
   # The poll loop replaces a wall-clock deadline with a progress watchdog:
   # it tracks (status, bytesEmitted, recordsEmitted, stateMessagesEmitted)
@@ -620,6 +631,35 @@ analytics:
     caCertSecret: "insight-authenticator-authn-tls-cert"
     caCertPaths:
       - /etc/insight/authn-ca/ca.crt
+# ─── Insight v3 Core ─────────────────────────────────────────────────────
+# Token-authenticated ingestion into caller-selected ClickHouse tables. The
+# API may create new physical tables, but every table uses the service's fixed
+# raw-data envelope; callers do not define ClickHouse columns or types.
+insightV3Core:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/constructorfabric/insight-v3-core
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 64Mi}
+    limits: {cpu: 500m, memory: 512Mi, ephemeral-storage: 256Mi}
+  databaseName: insight_v3
+  clickhouseReaderUsername: insight_v3_reader
+  # The raw-data ingest token. Operator-supplied like
+  # `analytics.sqlApi.tokenSecret` — create it before enabling the service
+  # (`openssl rand -hex 32`; under 32 bytes is refused at boot).
+  ingest:
+    tokenSecret: "insight-v3-core-token"
+    tokenKey: "token"
+  existingSecret: "insight-v3-core-config"
+  # Hook-rendered twin for fresh imperative installs. GitOps pre-creates the
+  # main config Secret, so this reference is optional there.
+  migrateEnvSecret: "insight-v3-core-migrate-env"
+  # The custom-surface MCP server, served when global.mcp.enabled is set.
+  mcp:
+    port: 8087
+    allowInsecurePrivateNetwork: false
 # ─── Identity Resolution (Rust identity service, epic #1602) ─────────────
 # The persons-store API. Reads from MariaDB `persons`, written by the seed
 # CronJob (the service's own `seed` subcommand) fed off ClickHouse

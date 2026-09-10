@@ -696,6 +696,13 @@ impl RepoStore {
         }
 
         std::fs::create_dir_all(entry_dir).map_err(GitError::Io)?;
+        // A heavy op killed by the cap is not reaped, so it can recreate paths
+        // under an entry after the metadata-less check above found none — and
+        // `rename` cannot land on a non-empty directory. Nothing published
+        // what is there, so it is garbage and this clone owns the destination.
+        if git_dir.exists() {
+            std::fs::remove_dir_all(git_dir).map_err(GitError::Io)?;
+        }
         std::fs::rename(&tmp, git_dir).map_err(GitError::Io)?;
 
         self.build_page_index(git_dir, 1, creds).await;
@@ -2251,7 +2258,10 @@ pub(crate) mod tests {
         key: &CacheKey,
         freshness: Freshness,
     ) -> RepoGuard {
-        for _ in 0..100u32 {
+        // 60s, not the 5s this waited before: the clone races 200-odd other
+        // tests for a core, and under `llvm-cov` it loses often enough to fail
+        // the suite on timing alone.
+        for _ in 0..1200u32 {
             let freshness = freshness.clone();
             match fixture.store.open(key, &creds(), freshness).await {
                 Ok(guard) => return guard,
@@ -2301,6 +2311,36 @@ pub(crate) mod tests {
         assert!(
             meta.proven(&creds().fingerprint()),
             "the credentials that proved access are fingerprinted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clone_publishes_over_a_leftover_at_its_destination() {
+        let f = fixture("leftover-destination");
+        let k = key(&f);
+        let entry_dir = f.store.entry_dir(&k);
+        let git_dir = entry_dir.join("repo.git");
+        let pack_dir = git_dir.join("objects/pack");
+        if let Err(e) = std::fs::create_dir_all(&pack_dir)
+            .and_then(|()| std::fs::write(pack_dir.join("tmp_pack_stray"), b"x"))
+        {
+            panic!("stage the leftover: {e}");
+        }
+
+        let store: &RepoStore = &f.store;
+        let published = RepoStore::clone(store, &k, &entry_dir, &git_dir, &creds()).await;
+
+        match published {
+            Ok(generation) => assert_eq!(generation, 1, "a clone publishes generation 1"),
+            Err(e) => panic!("the clone could not publish over the leftover: {e}"),
+        }
+        assert!(
+            git_dir.join("HEAD").is_file(),
+            "the clone must be the entry now"
+        );
+        assert!(
+            !pack_dir.join("tmp_pack_stray").exists(),
+            "the leftover must be gone, not merged into the published entry"
         );
     }
 
