@@ -128,16 +128,31 @@ jobs:
           fi
           changed="$(git diff --name-only "$base_point" "$HEAD")"
           echo "$changed" | sed 's/^/  /'
-          if echo "$changed" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|\.env\.compose\.example|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
+
+          # Ignored because nothing in this suite reads these paths.
+          # INVARIANT: services/*/helm/Chart.yaml is NOT ignored — dev-compose.sh
+          # takes the image the stand pulls from its appVersion.
+          IGNORED_PATHS='^src/backend/services/[^/]+/helm/|^src/ingestion/tests/|^src/ingestion/tools/seed/tests/|^(src/backend|tests)/.*\.md$'
+          IMAGE_PIN_PATHS='^src/backend/services/[^/]+/helm/Chart\.yaml$'
+          # `|| true`: a grep selecting nothing exits 1 — set -e fails the step.
+          changes_to_test="$(printf '%s\n' "$changed" | grep -vE "$IGNORED_PATHS" || true)"
+          image_pins="$(printf '%s\n' "$changed" | grep -E "$IMAGE_PIN_PATHS" || true)"
+          changes_to_test="$(printf '%s\n%s\n' "$changes_to_test" "$image_pins" | grep -v '^$' || true)"
+          if [ -n "$changes_to_test" ]; then
+            printf '%s\n' "$changes_to_test" | sed 's/^/  affects this run: /'
+          else
+            echo "  affects this run: nothing — no changed file can reach this suite"
+          fi
+
+          if echo "$changes_to_test" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|\.env\.compose\.example|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed"
           fi
           # A backend change means the pinned images no longer describe this
-          # tree, so the stand compiles the backend instead of pulling it. A
-          # service's own test tree is not in its image, so it does not count.
-          if echo "$changed" | grep -vE '^src/backend/services/[^/]+/tests/' | grep -qE '^src/backend/'; then
+          # tree, so the stand compiles the backend instead of pulling it.
+          if echo "$changes_to_test" | grep -qE '^src/backend/'; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"

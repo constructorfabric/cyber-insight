@@ -150,6 +150,21 @@ jobs:
           fi
           changed="$(git diff --name-only "$base_point" "$HEAD")"
           printf '  %s\n' "${changed//$'\n'/$'\n  '}"
+
+          # Ignored because nothing this stand raises or runs reads these paths.
+          # INVARIANT: */helm/Chart.yaml is NOT ignored — dev-compose.sh takes
+          # the image the stand pulls from its appVersion.
+          IGNORED_PATHS='^src/(backend/services/[^/]+|frontend)/helm/|^src/ingestion/tools/seed/tests/|^tests/datapath/|^(src/backend|src/frontend|tests|deploy/compose)/.*\.md$'
+          IMAGE_PIN_PATHS='^src/(backend/services/[^/]+|frontend)/helm/Chart\.yaml$'
+          # `|| true`: a grep selecting nothing exits 1 — set -e fails the step.
+          changes_to_test="$(printf '%s\n' "$changed" | grep -vE "$IGNORED_PATHS" || true)"
+          image_pins="$(printf '%s\n' "$changed" | grep -E "$IMAGE_PIN_PATHS" || true)"
+          changes_to_test="$(printf '%s\n%s\n' "$changes_to_test" "$image_pins" | grep -v '^$' || true)"
+          if [ -n "$changes_to_test" ]; then
+            printf '%s\n' "$changes_to_test" | sed 's/^/  affects this run: /'
+          else
+            echo "  affects this run: nothing — no changed file can reach this stand"
+          fi
           relevant="$forced"
           backend=false
           frontend=false
@@ -159,18 +174,21 @@ jobs:
           identity_resolution=false
           gateway=false
           gateway_checks=false
-          if echo "$changed" | grep -qE '^(tests/|deploy/compose/|src/ingestion/tools/seed/|docker-compose\.yml|dev-compose\.sh|src/backend/|src/frontend/|docs/components/backend/.*/openapi\.json|\.github/workflows/(build-images|e2e-stand)\.yml|\.github/workflows/scripts/redact-playwright-trace\.py|scripts/ci/prebuilt_images\.py)'; then
+          if echo "$changes_to_test" | grep -qE '^(tests/|deploy/compose/|src/ingestion/tools/seed/|docker-compose\.yml|dev-compose\.sh|src/backend/|src/frontend/|docs/components/backend/.*/openapi\.json|\.github/workflows/(build-images|e2e-stand)\.yml|\.github/workflows/scripts/redact-playwright-trace\.py|scripts/ci/prebuilt_images\.py)'; then
             relevant=true
           elif [ "$forced" = true ]; then
             echo "nothing the stand covers changed — running anyway, this event has no pull request to filter"
           else
             echo "nothing the stand covers changed"
           fi
-          if echo "$changed" | grep -q '^src/backend/'; then backend=true; fi
-          if echo "$changed" | grep -q '^src/frontend/'; then frontend=true; fi
-          if echo "$changed" | grep -qE '^(src/backend/services/analytics/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then analytics=true; fi
+          if echo "$changes_to_test" | grep -q '^src/backend/'; then backend=true; fi
+          if echo "$changes_to_test" | grep -q '^src/frontend/'; then frontend=true; fi
+          if echo "$changes_to_test" | grep -qE '^(src/backend/services/analytics/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then analytics=true; fi
+          # INVARIANT: these three cross into gateway.yml, which lints the chart
+          # and runs its own e2e suite from these trees — so they read the raw
+          # diff, not the stand's filtered list.
           if echo "$changed" | grep -qE '^(src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then authenticator=true; fi
-          if echo "$changed" | grep -qE '^(src/backend/services/identity-resolution/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then identity_resolution=true; fi
+          if echo "$changes_to_test" | grep -qE '^(src/backend/services/identity-resolution/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then identity_resolution=true; fi
           if echo "$changed" | grep -qE '^(src/backend/services/gateway/|src/backend/tools/routegen/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then gateway=true; fi
           if echo "$changed" | grep -qE '^(src/backend/tools/routegen/|src/backend/services/gateway/|src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|src/ingestion/tools/seed/insight_seed/|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/(prebuilt_images|test_prebuilt_images)\.py$)'; then gateway_checks=true; fi
           if [[ "$GITHUB_EVENT_NAME" == merge_group ]] && \
