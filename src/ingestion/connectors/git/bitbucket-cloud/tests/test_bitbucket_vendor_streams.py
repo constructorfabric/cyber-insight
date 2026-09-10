@@ -641,12 +641,12 @@ def _authors_page(*rows: dict[str, Any]) -> HttpResponse:
     )
 
 
-def _author_row(email: str, sha: str) -> dict[str, Any]:
+def _author_row(email: str, sha: str, committed: str = "2026-06-15T10:00:00+00:00") -> dict[str, Any]:
     return {
         "author_email": email,
         "author_name": "Dev",
         "sample_sha": sha,
-        "last_committed_date": "2026-06-15T10:00:00+00:00",
+        "last_committed_date": committed,
         "commit_count": 4,
     }
 
@@ -784,14 +784,17 @@ def test_commit_authors_state_carries_the_authors_since_date(http_mocker: HttpMo
 
 
 @freezegun.freeze_time(_FROZEN)
-def test_a_resumed_commit_authors_sync_lists_only_authors_active_since(
+def test_a_resumed_commit_authors_sync_lists_from_one_window_before_the_saved_date(
     http_mocker: HttpMocker,
 ) -> None:
     """The start date is a floor paid once. A run carrying state asks the proxy
-    for the authors who committed since the saved date, so the Bitbucket
-    lookups it spends follow the day's activity rather than the whole history."""
-    config = BitbucketCloudConfigBuilder().build()  # start date 2026-06-01
-    committed = "2026-06-15T10:00:00+00:00"
+    for the authors who committed since one lookback window before the saved
+    date — a commit can be pushed days after it was made — so the Bitbucket
+    lookups it spends follow recent activity rather than the whole history."""
+    config = BitbucketCloudConfigBuilder().build()
+    # Far enough back that one window before the saved date is not clamped to it.
+    config["bitbucket_start_date"] = "2026-01-01"
+    one_window_before = "2026-05-15T10:00:00+00:00"
     http_mocker.get(
         HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
         HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
@@ -814,9 +817,14 @@ def test_a_resumed_commit_authors_sync_lists_only_authors_active_since(
             HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
             HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
         )
+        # The proxy bound is inclusive, so the author on the boundary is listed again.
         resume_mocker.get(
             HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
-            _authors_page(),
+            _authors_page(_author_row("ada@example.com", "a" * 40)),
+        )
+        resume_mocker.get(
+            HttpRequest(f"{BB_URL}/repositories/acme/app/commit/{'a' * 40}", query_params=ANY_QUERY_PARAMS),
+            _resolved_commit("a" * 40, "ada@example.com", "acc-42"),
         )
 
         second = read_stream(_CONNECTOR, "commit_authors", config, state=state)
@@ -828,9 +836,65 @@ def test_a_resumed_commit_authors_sync_lists_only_authors_active_since(
             if r.url.startswith(f"{PROXY_URL}/v1/authors")
         ]
         assert since, "the resumed run must list authors"
-        assert all(_instant(value) == _instant(committed) for value in since), since
+        assert all(_instant(value) == _instant(one_window_before) for value in since), since
         lookups = [r.url for r in resume_mocker._mocker.request_history if "/commit/" in r.url]
-        assert not lookups, "no author committed since, so nothing to resolve"
+        assert len(lookups) == 1, f"one author listed, one lookup: {lookups}"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_future_dated_commit_never_becomes_the_commits_cursor(http_mocker: HttpMocker) -> None:
+    """A committer clock set ahead would otherwise become the saved cursor, and
+    every later sync would ask for commits since a date that has not come. The
+    row is dropped at the client and the cursor stays on the newest real date."""
+    config = BitbucketCloudConfigBuilder().build()
+    sane, future = "2026-06-15T10:00:00+00:00", "2099-01-01T00:00:00+00:00"
+    http_mocker.get(
+        HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+    )
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS),
+        _commits_page(_commit_row("a" * 40, sane), _commit_row("b" * 40, future), next_page_token=None),
+    )
+
+    output = read_stream(_CONNECTOR, "commits", config)
+
+    assert not output.errors
+    assert [r.record.data["sha"] for r in output.records] == ["a" * 40]
+    saved = json.dumps(output.state_messages[-1].state.stream.stream_state.__dict__)
+    assert "2099" not in saved, f"the future date leaked into state: {saved}"
+    assert "2026-06-15T10:00:00" in saved, f"the newest real date must be the cursor: {saved}"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_future_dated_author_never_becomes_the_authors_since(http_mocker: HttpMocker) -> None:
+    """The author list is what a later sync bounds with `since`; an author whose
+    last commit is dated ahead would push that bound past now and the list
+    would come back empty forever. The author is dropped before the cursor
+    sees them, and the others are still resolved."""
+    config = BitbucketCloudConfigBuilder().build()
+    http_mocker.get(
+        HttpRequest(_REPOS_URL, query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps({"values": [_repo_with_clone()]}), status_code=200),
+    )
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+        _authors_page(
+            _author_row("ada@example.com", "a" * 40),
+            _author_row("zed@example.com", "b" * 40, committed="2099-01-01T00:00:00+00:00"),
+        ),
+    )
+    http_mocker.get(
+        HttpRequest(f"{BB_URL}/repositories/acme/app/commit/{'a' * 40}", query_params=ANY_QUERY_PARAMS),
+        _resolved_commit("a" * 40, "ada@example.com", "acc-42"),
+    )
+
+    output = read_stream(_CONNECTOR, "commit_authors", config)
+
+    assert not output.errors
+    assert [r.record.data["author_email"] for r in output.records] == ["ada@example.com"]
+    saved = json.dumps(output.state_messages[-1].state.stream.stream_state.__dict__)
+    assert "2099" not in saved, f"the future date leaked into state: {saved}"
 
 
 def _resolved_commit(sha: str, email: str, account_id: str) -> HttpResponse:

@@ -692,6 +692,10 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # A future-dated commit would otherwise become the cursor and silence the
+      # stream: a `since` past now yields no slice on every later sync. Bounding
+      # records client-side drops such a row before the cursor observes it.
+      is_client_side_incremental: true
       # `git log --since` is a traversal cutoff: after a rebase the
       # replacement commits can carry dates BELOW the stored cursor and
       # would never be visited again. Re-enumerating one window each
@@ -886,6 +890,10 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # A future-dated commit would otherwise become the cursor and silence the
+      # stream: a `since` past now yields no slice on every later sync. Bounding
+      # records client-side drops such a row before the cursor observes it.
+      is_client_side_incremental: true
       # `git log --since` is a traversal cutoff: after a rebase the
       # replacement commits can carry dates BELOW the stored cursor and
       # would never be visited again. Re-enumerating one window each
@@ -3375,8 +3383,9 @@ streams:
           - type: ParentStreamConfig
             parent_key: sample_sha
             partition_field: commit_sha
-            # INVARIANT: the parent's `since` cursor persists only because this child
-            # is itself incremental; the CDK seeds parent state from the child's.
+            # `incremental_dependency` keeps the sync proportional to activity:
+            # the author list's `since` persists only because this child is
+            # itself incremental.
             incremental_dependency: true
             extra_fields:
               - [repo_full_name]
@@ -3502,6 +3511,14 @@ streams:
                 cursor_datetime_formats:
                   - "%Y-%m-%dT%H:%M:%S%z"
                   - "%Y-%m-%dT%H:%M:%SZ"
+                # A future-dated commit would otherwise become the cursor and silence the
+                # stream: a `since` past now yields no slice on every later sync. Bounding
+                # records client-side drops such a row before the cursor observes it.
+                is_client_side_incremental: true
+                # An author's last commit can predate its push by days, and another
+                # author's push moves `since` past it in the meantime. Re-listing one
+                # window each sync recovers them; bronze dedups the re-read rows.
+                lookback_window: "P1M"
                 # An author already resolved keeps their claim, so a later sync
                 # only needs the ones who have committed since — which is what
                 # keeps this O(active authors) rather than O(authors).
@@ -3527,6 +3544,11 @@ streams:
       cursor_datetime_formats:
         - "%Y-%m-%dT%H:%M:%S%z"
         - "%Y-%m-%dT%H:%M:%SZ"
+      # The partition is one author's sample commit and changes with every
+      # commit, so per-partition state would grow by one entry per (repository,
+      # author) and never shrink. Nothing reads this cursor's value; it exists so
+      # the parent's `since` persists.
+      global_substream_cursor: true
       start_datetime:
         type: MinMaxDatetime
         datetime: "{{ config['bitbucket_start_date'] }}"
