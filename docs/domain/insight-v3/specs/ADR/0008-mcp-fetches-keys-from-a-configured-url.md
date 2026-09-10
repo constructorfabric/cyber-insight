@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-09
 ---
 
-# ADR-0011: Where the Server Looks for the Gateway's Public Keys
+# ADR-0008: Where the Server Looks for the Gateway's Public Keys
 
 <!-- toc -->
 

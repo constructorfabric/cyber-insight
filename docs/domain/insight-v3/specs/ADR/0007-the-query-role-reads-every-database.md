@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-09
 ---
 
-# ADR-0008: The Assistant's Warehouse Role Reads Every Database
+# ADR-0007: The Assistant's Warehouse Role Reads Every Database
 
 
 <!-- toc -->

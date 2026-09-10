@@ -3,7 +3,7 @@ status: accepted
 date: 2026-09-08
 ---
 
-# ADR-0007: One Physical Table per Ingest Stream
+# ADR-0006: One Physical Table per Ingest Stream
 
 
 <!-- toc -->
