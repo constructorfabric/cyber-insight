@@ -2334,7 +2334,10 @@ pub(crate) mod tests {
             Ok(generation) => assert_eq!(generation, 1, "a clone publishes generation 1"),
             Err(e) => panic!("the clone could not publish over the leftover: {e}"),
         }
-        assert!(git_dir.join("HEAD").is_file(), "the clone must be the entry now");
+        assert!(
+            git_dir.join("HEAD").is_file(),
+            "the clone must be the entry now"
+        );
         assert!(
             !pack_dir.join("tmp_pack_stray").exists(),
             "the leftover must be gone, not merged into the published entry"
