@@ -139,6 +139,7 @@ mod tests {
             (include_str!("sql/016_drop_dbup_ledger.sql"), 1),
             (include_str!("sql/017_previews_admin_role.sql"), 1),
             (include_str!("sql/018_people.sql"), 1),
+            (include_str!("sql/019_user_preferences.sql"), 1),
         ];
         for (i, (script, expected)) in cases.iter().enumerate() {
             let stmts = split_statements(script);
