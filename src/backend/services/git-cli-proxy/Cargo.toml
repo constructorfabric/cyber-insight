@@ -22,7 +22,7 @@ workspace = true
 toolkit = { workspace = true, features = ["bootstrap"] }
 toolkit-canonical-errors = { workspace = true }
 # Pinned to match the `ToSchema` the toolkit OperationBuilder compiles against.
-utoipa = { version = "5.5" }
+utoipa = { workspace = true }
 chrono = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }

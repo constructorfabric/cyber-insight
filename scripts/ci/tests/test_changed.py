@@ -95,6 +95,21 @@ class ChangedCliTests(unittest.TestCase):
         core_job = next(job for job in matrix["rust"] if job["name"] == "insight-v3-core")
         self.assertTrue(core_job["test"])
 
+    def test_lockfile_change_runs_every_openapi_drift_test(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout="src/backend/Cargo.lock\n",
+        )
+
+        with patch.object(changed.subprocess, "run", return_value=completed):
+            matrix = changed.changed_components("origin/main", COMPONENTS)
+
+        tested = sorted(job["name"] for job in matrix["rust"] if job["test"])
+        drift_gated = sorted(c["name"] for c in COMPONENTS if c.get("drift_test"))
+        self.assertEqual(tested, drift_gated)
+        self.assertFalse(any(job["cover"] for job in matrix["rust"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn committed_openapi_document_is_current() -> anyhow::Result<()> {
         let doc = super::api::openapi_document()?;
-        insight_openapi::check_committed(&doc, env!("CARGO_MANIFEST_DIR"), "previews")?;
+        insight_openapi::check_committed(&doc, env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"))?;
         Ok(())
     }
 }

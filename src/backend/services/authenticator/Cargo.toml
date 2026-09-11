@@ -45,7 +45,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # OpenAPI schemas for request/response DTOs; version tracks the `utoipa` the
 # toolkit's `OperationBuilder` is compiled against (see analytics).
-utoipa = { version = "5.5", features = ["chrono", "uuid"] }
+utoipa = { workspace = true, features = ["chrono", "uuid"] }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }

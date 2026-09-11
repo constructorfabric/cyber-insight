@@ -14,4 +14,7 @@ workspace = true
 [dependencies]
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-utoipa = { version = "5.5" }
+utoipa = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27"

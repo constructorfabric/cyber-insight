@@ -65,7 +65,7 @@ url = { workspace = true }
 # `json_response_with_schema`) is compiled against (already in Cargo.lock via
 # the toolkit). `chrono` + `uuid` features cover the timestamp / UUID fields on
 # the DTOs; no `time` types are used here.
-utoipa = { version = "5.5", features = ["chrono", "uuid"] }
+utoipa = { workspace = true, features = ["chrono", "uuid"] }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }

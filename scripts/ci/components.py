@@ -5,7 +5,9 @@ the CI matrix). Pure data + lookup: no CLI, no side effects, never runs tests.
 
 Per component: name, lang, root (collection cwd), paths (repo-relative prefixes
 for bucketing), plus per-language extras consumed by the CI producer jobs:
-  rust   -> package (cargo package name); all_features (default True)
+  rust   -> package (cargo package name); all_features (default True);
+            drift_test (the crate pins a committed OpenAPI document, so its
+            tests also run on a shared backend change)
   python -> cov_package (the source_* package to measure)
   js     -> none (the package.json scripts under `root` carry the collection)
 
@@ -50,9 +52,6 @@ COMPONENTS = [
         "cover": False,
         "paths": ["src/backend/libs/insight-migration"],
     },
-    # Emits the canonical OpenAPI document and pins each service's committed
-    # contract to it; a change here re-runs every service's drift test
-    # (`triggered_by` below).
     {
         "name": "insight-openapi",
         "lang": "rust",
@@ -79,7 +78,8 @@ COMPONENTS = [
         # service happens to exercise. Scope the report to this service's code.
         "cover_ignore_regex": "src/backend/libs/",
         "paths": ["src/backend/services/analytics", "docs/components/backend/analytics/openapi.json"],
-        "triggered_by": ["insight-migration", "insight-openapi"],
+        "drift_test": True,
+        "triggered_by": ["insight-migration"],
     },
     # cover=False: readiness and real ClickHouse migration/insert behavior are
     # exercised by the live shell test below rather than llvm-cov. Formatting,
@@ -97,7 +97,8 @@ COMPONENTS = [
         "live_db_name": "insight_v3",
         "live_test": "services/insight-v3-core/tests/ci.sh",
         "paths": ["src/backend/services/insight-v3-core", "docs/components/backend/insight-v3-core/openapi.json"],
-        "triggered_by": ["insight-clickhouse", "insight-openapi"],
+        "drift_test": True,
+        "triggered_by": ["insight-clickhouse"],
     },
     # cover=False: the api/ and repository layers are still thin on tests, so the
     # 80% gate would block every change to this crate rather than the ones that
@@ -121,11 +122,12 @@ COMPONENTS = [
             "src/backend/services/identity-resolution",
             "docs/components/backend/identity-resolution/openapi.json",
         ],
+        "drift_test": True,
         # insight-clickhouse is compiled in as a path dependency: a lib change
         # must re-run this crate's tests too. A shared path in `paths` would
         # NOT do that (component_for() picks a single owner — always the lib's
         # own component); `triggered_by` is the registry's co-trigger for this.
-        "triggered_by": ["insight-clickhouse", "insight-migration", "insight-openapi"],
+        "triggered_by": ["insight-clickhouse", "insight-migration"],
     },
     # cover=False (mirrors identity-resolution): the crate is a thin HTTP
     # shell over the Kubernetes API — the pure domain (object builders,
@@ -139,7 +141,7 @@ COMPONENTS = [
         "package": "previews",
         "cover": False,
         "paths": ["src/backend/services/previews", "docs/components/backend/previews/openapi.json"],
-        "triggered_by": ["insight-openapi"],
+        "drift_test": True,
     },
     # git-cli-proxy shells out to the git CLI; its integration tests build
     # fixture repos with `git init` + file:// origins in tempdirs (hermetic —
@@ -150,7 +152,7 @@ COMPONENTS = [
         "root": "src/backend",
         "package": "git-cli-proxy",
         "paths": ["src/backend/services/git-cli-proxy", "docs/components/backend/git-cli-proxy/openapi.json"],
-        "triggered_by": ["insight-openapi"],
+        "drift_test": True,
     },
     # routegen is the build-time gateway config compiler (gateway DESIGN
     # DD-GW-02); fmt + clippy + coverage run here. Golden + rejection tests cover
@@ -182,7 +184,7 @@ COMPONENTS = [
         # self-report in their own jobs; scope this component to its own code.
         "cover_ignore_regex": "src/backend/(libs|plugins)/",
         "paths": ["src/backend/services/authenticator", "docs/components/backend/authenticator/openapi.json"],
-        "triggered_by": ["insight-openapi"],
+        "drift_test": True,
     },
     # authenticator-sdk is the inter-gear contract crate (a trait + models, no
     # runtime logic to exercise); lint + build only.

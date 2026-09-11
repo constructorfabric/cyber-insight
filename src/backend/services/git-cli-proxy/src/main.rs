@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn committed_openapi_document_is_current() -> anyhow::Result<()> {
         let doc = git_cli_proxy::api::openapi_document()?;
-        insight_openapi::check_committed(&doc, env!("CARGO_MANIFEST_DIR"), "git-cli-proxy")?;
+        insight_openapi::check_committed(&doc, env!("CARGO_MANIFEST_DIR"), env!("CARGO_PKG_NAME"))?;
         Ok(())
     }
 }

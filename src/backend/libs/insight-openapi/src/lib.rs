@@ -40,14 +40,19 @@ pub enum DriftError {
         generated: String,
         regenerate: String,
     },
+    #[error(
+        "{path} differs only in line terminators; the canonical form is LF with one trailing newline.\nRegenerate: {regenerate}"
+    )]
+    StaleTerminators { path: PathBuf, regenerate: String },
 }
 
 /// Fails when the committed document of `service` differs from the canonical
 /// form of `document`. `manifest_dir` is the service crate's `CARGO_MANIFEST_DIR`.
 ///
 /// # Errors
-/// [`DriftError::Stale`] on drift, [`DriftError::Read`] when the committed
-/// file is unreadable, [`DriftError::Serialize`] when the document is not.
+/// [`DriftError::Stale`] or [`DriftError::StaleTerminators`] on drift,
+/// [`DriftError::Read`] when the committed file is unreadable,
+/// [`DriftError::Serialize`] when the document is not.
 pub fn check_committed(
     document: &OpenApi,
     manifest_dir: &str,
@@ -58,15 +63,22 @@ pub fn check_committed(
     let committed =
         fs::read_to_string(&path).map_err(|source| DriftError::Read { path, source })?;
     let generated = canonical_json(document)?;
+    if committed == generated {
+        return Ok(());
+    }
 
+    let regenerate = regenerate_command(service);
     match first_difference(&committed, &generated) {
-        None => Ok(()),
         Some(difference) => Err(DriftError::Stale {
             path: repo_path,
             line: difference.line,
             committed: difference.committed,
             generated: difference.generated,
-            regenerate: regenerate_command(service),
+            regenerate,
+        }),
+        None => Err(DriftError::StaleTerminators {
+            path: repo_path,
+            regenerate,
         }),
     }
 }
@@ -96,8 +108,6 @@ struct Difference {
     generated: String,
 }
 
-/// The first line where the two texts diverge, `None` when they are identical.
-/// A missing line is reported as `<end of file>`.
 fn first_difference(committed: &str, generated: &str) -> Option<Difference> {
     const END: &str = "<end of file>";
 

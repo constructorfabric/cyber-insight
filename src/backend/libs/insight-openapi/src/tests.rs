@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
 
+use tempfile::TempDir;
 use utoipa::openapi::{InfoBuilder, OpenApiBuilder};
 
 use super::{Difference, DriftError, canonical_json, check_committed, first_difference};
@@ -14,23 +14,22 @@ fn document(version: &str) -> utoipa::openapi::OpenApi {
         .build()
 }
 
-/// A repository layout stand-in: `<root>/src/backend/services/<service>` next
-/// to `<root>/docs/components/backend/<service>/openapi.json`.
+#[derive(Debug)]
 struct Layout {
-    root: PathBuf,
+    root: TempDir,
 }
 
 impl Layout {
-    fn new(case: &str) -> Result<Self, Box<dyn Error>> {
-        let root =
-            std::env::temp_dir().join(format!("insight-openapi-{}-{case}", std::process::id()));
-        fs::create_dir_all(root.join("src/backend/services/service"))?;
-        fs::create_dir_all(root.join("docs/components/backend/service"))?;
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        fs::create_dir_all(root.path().join("src/backend/services/service"))?;
+        fs::create_dir_all(root.path().join("docs/components/backend/service"))?;
         Ok(Self { root })
     }
 
     fn manifest_dir(&self) -> String {
         self.root
+            .path()
             .join("src/backend/services/service")
             .to_string_lossy()
             .into_owned()
@@ -39,16 +38,11 @@ impl Layout {
     fn commit(&self, text: &str) -> Result<(), Box<dyn Error>> {
         fs::write(
             self.root
+                .path()
                 .join("docs/components/backend/service/openapi.json"),
             text,
         )?;
         Ok(())
-    }
-}
-
-impl Drop for Layout {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -111,7 +105,7 @@ fn first_differing_line_is_reported_one_based() {
 
 #[test]
 fn a_current_committed_document_passes() -> R {
-    let layout = Layout::new("current")?;
+    let layout = Layout::new()?;
     let doc = document("1.0.0");
     layout.commit(&canonical_json(&doc)?)?;
 
@@ -121,7 +115,7 @@ fn a_current_committed_document_passes() -> R {
 
 #[test]
 fn a_stale_committed_document_names_the_line_and_the_regenerate_command() -> R {
-    let layout = Layout::new("stale")?;
+    let layout = Layout::new()?;
     layout.commit(&canonical_json(&document("1.0.0"))?)?;
 
     let err = check_committed(&document("2.0.0"), &layout.manifest_dir(), "service")
@@ -150,8 +144,31 @@ fn a_stale_committed_document_names_the_line_and_the_regenerate_command() -> R {
 }
 
 #[test]
+fn a_committed_document_differing_only_in_line_terminators_is_stale() -> R {
+    let canonical = canonical_json(&document("1.0.0"))?;
+    let cases = [
+        ("no trailing newline", canonical.trim_end().to_owned()),
+        ("CRLF", canonical.replace('\n', "\r\n")),
+    ];
+    for (case, committed) in cases {
+        let layout = Layout::new()?;
+        layout.commit(&committed)?;
+
+        let err = check_committed(&document("1.0.0"), &layout.manifest_dir(), "service")
+            .err()
+            .ok_or_else(|| format!("should fail on drift: {case}"))?;
+
+        assert!(
+            matches!(err, DriftError::StaleTerminators { .. }),
+            "{case}: {err}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_missing_committed_document_is_a_read_error() -> R {
-    let layout = Layout::new("missing")?;
+    let layout = Layout::new()?;
 
     let err = check_committed(&document("1.0.0"), &layout.manifest_dir(), "service")
         .err()
