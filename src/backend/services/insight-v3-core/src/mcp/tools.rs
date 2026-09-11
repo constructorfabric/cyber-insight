@@ -13,6 +13,7 @@ use crate::catalog::{Layer, TableSchema};
 use crate::custom::{CustomError, Surfaces};
 use crate::dashboard::Item;
 use crate::definitions::{DefinitionKind, DefinitionName, Page};
+use crate::time_window::WindowRequest;
 
 #[cfg(test)]
 mod tests;
@@ -67,9 +68,24 @@ pub(crate) struct NamedRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct NameRequest {
+pub(crate) struct RunRequest {
     /// The stored metric's name.
     pub(crate) name: String,
+    /// Which window to answer over: `PDC` (the last complete day), `P7D`,
+    /// `P30D`, `PMC` (the last complete calendar month), `PQC` (the last
+    /// complete calendar quarter), `P1Y`, `inf` (every dated row), or an
+    /// ISO 8601 date interval such as `2026-08-01/2026-09-01`, whose end
+    /// date is excluded. Relative windows count back from the newest row
+    /// the metric can see, not from now. Omit it to read every row, as a
+    /// run with no options always has.
+    pub(crate) range: Option<String>,
+    /// The IANA zone whose day, week and month boundaries the window is cut
+    /// on, `UTC` by default.
+    pub(crate) tz: Option<String>,
+    /// Whether the answer comes one row per time bucket. `false` answers one
+    /// row for the whole window, which is what a total is. `true` by
+    /// default.
+    pub(crate) bucket: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,7 +252,7 @@ impl CustomSurfaces {
 
     #[tool(
         name = "put_metric",
-        description = "Creates or replaces a metric: a declarative query over an ingested table. The body names the table and the fields to read, for example {\"table\": \"events\", \"fields\": [{\"json\": \"actor\", \"type\": \"string\", \"as_name\": \"actor\"}, {\"json\": \"actor\", \"type\": \"string\", \"agg\": \"count\", \"as_name\": \"total\"}], \"group_by\": [\"actor\"]}. A field reads either a key inside the row's JSON payload (`json`) or a typed column of the table (`column`); `type` is string, int or float; `agg` is count, sum, avg, min or max. Optional `database`, `filters`, `order_by` and `limit`. Call list_tables first so the table and columns exist."
+        description = "Creates or replaces a metric: a declarative query over an ingested table. The body names the table and the fields to read, for example {\"table\": \"events\", \"fields\": [{\"json\": \"actor\", \"type\": \"string\", \"as_name\": \"actor\"}, {\"json\": \"actor\", \"type\": \"string\", \"agg\": \"count\", \"as_name\": \"total\"}], \"group_by\": [\"actor\"]}. A field reads either a key inside the row's JSON payload (`json`) or a typed column of the table (`column`); `type` is string, int or float; `agg` is count, sum, avg, min or max. Add `time` to say which timestamp a reader may window by - {\"time\": {\"column\": \"occurred_at\"}} for a date column, or {\"json\": \"committed_at\"} for one inside the payload - and the run gains a `bucket` column ordered oldest first. `max_range` caps the widest window it will answer, as an ISO duration such as \"P1Y\". Optional `database`, `filters`, `order_by` and `limit`. Call list_tables first so the table and columns exist."
     )]
     async fn put_metric(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
         self.write(ToolKind::Metric, request).await
@@ -252,7 +268,7 @@ impl CustomSurfaces {
 
     #[tool(
         name = "put_dashboard",
-        description = "Creates or replaces a dashboard: a title, and what it draws top to bottom: {\"title\": \"Example board\", \"items\": [{\"heading\": \"Commits\"}, {\"widget\": \"chart\"}, {\"text\": \"Merge commits excluded.\"}]}. Each item names exactly one of `widget`, `heading` or `text`. `widgets: [\"chart\"]` is the older shorthand for a list of nothing but widgets, and is still read. To reorder or caption a board that exists, call arrange_dashboard instead."
+        description = "Creates or replaces a dashboard: a title, and what it draws top to bottom: {\"title\": \"Example board\", \"items\": [{\"heading\": \"Commits\"}, {\"widget\": \"chart\"}, {\"text\": \"Merge commits excluded.\"}]}. Each item names exactly one of `widget`, `heading` or `text`. Add `time_ranges` to let a reader pick the window the whole board is read over - any of `PDC`, `P7D`, `P30D`, `PMC`, `PQC`, `P1Y`, `inf` - and `default_range` for the one it opens on; a board declaring neither is read unbounded. `widgets: [\"chart\"]` is the older shorthand for a list of nothing but widgets, and is still read. To reorder or caption a board that exists, call arrange_dashboard instead."
     )]
     async fn put_dashboard(&self, Parameters(request): Parameters<PutRequest>) -> CallToolResult {
         self.write(ToolKind::Dashboard, request).await
@@ -279,18 +295,28 @@ impl CustomSurfaces {
 
     #[tool(
         name = "run_metric",
-        description = "Compiles a stored metric and runs it, returning its rows. Use it to answer a question from the data, and to confirm a metric produces the columns a widget will draw."
+        description = "Compiles a stored metric and runs it, returning its rows. Use it to answer a question from the data, and to confirm a metric produces the columns a widget will draw. Pass `range` to answer over one window and `bucket: false` to answer it as a single total; a metric with no `time` answers every row and refuses a range."
     )]
     async fn run_metric(
         &self,
-        Parameters(NameRequest { name }): Parameters<NameRequest>,
+        Parameters(RunRequest {
+            name,
+            range,
+            tz,
+            bucket,
+        }): Parameters<RunRequest>,
     ) -> CallToolResult {
         let parsed = match parse_name(&name) {
             Ok(parsed) => parsed,
             Err(refusal) => return refusal,
         };
 
-        match self.surfaces().run_metric(&parsed).await {
+        let requested = match WindowRequest::parse(range.as_deref(), tz.as_deref(), bucket) {
+            Ok(requested) => requested,
+            Err(error) => return refuse(&error.to_string()),
+        };
+
+        match self.surfaces().run_metric(&parsed, &requested).await {
             Ok(result) => match serde_json::to_value(&result) {
                 Ok(value) => CallToolResult::structured(value),
                 Err(error) => {

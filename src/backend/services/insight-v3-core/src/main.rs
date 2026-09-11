@@ -1,3 +1,4 @@
+mod anchor;
 mod api;
 mod catalog;
 mod chat;
@@ -12,7 +13,11 @@ mod metric_query;
 mod migration;
 mod raw_data;
 mod tables;
+mod time_window;
 mod widget;
+
+#[cfg(test)]
+mod window_live_tests;
 
 use api_gateway as _;
 use authn_resolver as _;

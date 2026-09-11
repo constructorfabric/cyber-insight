@@ -3,12 +3,14 @@
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::catalog::{Catalog, CatalogError, TableSchema};
+use crate::anchor::Anchor;
+use crate::catalog::{Catalog, CatalogError, TableEngine, TableSchema};
 use crate::dashboard::Item;
 use crate::definitions::{
     DefinitionKind, DefinitionName, DefinitionStoreError, Definitions, NamePage, Page,
 };
 use crate::metric_query::{MetricQuery, MetricQueryError, MetricRunError, MetricRunner, RunResult};
+use crate::time_window::{RequestedRange, WindowError, WindowRequest};
 use crate::widget::{Widget, WidgetError};
 
 #[cfg(test)]
@@ -32,6 +34,8 @@ pub(crate) enum CustomError {
     Store(DefinitionStoreError),
     #[error(transparent)]
     Catalog(CatalogError),
+    #[error("dashboard time range: {0}")]
+    Range(WindowError),
 }
 
 impl CustomError {
@@ -43,6 +47,7 @@ impl CustomError {
             | Self::InUse { .. }
             | Self::Widget(_)
             | Self::Body(_)
+            | Self::Range(_)
             | Self::Compile(_) => true,
             Self::Run(_) | Self::Store(_) | Self::Catalog(_) => false,
         }
@@ -155,6 +160,12 @@ impl<'a> Surfaces<'a> {
         if kind == DefinitionKind::Widget {
             self.check_widget(body).await?;
         }
+        if kind == DefinitionKind::Metric {
+            check_metric(body)?;
+        }
+        if kind == DefinitionKind::Dashboard {
+            check_dashboard(body)?;
+        }
 
         self.definitions
             .put(kind, name, body)
@@ -188,15 +199,68 @@ impl<'a> Surfaces<'a> {
         })
     }
 
-    pub(crate) async fn run_metric(&self, name: &DefinitionName) -> Result<RunResult, CustomError> {
+    /// Runs a stored metric over the window the caller asked for, resolved
+    /// against the newest clock its own rows carry — which is read first.
+    pub(crate) async fn run_metric(
+        &self,
+        name: &DefinitionName,
+        request: &WindowRequest,
+    ) -> Result<RunResult, CustomError> {
         let body = self.get(DefinitionKind::Metric, name).await?;
 
         let metric: MetricQuery = serde_json::from_value(body).map_err(CustomError::Body)?;
+        metric.check().map_err(CustomError::Compile)?;
+
+        if request.is_ranged() && !metric.has_clock().map_err(CustomError::Compile)? {
+            return Err(CustomError::Compile(MetricQueryError::ClocklessWindow));
+        }
+
+        let engine = self.engine_of(&metric).await?;
+        let anchor = self.anchor_of(&metric, request, engine).await?;
+        let window = request
+            .resolve(anchor.newest())
+            .map_err(|error| CustomError::Compile(error.into()))?;
+
         let compiled = metric
-            .compile(self.metrics.people())
+            .compile_window(self.metrics.people(), &window, engine)
             .map_err(CustomError::Compile)?;
 
-        self.metrics.run(&compiled).await.map_err(CustomError::Run)
+        let mut result = self
+            .metrics
+            .run(&compiled)
+            .await
+            .map_err(CustomError::Run)?;
+        if request.is_ranged() {
+            result.undated = Some(anchor.undated());
+        }
+
+        Ok(result)
+    }
+
+    /// Which engine holds the metric's table, so a replacing one is read
+    /// through `FINAL` rather than counted twice.
+    async fn engine_of(&self, metric: &MetricQuery) -> Result<TableEngine, CustomError> {
+        self.catalog
+            .engine_of(&metric.qualified())
+            .await
+            .map_err(CustomError::Catalog)
+    }
+
+    async fn anchor_of(
+        &self,
+        metric: &MetricQuery,
+        request: &WindowRequest,
+        engine: TableEngine,
+    ) -> Result<Anchor, CustomError> {
+        if !request.is_ranged() {
+            return Ok(Anchor::default());
+        }
+
+        let Some(query) = metric.anchor_query(engine).map_err(CustomError::Compile)? else {
+            return Ok(Anchor::default());
+        };
+
+        self.metrics.anchor(&query).await.map_err(CustomError::Run)
     }
 
     pub(crate) async fn tables(&self) -> Result<Vec<TableSchema>, CustomError> {
@@ -269,6 +333,37 @@ impl<'a> Surfaces<'a> {
 
         Ok(used_by)
     }
+}
+
+/// What a stored metric says about time, checked before it is stored. A
+/// body that is not a metric at all is left alone — it is refused when run.
+fn check_metric(body: &Value) -> Result<(), CustomError> {
+    let Ok(metric) = serde_json::from_value::<MetricQuery>(body.clone()) else {
+        return Ok(());
+    };
+
+    metric.check_window().map_err(CustomError::Compile)
+}
+
+/// What a stored dashboard says about time, checked before it is stored: a
+/// board offering a range the server cannot resolve draws a picker whose
+/// buttons refuse every widget behind them.
+fn check_dashboard(body: &Value) -> Result<(), CustomError> {
+    let offered = body
+        .get("time_ranges")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let default = body.get("default_range");
+
+    for token in offered.iter().chain(default) {
+        let Some(token) = token.as_str() else {
+            return Err(CustomError::Range(WindowError::Range(token.to_string())));
+        };
+        RequestedRange::parse(token).map_err(CustomError::Range)?;
+    }
+
+    Ok(())
 }
 
 /// Which kind names this one, and under which field.

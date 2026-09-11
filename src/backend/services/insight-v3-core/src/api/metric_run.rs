@@ -13,6 +13,7 @@ use super::AppState;
 use crate::custom::CustomError;
 use crate::definitions::{DefinitionError, DefinitionName, DefinitionStoreError};
 use crate::metric_query::{MetricQueryError, MetricRunError};
+use crate::time_window::{WindowError, WindowRequest};
 
 #[resource_error("gts.cf.insight.insight_v3_core.metric_run.v1~")]
 struct MetricRunApiError;
@@ -49,10 +50,24 @@ pub(crate) fn register_routes(
     router.merge(run)
 }
 
+/// What a caller may ask a run for. An absent body asks for none of it:
+/// unbounded, unbucketed and UTC.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunBody {
+    #[serde(default)]
+    range: Option<String>,
+    #[serde(default)]
+    tz: Option<String>,
+    #[serde(default)]
+    bucket: Option<bool>,
+}
+
 async fn run_metric(
     Extension(state): Extension<Arc<AppState>>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
+    body: Option<Json<serde_json::Value>>,
 ) -> Result<Response, CanonicalError> {
     crate::api::require_admin(&state, &headers, || {
         MetricRunApiError::permission_denied()
@@ -62,14 +77,45 @@ async fn run_metric(
     .await?;
 
     let name = DefinitionName::parse(&name).map_err(definition_error)?;
+    let asked = match body {
+        Some(Json(value)) => {
+            serde_json::from_value::<RunBody>(value).map_err(|error| run_body_error(&error))?
+        }
+        None => RunBody::default(),
+    };
+
+    let requested = WindowRequest::parse(asked.range.as_deref(), asked.tz.as_deref(), asked.bucket)
+        .map_err(|error| window_error(&error))?;
 
     let result = state
         .surfaces()
-        .run_metric(&name)
+        .run_metric(&name, &requested)
         .await
         .map_err(custom_error)?;
 
     Ok(Json(result).into_response())
+}
+
+fn run_body_error(error: &serde_json::Error) -> CanonicalError {
+    MetricRunApiError::invalid_argument()
+        .with_field_violation("body", error.to_string(), "INVALID")
+        .create()
+}
+
+fn window_error(error: &WindowError) -> CanonicalError {
+    MetricRunApiError::invalid_argument()
+        .with_field_violation(window_field(error), error.to_string(), "INVALID")
+        .create()
+}
+
+fn window_field(error: &WindowError) -> &'static str {
+    match error {
+        WindowError::Timezone(_) => "tz",
+        WindowError::Range(_)
+        | WindowError::Maximum(_)
+        | WindowError::Overflow
+        | WindowError::LocalTime => "range",
+    }
 }
 
 fn definition_error(error: DefinitionError) -> CanonicalError {
@@ -85,7 +131,10 @@ fn custom_error(error: CustomError) -> CanonicalError {
         CustomError::Compile(source) => compile_error(&source),
         CustomError::Run(source) => run_error(source),
         CustomError::Store(source) => definition_store_error(source),
-        CustomError::InUse { .. } | CustomError::Widget(_) | CustomError::Catalog(_) => {
+        CustomError::InUse { .. }
+        | CustomError::Widget(_)
+        | CustomError::Range(_)
+        | CustomError::Catalog(_) => {
             tracing::error!(%error, "running a metric produced an unrelated failure");
             CanonicalError::internal("metric query execution failed").create()
         }

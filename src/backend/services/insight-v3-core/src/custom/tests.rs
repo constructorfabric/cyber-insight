@@ -36,6 +36,16 @@ impl Fixture {
     }
 }
 
+fn legacy() -> crate::time_window::WindowRequest {
+    crate::time_window::WindowRequest::parse(None, None, None)
+        .unwrap_or_else(|error| panic!("an empty request parses: {error}"))
+}
+
+fn ranged(token: &str) -> crate::time_window::WindowRequest {
+    crate::time_window::WindowRequest::parse(Some(token), None, None)
+        .unwrap_or_else(|error| panic!("`{token}` parses: {error}"))
+}
+
 fn name(value: &str) -> DefinitionName {
     let Ok(parsed) = DefinitionName::parse(value) else {
         panic!("should be a valid definition name: {value}");
@@ -234,7 +244,7 @@ async fn running_a_metric_whose_body_is_not_a_query_reports_the_body() -> R {
         )
         .await?;
 
-    let Err(error) = surfaces.run_metric(&name("broken")).await else {
+    let Err(error) = surfaces.run_metric(&name("broken"), &legacy()).await else {
         panic!("a query with no fields does not deserialize");
     };
 
@@ -247,7 +257,11 @@ async fn running_a_metric_whose_body_is_not_a_query_reports_the_body() -> R {
 async fn running_a_metric_that_was_never_stored_reports_it_missing() {
     let fixture = Fixture::new();
 
-    let Err(error) = fixture.surfaces().run_metric(&name("absent")).await else {
+    let Err(error) = fixture
+        .surfaces()
+        .run_metric(&name("absent"), &legacy())
+        .await
+    else {
         panic!("there is no such metric to run");
     };
 
@@ -287,6 +301,198 @@ async fn a_stored_metric_reads_back_as_it_was_written() -> R {
             .await?,
         metric_body()
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_range_asked_of_a_metric_with_no_clock_is_refused_before_any_read() -> R {
+    let fixture = Fixture::new();
+    let surfaces = fixture.surfaces();
+    surfaces
+        .put(DefinitionKind::Metric, &name("clockless"), &metric_body())
+        .await?;
+
+    let Err(error) = surfaces
+        .run_metric(&name("clockless"), &ranged("P7D"))
+        .await
+    else {
+        panic!("a clockless metric cannot answer a range");
+    };
+
+    assert!(
+        matches!(
+            error,
+            CustomError::Compile(crate::metric_query::MetricQueryError::ClocklessWindow)
+        ),
+        "{error:?}"
+    );
+
+    Ok(())
+}
+
+mod the_demo_definitions {
+    use super::*;
+
+    fn opened() -> serde_json::Value {
+        json!({
+            "table": "pull_requests",
+            "time": {"json": "opened_at"},
+            "fields": [{"json": "pull_request", "type": "int", "agg": "count", "as_name": "opened"}]
+        })
+    }
+
+    fn merged() -> serde_json::Value {
+        json!({
+            "table": "pull_requests",
+            "time": {"json": "merged_at"},
+            "fields": [{"json": "pull_request", "type": "int", "agg": "count", "as_name": "merged"}]
+        })
+    }
+
+    fn all_time() -> serde_json::Value {
+        json!({
+            "table": "pull_requests",
+            "fields": [{"json": "pull_request", "type": "int", "agg": "count", "as_name": "total"}]
+        })
+    }
+
+    #[tokio::test]
+    async fn two_clocks_over_one_table_are_two_storable_metrics() -> R {
+        let fixture = Fixture::new();
+        let surfaces = fixture.surfaces();
+
+        surfaces
+            .put(DefinitionKind::Metric, &name("prs_opened"), &opened())
+            .await?;
+        surfaces
+            .put(DefinitionKind::Metric, &name("prs_merged"), &merged())
+            .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_clocked_line_draws_the_bucket_its_metric_injects() -> R {
+        let fixture = Fixture::new();
+        let surfaces = fixture.surfaces();
+        surfaces
+            .put(DefinitionKind::Metric, &name("prs_opened"), &opened())
+            .await?;
+
+        surfaces
+            .put(
+                DefinitionKind::Widget,
+                &name("prs_opened_line"),
+                &json!({
+                    "type": "line",
+                    "metric": "prs_opened",
+                    "x": "bucket",
+                    "y": "opened",
+                }),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_clockless_line_has_no_bucket_to_draw() -> R {
+        let fixture = Fixture::new();
+        let surfaces = fixture.surfaces();
+        surfaces
+            .put(DefinitionKind::Metric, &name("prs_all"), &all_time())
+            .await?;
+
+        let refused = surfaces
+            .put(
+                DefinitionKind::Widget,
+                &name("prs_all_line"),
+                &json!({
+                    "type": "line",
+                    "metric": "prs_all",
+                    "x": "bucket",
+                    "y": "total",
+                }),
+            )
+            .await;
+
+        assert!(
+            matches!(refused, Err(CustomError::Widget(_))),
+            "{refused:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_board_offering_all_time_is_stored_with_the_windows_it_offers() -> R {
+        let fixture = Fixture::new();
+        let surfaces = fixture.surfaces();
+        surfaces
+            .put(DefinitionKind::Metric, &name("prs_all"), &all_time())
+            .await?;
+        surfaces
+            .put(
+                DefinitionKind::Widget,
+                &name("prs_all_stat"),
+                &json!({"type": "stat", "metric": "prs_all", "value": "total", "label": "Total"}),
+            )
+            .await?;
+
+        let board = json!({
+            "title": "Pull requests",
+            "time_ranges": ["PDC", "P7D", "P30D", "PMC", "PQC", "P1Y", "inf"],
+            "default_range": "P30D",
+            "items": [{"widget": "prs_all_stat"}]
+        });
+        surfaces
+            .put(DefinitionKind::Dashboard, &name("pull_requests"), &board)
+            .await?;
+
+        let stored = surfaces
+            .get(DefinitionKind::Dashboard, &name("pull_requests"))
+            .await?;
+
+        assert_eq!(stored["default_range"], "P30D");
+        assert_eq!(stored["time_ranges"][6], "inf");
+
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_board_offering_a_window_the_server_cannot_resolve_is_not_stored() -> R {
+    let fixture = Fixture::new();
+    let surfaces = fixture.surfaces();
+
+    for board in [
+        json!({"title": "Board", "time_ranges": ["P14D"], "items": []}),
+        json!({"title": "Board", "time_ranges": ["P30D"], "default_range": "nope", "items": []}),
+        json!({"title": "Board", "time_ranges": [30], "items": []}),
+    ] {
+        let refused = surfaces
+            .put(DefinitionKind::Dashboard, &name("board"), &board)
+            .await;
+
+        assert!(matches!(refused, Err(CustomError::Range(_))), "{board}");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_board_that_offers_no_windows_is_stored_as_it_always_was() -> R {
+    let fixture = Fixture::new();
+
+    fixture
+        .surfaces()
+        .put(
+            DefinitionKind::Dashboard,
+            &name("board"),
+            &json!({"title": "Board", "items": []}),
+        )
+        .await?;
 
     Ok(())
 }
