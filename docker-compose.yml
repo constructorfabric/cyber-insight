@@ -779,7 +779,10 @@ services:
       CARGO_TARGET_DIR: /target
     volumes:
       - ./src/backend:/workspace
-      - rust-target:/target
+      # Sources are env-overridable so CI can bind-mount actions/cache-backed
+      # host dirs; the named-volume defaults keep local rebuilds incremental.
+      - ${RUST_TARGET_SOURCE:-rust-target}:/target
+      - ${CARGO_REGISTRY_SOURCE:-rust-cargo-registry}:/usr/local/cargo/registry
       - ./deploy/compose/build:/out
     # The script overrides this command to pick a specific bin. Default
     # builds both Rust services.
