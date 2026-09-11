@@ -13,6 +13,7 @@ templates:
     tenant_id: "{{ tenant }}"
     source_id: gitlab-test
     data_source: insight_gitlab
+    collected_at: "2026-10-02T00:00:00Z"
 
   project:
     $ref: "#/templates/base"
