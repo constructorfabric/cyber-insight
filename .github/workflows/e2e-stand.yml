@@ -306,6 +306,27 @@ jobs:
             --image "insight-identity-resolution:${IDENTITY_POLICY}" \
             --image "insight-gateway:${GATEWAY_POLICY}"
 
+      # Restore-only warm start for the --build-backend fallback: the cache is
+      # saved by e2e-bronze-to-api.yml's push-to-main run; nothing here saves.
+      - name: Read the builder toolchain for the cache key
+        id: toolchain
+        if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend_artifacts != 'true'
+        run: |
+          set -euo pipefail
+          image="$(grep -m1 -oE 'image: rust:[^ ]+' docker-compose.yml | cut -d' ' -f2 | tr ':' '-')"
+          [ -n "$image" ] || { echo "::error::no rust builder image found in docker-compose.yml"; exit 1; }
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend_artifacts != 'true'
+        with:
+          path: |
+            .ci-cargo/target
+            .ci-cargo/registry
+          key: e2e-backend-${{ steps.toolchain.outputs.image }}-${{ hashFiles('src/backend/Cargo.lock') }}
+          restore-keys: |
+            e2e-backend-${{ steps.toolchain.outputs.image }}-
+
       # `up` writes .env.compose.test-stand, forces the pinned frontend and
       # Keycloak, seeds, and then blocks until EVERY gold observation table the
       # seed populates proves dbt rebuilt it for THIS run and left a positive
@@ -336,6 +357,9 @@ jobs:
             flags+=(--prebuilt-backend)
           elif [ "$BUILD_BACKEND" = "true" ]; then
             flags+=(--build-backend)
+            mkdir -p .ci-cargo/target .ci-cargo/registry
+            export RUST_TARGET_SOURCE="$PWD/.ci-cargo/target"
+            export CARGO_REGISTRY_SOURCE="$PWD/.ci-cargo/registry"
           fi
           if [ "$BUILD_FRONTEND" = "true" ]; then flags+=(--build-frontend); fi
           ./dev-compose.sh test-stand up "${flags[@]}"
