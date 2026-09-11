@@ -740,6 +740,9 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # WORKAROUND: the cursor takes the newest date it sees, unbounded; a
+      # commit dated ahead of now would park `since` in the future for good.
+      is_client_side_incremental: true
       # `git log --since` is a traversal cutoff: after a rebase the
       # replacement commits can carry dates BELOW the stored cursor and would
       # never be visited again. Re-enumerating one window each sync recovers
@@ -860,6 +863,8 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # WORKAROUND: same future-date guard as `commits`.
+      is_client_side_incremental: true
       lookback_window: "P1M"
       cursor_datetime_formats:
         - "%Y-%m-%dT%H:%M:%S%z"
@@ -2486,6 +2491,11 @@ streams:
                 type: DatetimeBasedCursor
                 cursor_field: last_committed_date
                 datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+                # WORKAROUND: same future-date guard as `commits`.
+                is_client_side_incremental: true
+                # A commit can be pushed days after its date while another
+                # author's push has already moved `since` past it.
+                lookback_window: "P1M"
                 cursor_datetime_formats:
                   - "%Y-%m-%dT%H:%M:%S%z"
                   - "%Y-%m-%dT%H:%M:%SZ"
@@ -2513,6 +2523,9 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: last_committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # Nothing reads this cursor's value; one entry per (project, author)
+      # partition would only grow the state.
+      global_substream_cursor: true
       cursor_datetime_formats:
         - "%Y-%m-%dT%H:%M:%S%z"
         - "%Y-%m-%dT%H:%M:%SZ"

@@ -42,12 +42,12 @@ def _projects_page(*projects: dict[str, Any]) -> HttpResponse:
     return HttpResponse(body=json.dumps(list(projects or [_project()])), status_code=200)
 
 
-def _commit(sha: str) -> dict[str, Any]:
+def _commit(sha: str, committed: str = "2026-06-15T10:00:00Z") -> dict[str, Any]:
     return {
         "sha": sha,
         "message": f"commit {sha}",
-        "authored_date": "2026-06-15T10:00:00Z",
-        "committed_date": "2026-06-15T10:00:00Z",
+        "authored_date": committed,
+        "committed_date": committed,
         "author_name": "Dev",
         "author_email": "dev@example.com",
         "committer_name": "Dev",
@@ -286,12 +286,12 @@ def _authors_page(*rows: dict[str, Any]) -> HttpResponse:
     return HttpResponse(body=json.dumps({"items": list(rows), "next_page_token": None}), status_code=200)
 
 
-def _author(email: str, sha: str) -> dict[str, Any]:
+def _author(email: str, sha: str, committed: str = "2026-06-15T10:00:00+00:00") -> dict[str, Any]:
     return {
         "author_email": email,
         "author_name": "Ada",
         "sample_sha": sha,
-        "last_committed_date": "2026-06-15T10:00:00+00:00",
+        "last_committed_date": committed,
         "commit_count": 3,
     }
 
@@ -355,7 +355,7 @@ def test_a_resumed_commit_authors_sync_asks_each_project_only_for_newer_authors(
     """The author walk is a child of the roster twice over; both cursors ride
     along with the stream's state, so a later run asks the proxy for authors
     who committed since the last one instead of since the start date."""
-    config = GitlabConfigBuilder().build()
+    config = {**GitlabConfigBuilder().build(), "gitlab_start_date": "2026-03-01"}
     http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
     http_mocker.get(
         HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
@@ -375,8 +375,54 @@ def test_a_resumed_commit_authors_sync_asks_each_project_only_for_newer_authors(
     assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
 
     asked = _proxy_calls(http_mocker, "authors")
-    assert "since=2026-06-01" in asked[0], f"first run starts at the floor: {asked[0]}"
-    assert "since=2026-06-15" in asked[-1], f"a resumed run starts at the stored cursor: {asked[-1]}"
+    assert "since=2026-03-01" in asked[0], f"first run starts at the floor: {asked[0]}"
+    assert "since=2026-05-15" in asked[-1], f"a resumed run starts one window before the stored cursor: {asked[-1]}"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_future_dated_commit_never_becomes_the_commits_cursor(http_mocker: HttpMocker) -> None:
+    """A committer clock set ahead would otherwise become the saved cursor and
+    every later sync would ask for commits since a date that has not come."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS),
+        _page([_commit("a" * 40), _commit("b" * 40, committed="2099-01-01T00:00:00Z")]),
+    )
+
+    output = read_stream(_CONNECTOR, "commits", config)
+
+    assert not output.errors
+    assert [r.record.data["sha"] for r in output.records] == ["a" * 40]
+    saved = json.dumps(output.state_messages[-1].state.stream.stream_state.__dict__)
+    assert "2099" not in saved, f"the future date leaked into state: {saved}"
+    assert "2026-06-15T10:00:00" in saved, f"the newest real date must be the cursor: {saved}"
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_future_dated_author_never_becomes_the_authors_since(http_mocker: HttpMocker) -> None:
+    """An author whose last commit is dated ahead would push the author list's
+    `since` past now and the list would come back empty on every later sync."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/authors", query_params=ANY_QUERY_PARAMS),
+        _authors_page(
+            _author("ada@example.com", "a" * 40),
+            _author("zed@example.com", "b" * 40, committed="2099-01-01T00:00:00+00:00"),
+        ),
+    )
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/users", query_params=ANY_QUERY_PARAMS),
+        HttpResponse(body=json.dumps([_user(42, "ada", public_email="ada@example.com")]), status_code=200),
+    )
+
+    output = read_stream(_CONNECTOR, "commit_authors", config)
+
+    assert not output.errors
+    assert [r.record.data["author_email"] for r in output.records] == ["ada@example.com"]
+    saved = json.dumps(output.state_messages[-1].state.stream.stream_state.__dict__)
+    assert "2099" not in saved, f"the future date leaked into state: {saved}"
 
 
 @freezegun.freeze_time(_FROZEN)
