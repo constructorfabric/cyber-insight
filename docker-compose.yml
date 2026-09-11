@@ -203,7 +203,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-analytics-migrate
     build:
       context: src/backend
-      dockerfile: services/analytics/Dockerfile
+      dockerfile: Dockerfile
+      target: analytics
     depends_on:
       mariadb: {condition: service_healthy, required: false}
     environment:
@@ -230,7 +231,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-analytics
     build:
       context: src/backend
-      dockerfile: services/analytics/Dockerfile
+      dockerfile: Dockerfile
+      target: analytics
     depends_on:
       # required: false → compose skips this dependency when the local
       # profile isn't active (external MariaDB / ClickHouse modes).
@@ -315,7 +317,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-identity-resolution-migrate
     build:
       context: src/backend
-      dockerfile: services/identity-resolution/Dockerfile
+      dockerfile: Dockerfile
+      target: identity-resolution
     depends_on:
       mariadb: {condition: service_healthy, required: false}
     environment:
@@ -351,7 +354,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-identity-resolution
     build:
       context: src/backend
-      dockerfile: services/identity-resolution/Dockerfile
+      dockerfile: Dockerfile
+      target: identity-resolution
     depends_on:
       # required: false → compose skips this dependency when the local
       # profile isn't active (external MariaDB / ClickHouse modes).
@@ -413,7 +417,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-insight-v3-core-migrate
     build:
       context: src/backend
-      dockerfile: services/insight-v3-core/Dockerfile
+      dockerfile: Dockerfile
+      target: insight-v3-core
     depends_on:
       clickhouse: {condition: service_healthy, required: false}
       mariadb: {condition: service_healthy, required: false}
@@ -448,7 +453,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-insight-v3-core
     build:
       context: src/backend
-      dockerfile: services/insight-v3-core/Dockerfile
+      dockerfile: Dockerfile
+      target: insight-v3-core
     depends_on:
       clickhouse: {condition: service_healthy, required: false}
       mariadb: {condition: service_healthy, required: false}
@@ -508,7 +514,8 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-insight}-authenticator
     build:
       context: src/backend
-      dockerfile: services/authenticator/Dockerfile
+      dockerfile: Dockerfile
+      target: authenticator
     depends_on:
       redis: {condition: service_healthy}
       identity-resolution: {condition: service_started}
