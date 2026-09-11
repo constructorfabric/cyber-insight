@@ -32,42 +32,6 @@ export interface MeResponse {
   /** Absent from an older service; readers treat that as `org_chart`. */
   visibility_policy?: VisibilityPolicy;
 }
-
-export interface Preferences {
-  /** The IANA zone their dashboard days are cut on. */
-  timezone: string;
-}
-
-/**
- * What this caller chose. The service fills in its own defaults for anything
- * they never picked, so the answer is always complete.
- */
-export async function getPreferences(): Promise<Preferences> {
-  const res = await fetchWithAuth(`${BASE}/me/preferences`);
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new IdentityApiError(res.status, body);
-  }
-  return (await res.json()) as Preferences;
-}
-
-/**
- * Records the caller's own zone. The owner comes from the verified session,
- * never from here — there is no one else's preference to write.
- */
-export async function saveTimezone(timezone: string): Promise<Preferences> {
-  const res = await fetchWithAuth(`${BASE}/me/preferences`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ timezone }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new IdentityApiError(res.status, body);
-  }
-  return (await res.json()) as Preferences;
-}
-
 /**
  * The caller's identity and active roles. Live on every call: granting or
  * revoking a role is visible on the next fetch, no re-login needed.

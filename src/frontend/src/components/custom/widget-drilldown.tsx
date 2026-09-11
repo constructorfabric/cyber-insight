@@ -85,13 +85,13 @@ export function WidgetDrilldown({
               {heading}
             </span>
           </DialogTitle>
-          <DialogDescription>
-            {view.kind === "rows"
-              ? "The rows behind it."
-              : view.kind === "widget"
+          {view.kind === "rows" ? null : (
+            <DialogDescription>
+              {view.kind === "widget"
                 ? "The widget, as it is stored."
                 : "The metric, as it is stored."}
-          </DialogDescription>
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         {open && view.kind === "rows" ? (
@@ -220,19 +220,8 @@ function Rows({
     return <p className={TEXT_BODY}>No data.</p>;
   }
 
-  const table = definition.data
-    ? [definition.data.database, definition.data.table]
-        .filter(Boolean)
-        .join(".")
-    : null;
-
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {table ? (
-        <p className={TEXT_LABEL}>
-          Read from <span className="font-mono">{table}</span>
-        </p>
-      ) : null}
       <div className="max-h-[60vh] min-w-0 overflow-auto">
         <CustomTable result={result.data} />
       </div>

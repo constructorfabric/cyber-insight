@@ -6,8 +6,6 @@ import { fetchWithAuth } from "@/api/fetch-with-auth";
 
 import {
   bindAccount,
-  getPreferences,
-  saveTimezone,
   detachAccount,
   getAccountBinding,
   getAttention,
@@ -464,37 +462,5 @@ describe("getPersonAccounts", () => {
     await expect(getPersonAccounts("p-1")).rejects.toMatchObject({
       body: { error: "malformed_accounts" },
     });
-  });
-});
-
-describe("caller preferences", () => {
-  it("reads the zone the caller chose", async () => {
-    mockFetch.mockResolvedValueOnce(response({ timezone: "Europe/Belgrade" }));
-
-    await expect(getPreferences()).resolves.toEqual({
-      timezone: "Europe/Belgrade",
-    });
-    expect(mockFetch).toHaveBeenCalledWith("/api/identity/v1/me/preferences");
-  });
-
-  it("saves a zone as the caller's own, naming no owner", async () => {
-    mockFetch.mockResolvedValueOnce(response({ timezone: "Asia/Tokyo" }));
-
-    await expect(saveTimezone("Asia/Tokyo")).resolves.toEqual({
-      timezone: "Asia/Tokyo",
-    });
-    expect(mockFetch).toHaveBeenCalledWith("/api/identity/v1/me/preferences", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timezone: "Asia/Tokyo" }),
-    });
-  });
-
-  it("raises the service's refusal rather than pretending it saved", async () => {
-    mockFetch.mockResolvedValueOnce(
-      response({ detail: "no" }, { ok: false, status: 400 }),
-    );
-
-    await expect(saveTimezone("nope")).rejects.toBeInstanceOf(IdentityApiError);
   });
 });

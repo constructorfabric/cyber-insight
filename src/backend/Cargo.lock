@@ -3612,7 +3612,6 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "chrono",
- "chrono-tz",
  "clap",
  "clickhouse",
  "insight-clickhouse",

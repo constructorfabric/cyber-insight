@@ -5,20 +5,6 @@ vi.mock("@tanstack/react-router", async () => {
     createFileRoute: () => (options: Record<string, unknown>) => options,
   };
 });
-vi.mock("@/api/identity-client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/identity-client")>();
-  return { ...actual, getPreferences: vi.fn() };
-});
-vi.mock("@/auth/use-auth", () => ({
-  useAuth: () => ({
-    session: {
-      tenantId: "t1",
-      personId: "p1",
-      impersonatorEmail: null,
-      roles: [],
-    },
-  }),
-}));
 vi.mock("@/api/custom-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/custom-client")>();
   return {
@@ -38,7 +24,6 @@ import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as customClient from "@/api/custom-client";
-import * as identityClient from "@/api/identity-client";
 import { portalRouter } from "@/test/portal-router";
 
 import { Route } from "./portal.custom.$name";
@@ -56,9 +41,6 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => {
   vi.resetAllMocks();
   portalRouter.reset();
-  vi.mocked(identityClient.getPreferences).mockResolvedValue({
-    timezone: "UTC",
-  });
 });
 
 describe("/portal/custom/$name", () => {
@@ -218,7 +200,6 @@ describe("/portal/custom/$name — the window it is read over", () => {
     await vi.waitFor(() => {
       expect(customClient.runMetric).toHaveBeenCalledWith("opened", {
         range: "P30D",
-        tz: "UTC",
         bucket: true,
       });
     });
@@ -246,7 +227,6 @@ describe("/portal/custom/$name — the window it is read over", () => {
     await vi.waitFor(() => {
       expect(customClient.runMetric).toHaveBeenCalledWith("opened", {
         range: "PDC",
-        tz: "UTC",
         bucket: true,
       });
     });
@@ -302,97 +282,8 @@ describe("/portal/custom/$name — the window it is read over", () => {
     await vi.waitFor(() => {
       expect(customClient.runMetric).toHaveBeenCalledWith("merged", {
         range: "P30D",
-        tz: "UTC",
         bucket: false,
       });
-    });
-  });
-});
-
-describe("/portal/custom/$name — the zone its days are cut in", () => {
-  const CLOCKED = {
-    table: "events",
-    time: { column: "occurred_at" },
-    fields: [{ agg: "count", type: "int", as_name: "total" }],
-  };
-
-  function clockedBoard() {
-    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
-      title: "Engineering",
-      widgets: ["opened_line"],
-      time_ranges: ["P30D"],
-      default_range: "P30D",
-    });
-    vi.mocked(customClient.fetchWidget).mockResolvedValue({
-      type: "line",
-      metric: "opened",
-      x: "bucket",
-      y: "total",
-    });
-    vi.mocked(customClient.fetchMetric).mockResolvedValue(CLOCKED);
-    vi.mocked(customClient.runMetric).mockResolvedValue({
-      columns: ["bucket", "total"],
-      rows: [["2026-09-01", 2]],
-    });
-    portalRouter.go("/portal/custom/engineering");
-  }
-
-  it("sends the zone the reader saved", async () => {
-    clockedBoard();
-    vi.mocked(identityClient.getPreferences).mockResolvedValue({
-      timezone: "Europe/Belgrade",
-    });
-
-    render(<Component />, { wrapper });
-
-    await vi.waitFor(() => {
-      expect(customClient.runMetric).toHaveBeenCalledWith("opened", {
-        range: "P30D",
-        tz: "Europe/Belgrade",
-        bucket: true,
-      });
-    });
-  });
-
-  it("shows no numbers at all when the zone cannot be read, and offers a retry", async () => {
-    clockedBoard();
-    vi.mocked(identityClient.getPreferences).mockRejectedValue(
-      new Error("down"),
-    );
-
-    render(<Component />, { wrapper });
-
-    expect(
-      await screen.findByRole("button", { name: /retry/i }),
-    ).toBeVisible();
-    expect(customClient.runMetric).not.toHaveBeenCalled();
-  });
-
-  it("asks for no zone at all when the board has no picker", async () => {
-    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
-      title: "Engineering",
-      widgets: ["opened_line"],
-    });
-    vi.mocked(customClient.fetchWidget).mockResolvedValue({
-      type: "line",
-      metric: "opened",
-      x: "bucket",
-      y: "total",
-    });
-    vi.mocked(customClient.fetchMetric).mockResolvedValue(CLOCKED);
-    vi.mocked(customClient.runMetric).mockResolvedValue({
-      columns: ["bucket", "total"],
-      rows: [],
-    });
-    vi.mocked(identityClient.getPreferences).mockRejectedValue(
-      new Error("down"),
-    );
-    portalRouter.go("/portal/custom/engineering");
-
-    render(<Component />, { wrapper });
-
-    await vi.waitFor(() => {
-      expect(customClient.runMetric).toHaveBeenCalledWith("opened", undefined);
     });
   });
 });

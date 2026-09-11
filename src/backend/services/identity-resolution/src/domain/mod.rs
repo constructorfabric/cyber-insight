@@ -14,4 +14,3 @@ pub mod seed;
 pub mod seed_service;
 pub mod subchart;
 pub mod sync_service;
-pub mod timezone;

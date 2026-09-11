@@ -9,7 +9,7 @@ vi.mock("@/api/custom-client", async (importOriginal) => {
 });
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -102,30 +102,4 @@ describe("<WidgetDrilldown>", () => {
     });
   });
 
-  it("says what the identifier above the rows is", async () => {
-    vi.mocked(customClient.fetchMetric).mockResolvedValue(CLOCKLESS);
-    vi.mocked(customClient.runMetric).mockResolvedValue({
-      columns: ["total"],
-      rows: [[144]],
-    });
-
-    render(
-      <WidgetDrilldown
-        widget={{
-          type: "stat",
-          metric: "total",
-          value: "total",
-          label: "Total",
-        }}
-        name="all_stat"
-        label="Total"
-        open
-        onOpenChange={vi.fn()}
-      />,
-      { wrapper },
-    );
-
-    expect(await screen.findByText(/read from/i)).toBeVisible();
-    expect(await screen.findByText("demo_pull_requests")).toBeVisible();
-  });
 });

@@ -12,7 +12,6 @@ pub mod me;
 pub mod people;
 pub mod person_roles;
 pub mod persons;
-pub mod preferences;
 pub mod resolution;
 pub mod roles;
 pub mod seed;
@@ -181,34 +180,6 @@ fn build_operations(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .standard_errors(openapi)
         .handler(me::get_me)
-        .register(router, openapi);
-
-    let router = OperationBuilder::get("/v1/me/preferences")
-        .operation_id("identity_resolution.me.preferences.get")
-        .summary("The caller's own settings")
-        .authenticated()
-        .no_license_required()
-        .json_response_with_schema::<preferences::PreferencesResponse>(
-            openapi,
-            StatusCode::OK,
-            "The settings this caller chose, with the default filled in for the rest",
-        )
-        .standard_errors(openapi)
-        .handler(preferences::get_preferences)
-        .register(router, openapi);
-
-    let router = OperationBuilder::put("/v1/me/preferences")
-        .operation_id("identity_resolution.me.preferences.put")
-        .summary("Record the caller's own settings")
-        .authenticated()
-        .no_license_required()
-        .json_response_with_schema::<preferences::PreferencesResponse>(
-            openapi,
-            StatusCode::OK,
-            "The settings as they now stand",
-        )
-        .standard_errors(openapi)
-        .handler(preferences::put_preferences)
         .register(router, openapi);
 
     let router = OperationBuilder::get("/v1/people")

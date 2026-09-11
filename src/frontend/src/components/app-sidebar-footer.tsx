@@ -41,8 +41,6 @@ export function AppSidebarFooter({
   const { t } = useTranslation();
   const feedback = useFeedbackDialog();
   const { email: viewerEmail, personId: viewerPersonId } = useViewer();
-  const { activeZone } = useActiveZone();
-  const activeItem = resolveZoneItem(activeZone, usePortalItem());
   const viewerQ = useIcPerson(viewerPersonId ?? "");
   const viewer = viewerQ.data ?? null;
 
@@ -84,17 +82,7 @@ export function AppSidebarFooter({
       {viewerEmail ? (
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              isActive={activeZone === "manage" && activeItem === "profile"}
-              render={
-                <Link
-                  to="/portal"
-                  search={{ zone: "manage", item: "profile", acct: undefined }}
-                  onClick={onNavigate}
-                />
-              }
-            >
+            <SidebarMenuButton size="lg" className="cursor-default">
               <Avatar className="size-8 shrink-0">
                 <AvatarFallback className="bg-sidebar-primary text-xs font-semibold text-sidebar-primary-foreground">
                   {getInitials(primary) || "?"}

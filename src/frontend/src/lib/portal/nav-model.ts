@@ -30,7 +30,6 @@ import {
   User,
   Users,
   type LucideIcon,
-  UserRound,
 } from "lucide-react";
 
 import {
@@ -374,7 +373,6 @@ export const MANAGE_ITEMS: readonly PaneItem[] = [
   { id: "config", label: "Config & setup", icon: Settings2 },
   { id: "ai-assistant", label: "AI assistant", icon: Sparkles },
   { id: "whats-new", label: "What's new", icon: Megaphone },
-  { id: "profile", label: "Profile", icon: UserRound },
 ];
 
 /* ── Zone item resolution ────────────────────────────────────────────── */

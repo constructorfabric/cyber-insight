@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { CustomApiError, type Dashboard, type RunOptions } from "@/api/custom-client";
 import { RangePicker } from "@/components/custom/range-picker";
 import { selectedRange } from "@/lib/custom/board-range";
-import { useViewerTimezone } from "@/queries/identity-preferences";
 import { useSetPortalSearch, usePortalSearch } from "@/lib/portal/portal-search";
 import { dashboardItems } from "@/lib/custom/dashboard-items";
 import { CustomWidget } from "@/components/custom/custom-widget";
@@ -54,10 +53,6 @@ function CustomDashboardPage() {
 
   const offered = dashboard?.time_ranges;
   const range = selectedRange(offered, dashboard?.default_range, search.range);
-  // A board with a picker waits for the reader's zone: defaulting to UTC
-  // shows numbers cut on somebody else's day boundaries.
-  const zone = useViewerTimezone();
-
   return (
     <CustomDashboardBody
       dashboard={dashboard}
@@ -69,9 +64,6 @@ function CustomDashboardPage() {
       range={range}
       offered={offered}
       onSelectRange={(token) => setSearch({ range: token })}
-      timezone={zone.timezone}
-      timezoneUnread={Boolean(range) && zone.isError}
-      onRetryTimezone={zone.retry}
     />
   );
 }
@@ -86,9 +78,6 @@ function CustomDashboardBody({
   range,
   offered,
   onSelectRange,
-  timezone,
-  timezoneUnread,
-  onRetryTimezone,
 }: {
   dashboard: Dashboard | undefined;
   isLoading: boolean;
@@ -99,9 +88,6 @@ function CustomDashboardBody({
   range: string | undefined;
   offered: string[] | undefined;
   onSelectRange: (token: string) => void;
-  timezone: string | undefined;
-  timezoneUnread: boolean;
-  onRetryTimezone: () => void;
 }) {
   if (isLoading) return <CenteredSpinner className="min-h-40" />;
   if (isError) {
@@ -139,14 +125,7 @@ function CustomDashboardBody({
           />
         ) : null}
       </header>
-      {timezoneUnread ? (
-        <ComingSoon
-          variant="card"
-          state="error"
-          label="Couldn't read your timezone, so these windows can't be cut."
-          onRetry={onRetryTimezone}
-        />
-      ) : items.length === 0 ? (
+      {items.length === 0 ? (
         <ComingSoon
           variant="card"
           state="empty"
@@ -160,7 +139,6 @@ function CustomDashboardBody({
                 key={`${index}-${item.widget}`}
                 name={item.widget}
                 range={range}
-                timezone={timezone}
               />
             ) : "heading" in item ? (
               // The eyebrow label the portal's own sections use, and the whole
@@ -193,11 +171,9 @@ function CustomDashboardBody({
 function DashboardWidgetSlot({
   name,
   range,
-  timezone,
 }: {
   name: string;
   range: string | undefined;
-  timezone: string | undefined;
 }) {
   const [drilldown, setDrilldown] = useState(false);
   const widgetState = useQuery(widgetQuery(name));
@@ -211,10 +187,10 @@ function DashboardWidgetSlot({
     enabled: Boolean(metric) && Boolean(range),
   });
   const clocked = Boolean(definitionState.data?.time);
-  const known = !range || (definitionState.isSuccess && Boolean(timezone));
+  const known = !range || definitionState.isSuccess;
   const options: RunOptions | undefined =
     range && clocked
-      ? { range, tz: timezone, bucket: widgetState.data?.type !== "stat" }
+      ? { range, bucket: widgetState.data?.type !== "stat" }
       : undefined;
 
   const resultState = useQuery({
