@@ -218,14 +218,14 @@ ingestion:
   # `serviceaccount "argo-workflow" not found`.
   templates:
     enabled: true
-  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.09.10.19.30-2fc5e39" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
+  toolboxImage: "ghcr.io/constructorfabric/insight-toolbox:2026.09.11.18.58-6245304" # e.g. "ghcr.io/constructorfabric/insight-toolbox:2026.04.28.10.34-b08b460"
   # The sample-data seeder's image, for TEST stands only. Nothing in the chart
   # runs it: `src/ingestion/tools/seed/seed-stand.sh` reads this value to render
   # a one-shot Job. Its own image rather than the toolbox on purpose — the
   # toolbox runs migrations on real stands and does not carry demo data. Empty
   # (the default) means the stand cannot be seeded until an operator names an
   # image, either here or with the script's `--image` flag.
-  seedImage: "ghcr.io/constructorfabric/insight-seed:2026.09.10.19.30-2fc5e39" # e.g. "ghcr.io/constructorfabric/insight-seed:2026.04.28.10.34-b08b460"
+  seedImage: "ghcr.io/constructorfabric/insight-seed:2026.09.11.18.58-6245304" # e.g. "ghcr.io/constructorfabric/insight-seed:2026.04.28.10.34-b08b460"
   # airbyte-sync poll-job tunables — see templates/ingestion/airbyte-sync.yaml.
   # The poll loop replaces a wall-clock deadline with a progress watchdog:
   # it tracks (status, bytesEmitted, recordsEmitted, stateMessagesEmitted)
@@ -716,7 +716,9 @@ gitCliProxy:
     # steady-state run length so no walk refetches mid-flight.
     defaultMaxStalenessSeconds: 43200
     # A fetch holds its entry's write lock while queued for a slot, so one
-    # slow clone must not convoy every other repository's refresh.
+    # slow clone must not convoy every other repository's refresh. Cache
+    # headroom is reserved only once a slot is held, so queued requests wait
+    # in-connection rather than being refused.
     heavyOpsConcurrency: 2
     # Concurrent page serves; the pod's peak memory is roughly this times the
     # heaviest window's blob bytes, so this is the cap that bounds proxy

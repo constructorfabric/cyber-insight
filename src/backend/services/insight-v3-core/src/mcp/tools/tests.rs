@@ -290,12 +290,81 @@ async fn deleting_a_definition_that_was_never_stored_says_so() {
 #[tokio::test]
 async fn running_a_metric_that_was_never_stored_says_so() {
     let result = surfaces()
-        .run_metric(Parameters(NameRequest {
+        .run_metric(Parameters(RunRequest {
             name: "absent".to_owned(),
+            range: None,
+            bucket: None,
         }))
         .await;
 
     assert_refused(&result, "was not found");
+}
+
+#[tokio::test]
+async fn a_range_the_server_does_not_know_is_refused_by_the_tool() {
+    let result = surfaces()
+        .run_metric(Parameters(RunRequest {
+            name: "absent".to_owned(),
+            range: Some("P14D".to_owned()),
+            bucket: None,
+        }))
+        .await;
+
+    assert_refused(&result, "P14D");
+}
+
+#[tokio::test]
+async fn a_metric_whose_clock_cannot_be_read_is_not_stored() {
+    let result = surfaces()
+        .put_metric(put(
+            "broken_clock",
+            json!({
+                "table": "events",
+                "time": {"json": "at", "column": "at"},
+                "fields": [{"agg": "count", "type": "int", "as_name": "total"}]
+            }),
+        ))
+        .await;
+
+    assert_refused(&result, "time must name exactly one");
+}
+
+#[tokio::test]
+async fn a_metric_whose_maximum_range_is_not_a_duration_is_not_stored() {
+    let result = surfaces()
+        .put_metric(put(
+            "bad_cap",
+            json!({
+                "table": "events",
+                "time": {"column": "occurred_at"},
+                "max_range": "P0D",
+                "fields": [{"agg": "count", "type": "int", "as_name": "total"}]
+            }),
+        ))
+        .await;
+
+    assert_refused(&result, "P0D");
+}
+
+#[tokio::test]
+async fn a_metric_that_declares_a_clock_and_a_cap_is_stored() -> R {
+    let surfaces = surfaces();
+
+    assert_accepted(
+        &surfaces
+            .put_metric(put(
+                "opened",
+                json!({
+                    "table": "events",
+                    "time": {"column": "occurred_at"},
+                    "max_range": "P1Y",
+                    "fields": [{"agg": "count", "type": "int", "as_name": "total"}]
+                }),
+            ))
+            .await,
+    );
+
+    Ok(())
 }
 
 #[tokio::test]

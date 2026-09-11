@@ -5,15 +5,21 @@ import { Table2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-import { CustomApiError, type Dashboard } from "@/api/custom-client";
+import { CustomApiError, type Dashboard, type RunOptions } from "@/api/custom-client";
+import { RangePicker } from "@/components/custom/range-picker";
+import { selectedRange } from "@/lib/custom/board-range";
+import { drawsBucket } from "@/lib/custom/draws-bucket";
+import { useSetPortalSearch, usePortalSearch } from "@/lib/portal/portal-search";
 import { dashboardItems } from "@/lib/custom/dashboard-items";
 import { CustomWidget } from "@/components/custom/custom-widget";
 import { WidgetDrilldown } from "@/components/custom/widget-drilldown";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import {
   dashboardQuery,
+  metricQuery,
   metricResultQuery,
   widgetQuery,
 } from "@/queries/custom";
@@ -36,6 +42,8 @@ function dashboardNameFromPath(pathname: string): string {
 function CustomDashboardPage() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const name = dashboardNameFromPath(pathname);
+  const search = usePortalSearch();
+  const setSearch = useSetPortalSearch();
   const {
     data: dashboard,
     isLoading,
@@ -44,6 +52,8 @@ function CustomDashboardPage() {
     refetch,
   } = useQuery(dashboardQuery(name));
 
+  const offered = dashboard?.time_ranges;
+  const range = selectedRange(offered, dashboard?.default_range, search.range);
   return (
     <CustomDashboardBody
       dashboard={dashboard}
@@ -52,6 +62,9 @@ function CustomDashboardPage() {
       error={error}
       name={name}
       onRetry={() => void refetch()}
+      range={range}
+      offered={offered}
+      onSelectRange={(token) => setSearch({ range: token })}
     />
   );
 }
@@ -63,6 +76,9 @@ function CustomDashboardBody({
   error,
   name,
   onRetry,
+  range,
+  offered,
+  onSelectRange,
 }: {
   dashboard: Dashboard | undefined;
   isLoading: boolean;
@@ -70,6 +86,9 @@ function CustomDashboardBody({
   error: Error | null;
   name: string;
   onRetry: () => void;
+  range: string | undefined;
+  offered: string[] | undefined;
+  onSelectRange: (token: string) => void;
 }) {
   if (isLoading) return <CenteredSpinner className="min-h-40" />;
   if (isError) {
@@ -97,8 +116,15 @@ function CustomDashboardBody({
 
   return (
     <>
-      <header className="mb-4">
-        <h1 className={TEXT_TITLE}>{dashboard.title}</h1>
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pe-10 md:pe-12">
+        <h1 className={cn(TEXT_TITLE, "shrink-0")}>{dashboard.title}</h1>
+        {offered && offered.length > 0 && range ? (
+          <RangePicker
+            offered={offered}
+            selected={range}
+            onSelect={onSelectRange}
+          />
+        ) : null}
       </header>
       {items.length === 0 ? (
         <ComingSoon
@@ -113,6 +139,7 @@ function CustomDashboardBody({
               <DashboardWidgetSlot
                 key={`${index}-${item.widget}`}
                 name={item.widget}
+                range={range}
               />
             ) : "heading" in item ? (
               // The eyebrow label the portal's own sections use, and the whole
@@ -142,13 +169,34 @@ function CustomDashboardBody({
   );
 }
 
-function DashboardWidgetSlot({ name }: { name: string }) {
+function DashboardWidgetSlot({
+  name,
+  range,
+}: {
+  name: string;
+  range: string | undefined;
+}) {
   const [drilldown, setDrilldown] = useState(false);
   const widgetState = useQuery(widgetQuery(name));
   const metric = widgetState.data?.metric;
+
+  // Whether this metric carries a clock decides the request, so nothing
+  // runs until the definition is in: guessing shows a number the picker
+  // does not claim.
+  const definitionState = useQuery({
+    ...metricQuery(metric ?? ""),
+    enabled: Boolean(metric) && Boolean(range),
+  });
+  const clocked = Boolean(definitionState.data?.time);
+  const known = !range || definitionState.isSuccess;
+  const options: RunOptions | undefined =
+    range && clocked && widgetState.data
+      ? { range, bucket: drawsBucket(widgetState.data) }
+      : undefined;
+
   const resultState = useQuery({
-    ...metricResultQuery(metric ?? ""),
-    enabled: Boolean(metric),
+    ...metricResultQuery(metric ?? "", options),
+    enabled: Boolean(metric) && known,
   });
 
   if (widgetState.isPending) {
@@ -156,6 +204,22 @@ function DashboardWidgetSlot({ name }: { name: string }) {
       <Card>
         <CardContent>
           <CenteredSpinner className="min-h-40" />
+        </CardContent>
+      </Card>
+    );
+  }
+  // A definition that cannot be read leaves the card unable to say whether its
+  // metric is windowed, so it says that rather than running something.
+  if (range && definitionState.isError) {
+    return (
+      <Card>
+        <CardContent>
+          <ComingSoon
+            variant="card"
+            state="error"
+            label={`Couldn't read the metric behind ${name}.`}
+            onRetry={() => void definitionState.refetch()}
+          />
         </CardContent>
       </Card>
     );
@@ -182,6 +246,11 @@ function DashboardWidgetSlot({ name }: { name: string }) {
         >
           {heading ?? name}
         </CardTitle>
+        {range && definitionState.isSuccess && !clocked ? (
+          <Badge variant="secondary" className="shrink-0">
+            All time
+          </Badge>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"
@@ -209,6 +278,7 @@ function DashboardWidgetSlot({ name }: { name: string }) {
           widget={widgetState.data}
           result={resultState.data}
           error={resultState.error as Error | undefined}
+          windowed={Boolean(options)}
         />
       </CardContent>
       <WidgetDrilldown
@@ -217,6 +287,7 @@ function DashboardWidgetSlot({ name }: { name: string }) {
         label={heading ?? name}
         open={drilldown}
         onOpenChange={setDrilldown}
+        options={options}
       />
     </Card>
   );

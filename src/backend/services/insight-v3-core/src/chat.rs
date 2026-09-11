@@ -580,6 +580,7 @@ fn system_prompt(tables: &[KnownTable], catalogue: &Catalogue, map: &str) -> Str
          - Call `answer` to answer a question: it runs one query and stores nothing. Leave the query out when the question is about what data exists.\n\
          - Call `create` to build definitions to store. Pass the metric, the widgets and the dashboard as {\"name\":<string>,\"body\":<object>}, where the name is the identifier and the body is the definition. A create that carries none of the three is refused, and a dashboard needs the metric and widgets it draws.\n\n\
          A MetricQuery is {\"table\":<string>,\"fields\":[{\"json\":<string>,\"type\":\"string\"|\"int\"|\"float\",\"agg\":\"count\"|\"sum\"|\"avg\"|\"min\"|\"max\"|null,\"as_name\":<string>}],\"group_by\":[<string>],\"filters\":[{\"json\":<string>,\"type\":<field type>,\"op\":\"eq\"|\"ne\"|\"gt\"|\"gte\"|\"lt\"|\"lte\",\"value\":<value>}],\"order_by\":{\"field\":<as_name>,\"direction\":\"asc\"|\"desc\"}|null,\"limit\":<int>|null}.\n\
+         Give a metric a \"time\" whenever its table carries a timestamp for when the thing happened: {\"time\":{\"column\":\"occurred_at\"}}, or {\"time\":{\"json\":\"committed_at\"}} for a key inside an ingested payload. Without one a reader cannot pick a window and the metric answers every row, whatever the board is set to. Never use the column that records when the row was loaded. Declare no grain: the picked range chooses it, and the rows come back with a `bucket` column a line widget draws on x.\n\
          A question about the most, the largest or the top of something needs order_by on the aggregated field with direction desc, and a limit. Without it the rows come back in the grouping's order and the first row is not the largest.\n\
          Every group_by entry must be spelled exactly like the as_name of a field in the same query.\n\
          A rate is two fields and a third that divides them: give each half its own `when` condition, then a field with \"divide\":[numerator,denominator] and \"percent\":true where a percentage is what the question asked for. A gate pass rate is sum(value) when measure_key is gate_passed, sum(value) when measure_key is gate_runs, then those two divided.\n\
@@ -675,55 +676,26 @@ fn metric_query_schema() -> Value {
                 "type": "string",
                 "description": "The database the table is in, from the map. Omit only for a table ingested here.",
             },
-            "fields": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["type", "as_name"],
-                    "properties": {
-                        "column": {
-                            "type": "string",
-                            "description": "A real column, for any table from the map. Exactly one of column or json.",
-                        },
-                        "json": {
-                            "type": "string",
-                            "description": "A key inside the payload column, for a table ingested here only.",
-                        },
-                        "type": field_type,
-                        "agg": { "enum": ["count", "sum", "avg", "min", "max"] },
-                        "as_name": plain,
-                        "person": {
-                            "enum": ["email", "id"],
-                            "description": "Set when this column holds a person: email for an address, id for a person id. The rows then carry the name they are known by.",
-                        },
-                        "when": {
-                            "type": "array",
-                            "description": "Conditions on this aggregate alone, for one half of a rate: a numerator and a denominator that live in the same column are told apart here.",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "required": ["type", "op", "value"],
-                                "properties": {
-                                    "column": plain,
-                                    "json": plain,
-                                    "type": field_type,
-                                    "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte"] },
-                                    "value": { "type": ["string", "number", "boolean"] },
-                                },
-                            },
-                        },
-                        "divide": {
-                            "type": "array",
-                            "description": "Two as_names of THIS query, [numerator, denominator], both selected before this field. The rate is their division.",
-                            "items": plain,
-                        },
-                        "percent": {
-                            "type": "boolean",
-                            "description": "Read that division as a percentage.",
-                        },
+            "fields": { "type": "array", "items": metric_field_schema() },
+            "time": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "The timestamp a reader may window and bucket this metric by - the moment the thing happened, never the moment the row arrived. Exactly one of column or json.",
+                "properties": {
+                    "column": {
+                        "type": "string",
+                        "description": "A real date or datetime column of the table.",
                     },
+                    "json": {
+                        "type": "string",
+                        "description": "A key inside the payload column holding a timestamp, for a table ingested here only.",
+                    },
+                    "type": { "enum": ["datetime"] },
                 },
+            },
+            "max_range": {
+                "type": "string",
+                "description": "The widest window this metric will answer, as an ISO duration of whole days, months or years - P30D, P6M, P1Y. A wider request is refused rather than left to time out.",
             },
             "group_by": { "type": "array", "items": plain },
             "order_by": {
@@ -761,6 +733,59 @@ fn metric_query_schema() -> Value {
 /// [`MetricQuery`] shape exceeds the API's compiled-grammar budget and a strict
 /// request is refused outright ("the compiled grammar is too large"). What the
 /// schema cannot enforce, our own validation refuses and the repair round fixes.
+fn metric_field_schema() -> Value {
+    let plain = json!({ "type": "string" });
+    let field_type = json!({ "enum": ["string", "int", "float"] });
+
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "as_name"],
+        "properties": {
+            "column": {
+                "type": "string",
+                "description": "A real column, for any table from the map. Exactly one of column or json.",
+            },
+            "json": {
+                "type": "string",
+                "description": "A key inside the payload column, for a table ingested here only.",
+            },
+            "type": field_type,
+            "agg": { "enum": ["count", "sum", "avg", "min", "max"] },
+            "as_name": plain,
+            "person": {
+                "enum": ["email", "id"],
+                "description": "Set when this column holds a person: email for an address, id for a person id. The rows then carry the name they are known by.",
+            },
+            "when": {
+                "type": "array",
+                "description": "Conditions on this aggregate alone, for one half of a rate: a numerator and a denominator that live in the same column are told apart here.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["type", "op", "value"],
+                    "properties": {
+                        "column": plain,
+                        "json": plain,
+                        "type": field_type,
+                        "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte"] },
+                        "value": { "type": ["string", "number", "boolean"] },
+                    },
+                },
+            },
+            "divide": {
+                "type": "array",
+                "description": "Two as_names of THIS query, [numerator, denominator], both selected before this field. The rate is their division.",
+                "items": plain,
+            },
+            "percent": {
+                "type": "boolean",
+                "description": "Read that division as a percentage.",
+            },
+        },
+    })
+}
+
 fn proposal_tools() -> Vec<Value> {
     let plain = json!({ "type": "string" });
     let name = json!({
@@ -1208,6 +1233,29 @@ mod tests {
         assert!(prompt.contains("lines_per_day"), "{prompt}");
         assert!(prompt.contains("lines_chart"), "{prompt}");
         assert!(prompt.contains("engineering"), "{prompt}");
+    }
+
+    #[test]
+    fn the_grammar_lets_a_metric_declare_the_clock_a_reader_windows_by() {
+        let schema = metric_query_schema();
+        let properties = &schema["properties"];
+
+        assert!(properties.get("time").is_some(), "{schema}");
+        assert!(properties.get("max_range").is_some(), "{schema}");
+    }
+
+    #[test]
+    fn the_prompt_asks_for_a_clock_when_the_table_carries_one() {
+        let prompt = system_prompt(
+            &[KnownTable {
+                name: "events".to_owned(),
+                fields: "occurred_at (datetime)".to_owned(),
+            }],
+            &Catalogue::default(),
+            "",
+        );
+
+        assert!(prompt.contains("\"time\""), "{prompt}");
     }
 
     #[test]

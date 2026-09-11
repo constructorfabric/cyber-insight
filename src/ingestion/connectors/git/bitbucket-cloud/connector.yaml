@@ -88,9 +88,11 @@ definitions:
 
   proxy_error_handler: &proxy_error_handler
     type: DefaultErrorHandler
-    # Generous on purpose: a cold blobless clone of a large repository runs
-    # for many Retry-After cycles before the first page can be served.
-    max_retries: 100
+    # The proxy holds a cold request in-connection while it clones, so a 429
+    # is the exception: cache headroom that stayed exhausted for the whole
+    # in-connection wait. 200 x the 30 s the proxy asks for outlasts a cold
+    # clone queue on a large installation.
+    max_retries: 200
     backoff_strategies:
       - type: WaitTimeFromHeader
         header: Retry-After
@@ -104,6 +106,11 @@ definitions:
     response_filters:
       # The repository is being cloned in the background: the proxy is
       # working, the caller waits.
+      - type: HttpResponseFilter
+        http_codes: [401]
+        action: FAIL
+        failure_type: config_error
+        error_message: The git-cli-proxy rejected git_proxy_token; it must match the token the proxy was started with
       - type: HttpResponseFilter
         http_codes: [429]
         action: RETRY
@@ -251,6 +258,9 @@ definitions:
       X-Source-Id: "{{ config['insight_source_id'] }}"
       X-Git-Username: "{{ 'x-bitbucket-api-token-auth' if config.get('bitbucket_username') else 'x-token-auth' }}"
       X-Git-Token: "{{ config['bitbucket_token'] }}"
+      # The proxy reserves cache headroom from the repository's reported size
+      # instead of its per-repository cap.
+      X-Repo-Size-Hint: "{{ stream_slice.extra_fields.get('size') or '' }}"
     error_handler: *proxy_error_handler
 
 check:
@@ -608,6 +618,8 @@ streams:
           - type: ParentStreamConfig
             parent_key: clone_url
             partition_field: repo_clone_url
+            extra_fields:
+              - [size]
             # `incremental_dependency` is what keeps the sync proportional to
             # activity: the parent is itself incremental, so only repositories
             # touched since the last sync are visited. The CDK persists parent
@@ -628,6 +640,7 @@ streams:
                   properties:
                     uuid: {type: [string, "null"]}
                     clone_url: {type: [string, "null"]}
+                    size: {type: [integer, "null"]}
                     updated_on: {type: [string, "null"]}
                   additionalProperties: true
               retriever:
@@ -692,6 +705,10 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # A future-dated commit would otherwise become the cursor and silence the
+      # stream: a `since` past now yields no slice on every later sync. Bounding
+      # records client-side drops such a row before the cursor observes it.
+      is_client_side_incremental: true
       # `git log --since` is a traversal cutoff: after a rebase the
       # replacement commits can carry dates BELOW the stored cursor and
       # would never be visited again. Re-enumerating one window each
@@ -808,6 +825,8 @@ streams:
           - type: ParentStreamConfig
             parent_key: clone_url
             partition_field: repo_clone_url
+            extra_fields:
+              - [size]
             incremental_dependency: true
             stream:
               type: DeclarativeStream
@@ -822,6 +841,7 @@ streams:
                   properties:
                     uuid: {type: [string, "null"]}
                     clone_url: {type: [string, "null"]}
+                    size: {type: [integer, "null"]}
                     updated_on: {type: [string, "null"]}
                   additionalProperties: true
               retriever:
@@ -886,6 +906,10 @@ streams:
       type: DatetimeBasedCursor
       cursor_field: committed_date
       datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      # A future-dated commit would otherwise become the cursor and silence the
+      # stream: a `since` past now yields no slice on every later sync. Bounding
+      # records client-side drops such a row before the cursor observes it.
+      is_client_side_incremental: true
       # `git log --since` is a traversal cutoff: after a rebase the
       # replacement commits can carry dates BELOW the stored cursor and
       # would never be visited again. Re-enumerating one window each
@@ -982,6 +1006,8 @@ streams:
           - type: ParentStreamConfig
             parent_key: clone_url
             partition_field: repo_clone_url
+            extra_fields:
+              - [size]
             # No `incremental_dependency` here: this stream is full refresh, so
             # the CDK would not persist parent state anyway. Branch heads are
             # cheap and must be re-read for every repository each sync.
@@ -998,6 +1024,7 @@ streams:
                   properties:
                     uuid: {type: [string, "null"]}
                     clone_url: {type: [string, "null"]}
+                    size: {type: [integer, "null"]}
                   additionalProperties: true
               retriever:
                 type: SimpleRetriever
@@ -3312,6 +3339,7 @@ streams:
           author_nickname: {type: [string, "null"]}
           author_display_name: {type: [string, "null"]}
           sample_sha: {type: [string, "null"]}
+          last_committed_date: {type: [string, "null"]}
         required:
           - unique_key
         additionalProperties: true
@@ -3374,9 +3402,14 @@ streams:
           - type: ParentStreamConfig
             parent_key: sample_sha
             partition_field: commit_sha
+            # `incremental_dependency` keeps the sync proportional to activity:
+            # the author list's `since` persists only because this child is
+            # itself incremental.
+            incremental_dependency: true
             extra_fields:
               - [repo_full_name]
               - [author_email]
+              - [last_committed_date]
             stream:
               type: DeclarativeStream
               name: repository_authors
@@ -3429,6 +3462,7 @@ streams:
                       partition_field: repo_clone_url
                       extra_fields:
                         - [full_name]
+                        - [size]
                       incremental_dependency: true
                       stream:
                         type: DeclarativeStream
@@ -3443,6 +3477,7 @@ streams:
                             properties:
                               uuid: {type: [string, "null"]}
                               clone_url: {type: [string, "null"]}
+                              size: {type: [integer, "null"]}
                               full_name: {type: [string, "null"]}
                               updated_on: {type: [string, "null"]}
                             additionalProperties: true
@@ -3497,6 +3532,14 @@ streams:
                 cursor_datetime_formats:
                   - "%Y-%m-%dT%H:%M:%S%z"
                   - "%Y-%m-%dT%H:%M:%SZ"
+                # A future-dated commit would otherwise become the cursor and silence the
+                # stream: a `since` past now yields no slice on every later sync. Bounding
+                # records client-side drops such a row before the cursor observes it.
+                is_client_side_incremental: true
+                # An author's last commit can predate its push by days, and another
+                # author's push moves `since` past it in the meantime. Re-listing one
+                # window each sync recovers them; bronze dedups the re-read rows.
+                lookback_window: "P1M"
                 # An author already resolved keeps their claim, so a later sync
                 # only needs the ones who have committed since — which is what
                 # keeps this O(active authors) rather than O(authors).
@@ -3515,6 +3558,22 @@ streams:
                       path: [repo_full_name]
                       value: "{{ stream_slice.extra_fields['full_name'] }}"
                       value_type: string
+    incremental_sync:
+      type: DatetimeBasedCursor
+      cursor_field: last_committed_date
+      datetime_format: "%Y-%m-%dT%H:%M:%S%z"
+      cursor_datetime_formats:
+        - "%Y-%m-%dT%H:%M:%S%z"
+        - "%Y-%m-%dT%H:%M:%SZ"
+      # The partition is one author's sample commit and changes with every
+      # commit, so per-partition state would grow by one entry per (repository,
+      # author) and never shrink. Nothing reads this cursor's value; it exists so
+      # the parent's `since` persists.
+      global_substream_cursor: true
+      start_datetime:
+        type: MinMaxDatetime
+        datetime: "{{ config['bitbucket_start_date'] }}"
+        datetime_format: "%Y-%m-%d"
     transformations:
       - type: AddFields
         fields:
@@ -3544,6 +3603,10 @@ streams:
           - type: AddedFieldDefinition
             path: [sample_sha]
             value: "{{ stream_partition.commit_sha }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [last_committed_date]
+            value: "{{ stream_slice.extra_fields['last_committed_date'] }}"
             value_type: string
           - type: AddedFieldDefinition
             path: [author_account_id]

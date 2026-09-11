@@ -265,3 +265,28 @@ describe("<CustomWidget>", () => {
     expect(screen.queryByTestId("custom-line-chart")).not.toBeInTheDocument();
   });
 });
+
+describe("<CustomWidget> over a window that holds nothing", () => {
+  it("says the window is empty rather than only that data is missing", () => {
+    render(
+      <CustomWidget
+        widget={{ type: "line", metric: "opened", x: "bucket", y: "opened" }}
+        result={{ columns: ["bucket", "opened"], rows: [] }}
+        windowed
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(/nothing in this window/i);
+  });
+
+  it("says only that there is no data when no window was asked for", () => {
+    render(
+      <CustomWidget
+        widget={{ type: "stat", metric: "total", value: "total", label: "Total" }}
+        result={{ columns: ["total"], rows: [] }}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(/no data/i);
+  });
+});

@@ -3773,6 +3773,7 @@ dependencies = [
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-types-registry",
  "chrono",
+ "chrono-tz",
  "clap",
  "clickhouse",
  "futures",

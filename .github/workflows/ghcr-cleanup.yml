@@ -48,6 +48,21 @@ jobs:
           keep-n-most-recent: 15
           dry-run: false
 
+  # Every cache write re-points a buildcache tag and leaves the previous
+  # manifest untagged; nothing references those, so they only cost storage.
+  buildcache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: snok/container-retention-policy@d3bdcf5ce9b05f685154e4a16c39233b245e3d53 # v3.1.0
+        with:
+          account: constructorfabric
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: insight-buildcache
+          tag-selection: untagged
+          cut-off: 1w
+          dry-run: false
+
   orphan-sweep:
     runs-on: ubuntu-latest
     timeout-minutes: 15

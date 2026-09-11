@@ -183,14 +183,14 @@ jobs:
           fi
           if echo "$changes_to_test" | grep -q '^src/backend/'; then backend=true; fi
           if echo "$changes_to_test" | grep -q '^src/frontend/'; then frontend=true; fi
-          if echo "$changes_to_test" | grep -qE '^(src/backend/services/analytics/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then analytics=true; fi
+          if echo "$changes_to_test" | grep -qE '^(src/backend/services/analytics/|src/backend/Dockerfile$|src/backend/\.dockerignore$|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then analytics=true; fi
           # INVARIANT: these three cross into gateway.yml, which lints the chart
           # and runs its own e2e suite from these trees — so they read the raw
           # diff, not the stand's filtered list.
-          if echo "$changed" | grep -qE '^(src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then authenticator=true; fi
-          if echo "$changes_to_test" | grep -qE '^(src/backend/services/identity-resolution/|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then identity_resolution=true; fi
+          if echo "$changed" | grep -qE '^(src/backend/services/authenticator/|src/backend/Dockerfile$|src/backend/\.dockerignore$|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then authenticator=true; fi
+          if echo "$changes_to_test" | grep -qE '^(src/backend/services/identity-resolution/|src/backend/Dockerfile$|src/backend/\.dockerignore$|src/backend/libs/insight-clickhouse/|src/backend/docker-entrypoint\.sh$|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(build-images|e2e-stand)\.yml$)'; then identity_resolution=true; fi
           if echo "$changed" | grep -qE '^(src/backend/services/gateway/|src/backend/tools/routegen/|src/backend/Cargo\.(toml|lock)$|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/prebuilt_images\.py$)'; then gateway=true; fi
-          if echo "$changed" | grep -qE '^(src/backend/tools/routegen/|src/backend/services/gateway/|src/backend/services/authenticator/|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|src/ingestion/tools/seed/insight_seed/|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/(prebuilt_images|test_prebuilt_images)\.py$)'; then gateway_checks=true; fi
+          if echo "$changed" | grep -qE '^(src/backend/tools/routegen/|src/backend/services/gateway/|src/backend/services/authenticator/|src/backend/Dockerfile$|src/backend/\.dockerignore$|src/backend/libs/authenticator-sdk/|src/backend/Cargo\.(toml|lock)$|src/ingestion/tools/seed/insight_seed/|\.github/workflows/(gateway|build-images|e2e-stand)\.yml$|scripts/ci/(prebuilt_images|test_prebuilt_images)\.py$)'; then gateway_checks=true; fi
           if [[ "$GITHUB_EVENT_NAME" == merge_group ]] && \
              [[ "$analytics" == true || "$authenticator" == true || "$identity_resolution" == true || "$gateway" == true ]]; then
             backend_artifacts=true
@@ -306,6 +306,27 @@ jobs:
             --image "insight-identity-resolution:${IDENTITY_POLICY}" \
             --image "insight-gateway:${GATEWAY_POLICY}"
 
+      # Restore-only warm start for the --build-backend fallback: the cache is
+      # saved by e2e-bronze-to-api.yml's push-to-main run; nothing here saves.
+      - name: Read the builder toolchain for the cache key
+        id: toolchain
+        if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend_artifacts != 'true'
+        run: |
+          set -euo pipefail
+          image="$(grep -m1 -oE 'image: rust:[^ ]+' docker-compose.yml | cut -d' ' -f2 | tr ':' '-')"
+          [ -n "$image" ] || { echo "::error::no rust builder image found in docker-compose.yml"; exit 1; }
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.backend_artifacts != 'true'
+        with:
+          path: |
+            .ci-cargo/target
+            .ci-cargo/registry
+          key: e2e-backend-${{ steps.toolchain.outputs.image }}-${{ hashFiles('src/backend/Cargo.lock') }}
+          restore-keys: |
+            e2e-backend-${{ steps.toolchain.outputs.image }}-
+
       # `up` writes .env.compose.test-stand, forces the pinned frontend and
       # Keycloak, seeds, and then blocks until EVERY gold observation table the
       # seed populates proves dbt rebuilt it for THIS run and left a positive
@@ -336,6 +357,9 @@ jobs:
             flags+=(--prebuilt-backend)
           elif [ "$BUILD_BACKEND" = "true" ]; then
             flags+=(--build-backend)
+            mkdir -p .ci-cargo/target .ci-cargo/registry
+            export RUST_TARGET_SOURCE="$PWD/.ci-cargo/target"
+            export CARGO_REGISTRY_SOURCE="$PWD/.ci-cargo/registry"
           fi
           if [ "$BUILD_FRONTEND" = "true" ]; then flags+=(--build-frontend); fi
           ./dev-compose.sh test-stand up "${flags[@]}"

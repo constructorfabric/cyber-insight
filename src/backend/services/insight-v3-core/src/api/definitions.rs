@@ -234,6 +234,9 @@ pub(crate) fn custom_error(error: CustomError) -> CanonicalError {
         CustomError::Body(source) => DefinitionApiError::invalid_argument()
             .with_field_violation("body", source.to_string(), "INVALID")
             .create(),
+        CustomError::Range(source) => DefinitionApiError::invalid_argument()
+            .with_field_violation("time_ranges", source.to_string(), "INVALID")
+            .create(),
         CustomError::Compile(source) => DefinitionApiError::invalid_argument()
             .with_field_violation("body", source.to_string(), "INVALID")
             .create(),
