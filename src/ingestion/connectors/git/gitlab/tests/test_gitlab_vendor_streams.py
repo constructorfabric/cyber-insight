@@ -114,6 +114,7 @@ def test_repositories_hoist_the_namespace_and_key_on_the_project_id(http_mocker:
     assert "namespace" not in rec and "statistics" not in rec
     listing = _urls(http_mocker, "/groups/acme/projects")[0]
     assert "include_subgroups=true" in listing and "with_shared=false" in listing and "archived=false" in listing
+    assert "order_by=id" in listing and "sort=asc" in listing, f"pages must follow an immutable key: {listing}"
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "repositories", strict=True)
 
@@ -212,6 +213,7 @@ def test_pull_requests_hoist_people_and_survive_a_deleted_account(http_mocker: H
     assert second["milestone_title"] == ""
     listing = _urls(http_mocker, "/merge_requests")[0]
     assert "scope=all" in listing and "state=all" in listing and "updated_after=2026-06-01" in listing
+    assert "order_by=created_at" in listing and "sort=asc" in listing, f"pages must follow an immutable key: {listing}"
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "pull_requests", strict=True)
 
@@ -774,7 +776,7 @@ def test_deployments_keep_one_row_per_status(http_mocker: HttpMocker) -> None:
         "alice",
     )
     listing = _urls(http_mocker, "/deployments")[0]
-    assert "order_by=updated_at" in listing and "updated_after=2026-06-01" in listing
+    assert "order_by=id" in listing and "updated_after=2026-06-01" in listing
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "deployments", strict=True)
 

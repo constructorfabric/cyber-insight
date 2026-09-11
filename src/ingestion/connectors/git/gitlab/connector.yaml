@@ -357,7 +357,9 @@ definitions:
     archived: "false"
     statistics: "true"
     pagination: "{{ 'keyset' if stream_partition.scope == '*' else '' }}"
-    order_by: "{{ 'id' if stream_partition.scope == '*' else ('' if stream_partition.scope in (config.get('gitlab_projects') or []) else 'last_activity_at') }}"
+    # WORKAROUND: page-numbered listings sorted on a key that moves when an
+    # item is touched skip the item at the next page boundary; id never moves.
+    order_by: "{{ '' if stream_partition.scope in (config.get('gitlab_projects') or []) else 'id' }}"
     sort: "{{ '' if stream_partition.scope in (config.get('gitlab_projects') or []) else 'asc' }}"
     per_page: "100"
 
@@ -381,9 +383,8 @@ definitions:
 
   # Slim project roster the proxy streams partition over. Client-side
   # incremental on last_activity_at (the group listing has no server-side
-  # date filter; sort=last_activity_at asc keeps the cursor monotonic), so
-  # with incremental_dependency only projects active since the last sync are
-  # visited. The CDK caches a parent by name, so streams sharing this exact
+  # date filter), so with incremental_dependency only projects active since
+  # the last sync are visited. The CDK caches a parent by name, so streams sharing this exact
   # definition share one HTTP pass per sync.
   projects_active_parent: &projects_active_parent
     type: DeclarativeStream
@@ -474,7 +475,9 @@ definitions:
   merge_requests_listing_params: &merge_requests_listing_params
     scope: "{{ 'all' if stream_partition.scope == '*' or stream_partition.scope not in (config.get('gitlab_projects') or []) else '' }}"
     state: all
-    order_by: updated_at
+    # WORKAROUND: page-numbered listing; sorting on updated_at moves a touched
+    # merge request to the end mid-walk and skips the one at the page boundary.
+    order_by: created_at
     sort: asc
     per_page: "100"
 
@@ -2125,7 +2128,9 @@ streams:
         <<: *vendor_requester
         path: "/projects/{{ stream_partition.project_id }}/deployments"
         request_parameters:
-          order_by: updated_at
+          # WORKAROUND: page-numbered listing; a mutable sort key skips the
+          # item at a page boundary when another is updated mid-walk.
+          order_by: id
           sort: asc
           per_page: "100"
         error_handler: *project_scoped_error_handler
