@@ -129,6 +129,15 @@ mod tests {
         .unwrap_or_else(|error| panic!("the fixture parses: {error}"))
     }
 
+    fn timed_metric() -> MetricQuery {
+        serde_json::from_value(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }]
+        }))
+        .unwrap_or_else(|error| panic!("the fixture parses: {error}"))
+    }
+
     fn widget(value: serde_json::Value) -> Widget {
         serde_json::from_value(value).unwrap_or_else(|error| panic!("the fixture parses: {error}"))
     }
@@ -164,6 +173,16 @@ mod tests {
         }));
 
         assert!(drawn.check_against(&metric()).is_ok());
+    }
+
+    #[test]
+    fn a_chart_can_author_the_bucket_injected_by_a_clocked_metric() {
+        let drawn = widget(json!({
+            "type": "line", "metric": "events_over_time", "x": "bucket", "y": "total"
+        }));
+
+        assert!(drawn.check_against(&timed_metric()).is_ok());
+        assert!(drawn.check_against(&metric()).is_err());
     }
 
     #[test]

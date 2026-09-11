@@ -92,7 +92,7 @@ landed_content AS (
         AND carrier.project_key = landed_change.project_key
         AND carrier.repo_slug = landed_change.repo_slug
         AND carrier.commit_hash = landed_change.commit_hash
-    WHERE carrier.is_default_branch = 1
+    WHERE {{ git_on_default_branch('carrier.is_default_branch') }}
       AND NOT (
           coalesce(landed_change.pre_image_oid, '') = ''
               AND coalesce(landed_change.post_image_oid, '') = ''
@@ -120,7 +120,7 @@ unlanded_commits AS (
         commit_hash,
         coalesce(committer_date, date) AS made_at
     FROM {{ ref('class_git_commits') }} FINAL
-    WHERE coalesce(is_default_branch, 0) != 1
+    WHERE NOT ({{ git_on_default_branch('is_default_branch') }})
       AND is_merge_commit = 0
 )
 SELECT DISTINCT
@@ -128,14 +128,16 @@ SELECT DISTINCT
     source_id,
     project_key,
     repo_slug,
-    commit_hash
+    commit_hash,
+    data_source
 FROM (
     SELECT
         links.tenant_id AS tenant_id,
         links.source_id AS source_id,
         links.project_key AS project_key,
         links.repo_slug AS repo_slug,
-        links.commit_hash AS commit_hash
+        links.commit_hash AS commit_hash,
+        links.data_source AS data_source
     FROM {{ ref('class_git_pull_requests_commits') }} AS links FINAL
     INNER JOIN {{ ref('class_git_pull_requests') }} AS prs FINAL
         ON prs.tenant_id = links.tenant_id
@@ -158,7 +160,8 @@ FROM (
         branch_change.source_id AS source_id,
         branch_change.project_key AS project_key,
         branch_change.repo_slug AS repo_slug,
-        branch_change.commit_hash AS commit_hash
+        branch_change.commit_hash AS commit_hash,
+        branch_change.data_source AS data_source
     FROM {{ ref('class_git_file_changes') }} AS branch_change FINAL
     INNER JOIN unlanded_commits AS candidate
         ON candidate.tenant_id IS NOT DISTINCT FROM branch_change.tenant_id

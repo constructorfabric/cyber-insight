@@ -8,6 +8,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::anchor::Anchor;
+use crate::catalog::TableEngine;
+use crate::time_window::{Bounds, Grain, MaximumRange, Window, WindowError};
+
 const MAX_IDENTIFIER_CHARS: usize = 128;
 const DEFAULT_LIMIT: u32 = 1000;
 const MAX_LIMIT: u32 = 10000;
@@ -24,6 +28,10 @@ pub(crate) struct MetricQuery {
     #[serde(default)]
     database: Option<String>,
     table: String,
+    #[serde(default)]
+    time: Option<TimeField>,
+    #[serde(default)]
+    max_range: Option<String>,
     fields: Vec<Field>,
     #[serde(default)]
     group_by: Vec<String>,
@@ -33,6 +41,49 @@ pub(crate) struct MetricQuery {
     order_by: Option<OrderBy>,
     #[serde(default)]
     limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TimeField {
+    #[serde(default)]
+    json: Option<String>,
+    #[serde(default)]
+    column: Option<String>,
+    #[serde(default = "datetime_type")]
+    r#type: String,
+}
+
+fn datetime_type() -> String {
+    "datetime".to_owned()
+}
+
+impl TimeField {
+    fn source(&self) -> Result<Source<'_>, MetricQueryError> {
+        if self.r#type != "datetime" {
+            return Err(MetricQueryError::ClockType(self.r#type.clone()));
+        }
+        let source = Source::resolve(self.json.as_deref(), self.column.as_deref())
+            .ok_or(MetricQueryError::ClockSource)?;
+        if !is_identifier(source.name()) {
+            return Err(MetricQueryError::Identifier(source.name().to_owned()));
+        }
+
+        Ok(source)
+    }
+}
+
+/// How a clock is read out of a row. A payload key that is absent or
+/// unparseable reads as no clock, not as a failed query.
+fn clock_expression(
+    source: Source<'_>,
+    qualifier: Option<&str>,
+) -> Result<String, MetricQueryError> {
+    let read = source.sql(FieldType::String, qualifier)?;
+
+    Ok(match source {
+        Source::Json(_) => format!("parseDateTimeBestEffortOrNull({read})"),
+        Source::Column(_) => read,
+    })
 }
 
 /// How to sort the rows. Without it the grouping's own columns order the
@@ -296,7 +347,7 @@ impl Field {
 
 /// Where a value is read from: a key inside the `raw_data` payload, or a
 /// typed column of the table itself.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Source<'a> {
     Json(&'a str),
     Column(&'a str),
@@ -456,6 +507,13 @@ struct Selection<'a> {
     binds: Vec<FilterBind>,
 }
 
+/// The one read that resolves a relative window before the metric runs.
+#[derive(Debug)]
+pub(crate) struct AnchorQuery {
+    pub(crate) sql: String,
+    pub(crate) binds: Vec<FilterBind>,
+}
+
 #[derive(Debug)]
 pub(crate) struct CompiledQuery {
     pub(crate) sql: String,
@@ -486,6 +544,20 @@ pub(crate) enum MetricQueryError {
     FieldSource(String),
     #[error("{0}")]
     Ratio(String),
+    #[error("time must name exactly one of `json` or `column`")]
+    ClockSource,
+    #[error("time type `{0}` is not datetime")]
+    ClockType(String),
+    #[error("time source `{0}` cannot also be a metric filter")]
+    ClockFilter(String),
+    #[error("`bucket` is reserved for a metric's time bucket")]
+    BucketAlias,
+    #[error("a requested time range needs a metric time source")]
+    ClocklessWindow,
+    #[error("the requested range exceeds maximum `{0}`")]
+    RangeExceedsMaximum(String),
+    #[error(transparent)]
+    Window(#[from] WindowError),
 }
 
 impl MetricQuery {
@@ -531,10 +603,82 @@ impl MetricQuery {
     /// The columns a result carries, in order — each field's `as_name`. What
     /// a widget must name to draw anything.
     pub(crate) fn column_names(&self) -> Vec<String> {
-        self.fields
-            .iter()
-            .map(|field| field.as_name.clone())
-            .collect()
+        let clocked = self.valid_clock();
+        let mut names = Vec::with_capacity(self.fields.len() + usize::from(clocked));
+        if clocked {
+            names.push("bucket".to_owned());
+        }
+        names.extend(self.fields.iter().map(|field| field.as_name.clone()));
+        names
+    }
+
+    fn valid_clock(&self) -> bool {
+        self.has_clock().unwrap_or(false)
+    }
+
+    fn maximum(&self) -> Result<Option<MaximumRange>, MetricQueryError> {
+        Ok(self
+            .max_range
+            .as_deref()
+            .map(MaximumRange::parse)
+            .transpose()?)
+    }
+
+    pub(crate) fn check_window(&self) -> Result<(), MetricQueryError> {
+        self.has_clock()?;
+        self.maximum()?;
+
+        Ok(())
+    }
+
+    /// Whether this metric names a timestamp to window and bucket by, and a
+    /// refusal when it names one it cannot read.
+    pub(crate) fn has_clock(&self) -> Result<bool, MetricQueryError> {
+        Ok(self
+            .time
+            .as_ref()
+            .map(TimeField::source)
+            .transpose()?
+            .is_some())
+    }
+
+    fn time_expression(
+        &self,
+        window: &Window,
+        qualifier: Option<&str>,
+        as_names: &HashSet<&str>,
+    ) -> Result<Option<String>, MetricQueryError> {
+        let clock = self.time.as_ref().map(TimeField::source).transpose()?;
+        if matches!(window, Window::Requested { .. }) && clock.is_none() {
+            return Err(MetricQueryError::ClocklessWindow);
+        }
+
+        if let Some(maximum) = self.maximum()?
+            && !maximum.allows(window)
+        {
+            return Err(MetricQueryError::RangeExceedsMaximum(
+                self.max_range.clone().unwrap_or_default(),
+            ));
+        }
+
+        if let Some(clock) = clock {
+            let filters = self
+                .filters
+                .iter()
+                .chain(self.fields.iter().flat_map(|field| &field.when));
+            for filter in filters {
+                if filter.source()? == clock {
+                    return Err(MetricQueryError::ClockFilter(clock.name().to_owned()));
+                }
+            }
+        }
+        if window.grain().is_some() && as_names.contains("bucket") {
+            return Err(MetricQueryError::BucketAlias);
+        }
+
+        clock
+            .map(|source| clock_expression(source, qualifier))
+            .transpose()
     }
 
     /// Each field as it is selected, with whatever joining in a person's
@@ -626,18 +770,25 @@ impl MetricQuery {
     }
 
     pub(crate) fn compile(&self, people: &People) -> Result<CompiledQuery, MetricQueryError> {
-        let (database, table) = self.split();
-        if !is_identifier(table) {
-            return Err(MetricQueryError::Identifier(self.table.clone()));
-        }
-        if let Some(database) = self.database()
-            && !is_identifier(database)
-        {
-            return Err(MetricQueryError::Identifier(database.to_owned()));
-        }
-        if self.fields.is_empty() {
-            return Err(MetricQueryError::NoFields);
-        }
+        self.compile_window(people, &Window::legacy(), TableEngine::Other)
+    }
+
+    /// Whether this definition is shaped like something runnable, answered
+    /// without compiling it or reading anything.
+    pub(crate) fn check(&self) -> Result<(), MetricQueryError> {
+        let (_, table) = self.split();
+
+        self.validate_shape(table)
+    }
+
+    pub(crate) fn compile_window(
+        &self,
+        people: &People,
+        window: &Window,
+        engine: TableEngine,
+    ) -> Result<CompiledQuery, MetricQueryError> {
+        let (_, table) = self.split();
+        self.validate_shape(table)?;
 
         // Resolving a name joins another table in, and then a bare column
         // could mean either side - so every read carries the fact table's
@@ -648,7 +799,7 @@ impl MetricQuery {
             .any(|field| field.person.is_some())
             .then_some(FACT_ALIAS);
         let Selection {
-            parts: select_parts,
+            mut parts,
             as_names,
             column_types,
             joins,
@@ -656,43 +807,44 @@ impl MetricQuery {
             mut binds,
         } = self.selection(qualifier)?;
 
+        let time_expression = self.time_expression(window, qualifier, &as_names)?;
+        let bucket = window.grain().zip(time_expression.as_deref());
+        if let Some((grain, clock)) = bucket {
+            parts.insert(
+                0,
+                format!("{} AS `bucket`", bucket_expression(grain, clock)),
+            );
+        }
+
         self.check_grouping(&as_names)?;
 
-        let mut where_parts = Vec::with_capacity(self.filters.len());
-        binds.reserve(self.filters.len());
-        for filter in &self.filters {
-            let source = filter.source()?;
-            let read = source.sql(filter.r#type, qualifier)?;
-            where_parts.push(format!("{read} {} ?", filter.op.sql()));
-            binds.push(filter.bind(source)?);
-        }
+        let mut where_parts = Vec::with_capacity(self.filters.len() + 2);
+        binds.reserve(self.filters.len() + 2);
+        add_window_predicates(
+            window,
+            time_expression.as_deref(),
+            &mut where_parts,
+            &mut binds,
+        )?;
+        self.add_filters(qualifier, &mut where_parts, &mut binds)?;
 
-        let mut from = match database {
-            Some(database) => format!("`{database}`.`{table}`"),
-            None => format!("`{table}`"),
-        };
-        if let Some(alias) = qualifier {
-            let _ = write!(from, " AS `{alias}`");
-        }
+        let from = self.table_source(qualifier, engine);
         let prelude = if handles.is_empty() {
             String::new()
         } else {
             people.prelude(&handles)?
         };
-        let mut sql = format!(
-            "{prelude}SELECT {} FROM {from}{joins}",
-            select_parts.join(", ")
-        );
+        let mut sql = format!("{prelude}SELECT {} FROM {from}{joins}", parts.join(", "));
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));
         }
-        if !self.group_by.is_empty() {
-            let backticked: Vec<String> = self
-                .group_by
-                .iter()
-                .map(|group| format!("`{group}`"))
-                .collect();
+        let mut groups = self.group_by.clone();
+        if bucket.is_some() {
+            groups.insert(0, "bucket".to_owned());
+        }
+        if !groups.is_empty() {
+            let backticked: Vec<String> = groups.iter().map(|group| format!("`{group}`")).collect();
             sql.push_str(" GROUP BY ");
             sql.push_str(&backticked.join(", "));
 
@@ -722,6 +874,122 @@ impl MetricQuery {
                 .collect(),
         })
     }
+
+    fn add_filters(
+        &self,
+        qualifier: Option<&str>,
+        where_parts: &mut Vec<String>,
+        binds: &mut Vec<FilterBind>,
+    ) -> Result<(), MetricQueryError> {
+        for filter in &self.filters {
+            let source = filter.source()?;
+            let read = source.sql(filter.r#type, qualifier)?;
+            where_parts.push(format!("{read} {} ?", filter.op.sql()));
+            binds.push(filter.bind(source)?);
+        }
+
+        Ok(())
+    }
+
+    fn table_source(&self, qualifier: Option<&str>, engine: TableEngine) -> String {
+        let (database, table) = self.split();
+        let mut from = match database {
+            Some(database) => format!("`{database}`.`{table}`"),
+            None => format!("`{table}`"),
+        };
+
+        if let Some(alias) = qualifier {
+            let _ = write!(from, " AS `{alias}`");
+        }
+        if engine.requires_final() {
+            from.push_str(" FINAL");
+        }
+
+        from
+    }
+
+    /// Where a relative window counts back from, and how many rows carry no
+    /// clock — one read of the same rows the metric itself reads. A metric
+    /// with no clock has neither, and answers `None`.
+    pub(crate) fn anchor_query(
+        &self,
+        engine: TableEngine,
+    ) -> Result<Option<AnchorQuery>, MetricQueryError> {
+        let (_, table) = self.split();
+        self.validate_shape(table)?;
+
+        let Some(time) = self.time.as_ref() else {
+            return Ok(None);
+        };
+        let clock = clock_expression(time.source()?, None)?;
+
+        let mut where_parts = Vec::with_capacity(self.filters.len());
+        let mut binds = Vec::with_capacity(self.filters.len());
+        self.add_filters(None, &mut where_parts, &mut binds)?;
+
+        let mut sql = format!(
+            "SELECT toUnixTimestamp64Milli(toDateTime64(maxOrNull({clock}), 3, 'UTC')) AS newest, countIf(isNull({clock})) AS undated FROM {}",
+            self.table_source(None, engine)
+        );
+        if !where_parts.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_parts.join(" AND "));
+        }
+
+        Ok(Some(AnchorQuery { sql, binds }))
+    }
+
+    fn validate_shape(&self, table: &str) -> Result<(), MetricQueryError> {
+        if !is_identifier(table) {
+            return Err(MetricQueryError::Identifier(self.table.clone()));
+        }
+        if let Some(database) = self.database()
+            && !is_identifier(database)
+        {
+            return Err(MetricQueryError::Identifier(database.to_owned()));
+        }
+        if self.fields.is_empty() {
+            return Err(MetricQueryError::NoFields);
+        }
+
+        Ok(())
+    }
+}
+
+fn bucket_expression(grain: Grain, clock: &str) -> String {
+    match grain {
+        Grain::Hour => format!("toStartOfHour({clock}, 'UTC')"),
+        Grain::Day => format!("toStartOfDay({clock}, 'UTC')"),
+        Grain::Week => format!("toStartOfWeek({clock}, 1, 'UTC')"),
+        Grain::Month => format!("toStartOfMonth({clock}, 'UTC')"),
+    }
+}
+
+fn add_window_predicates(
+    window: &Window,
+    time_expression: Option<&str>,
+    where_parts: &mut Vec<String>,
+    binds: &mut Vec<FilterBind>,
+) -> Result<(), MetricQueryError> {
+    let Window::Requested { bounds, .. } = window else {
+        return Ok(());
+    };
+    let Some(clock) = time_expression else {
+        return Err(MetricQueryError::ClocklessWindow);
+    };
+
+    match *bounds {
+        Bounds::Finite { from, to } => {
+            where_parts.push(format!("{clock} >= fromUnixTimestamp64Milli(?, 'UTC')"));
+            where_parts.push(format!("{clock} < fromUnixTimestamp64Milli(?, 'UTC')"));
+            binds.push(FilterBind::Int(from.timestamp_millis()));
+            binds.push(FilterBind::Int(to.timestamp_millis()));
+        }
+        Bounds::Empty => where_parts.push("0".to_owned()),
+        Bounds::Unbounded => where_parts.push(format!("{clock} IS NOT NULL")),
+    }
+
+    Ok(())
 }
 
 fn is_identifier(value: &str) -> bool {
@@ -766,6 +1034,10 @@ pub(crate) struct RunResult {
     /// Which of those columns are percentages. `83.9` and `83.9%` are the
     /// same number until something says which one it is.
     pub(crate) percents: Vec<String>,
+    /// How many rows the window left out because they carry no clock. Only
+    /// a run that asked for a window leaves any out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) undated: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -799,28 +1071,14 @@ impl MetricRunner {
         &self.people
     }
 
+    pub(crate) async fn anchor(&self, query: &AnchorQuery) -> Result<Anchor, MetricRunError> {
+        let bytes = self.fetch(&query.sql, &query.binds).await?;
+
+        Ok(Anchor::parse(&bytes)?)
+    }
+
     pub(crate) async fn run(&self, compiled: &CompiledQuery) -> Result<RunResult, MetricRunError> {
-        let mut query = self.client.query(&compiled.sql);
-        for bind in &compiled.binds {
-            query = bind.bind_onto(query);
-        }
-        let mut cursor = query.fetch_bytes("JSON")?;
-
-        let fetch = async {
-            let mut bytes = Vec::new();
-            while let Some(chunk) = cursor.next().await? {
-                let next_len = bytes.len().saturating_add(chunk.len());
-                if next_len > MAX_RESULT_BYTES {
-                    return Err(MetricRunError::ResultTooLarge);
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            Ok::<_, MetricRunError>(bytes)
-        };
-
-        let bytes = tokio::time::timeout(self.fetch_timeout, fetch)
-            .await
-            .map_err(|_| MetricRunError::Timeout)??;
+        let bytes = self.fetch(&compiled.sql, &compiled.binds).await?;
 
         let parsed: ClickHouseJsonResult = serde_json::from_slice(&bytes)?;
         let columns: Vec<String> = parsed.meta.into_iter().map(|column| column.name).collect();
@@ -845,7 +1103,32 @@ impl MetricRunner {
             columns,
             rows,
             percents: compiled.percents.clone(),
+            undated: None,
         })
+    }
+
+    async fn fetch(&self, sql: &str, binds: &[FilterBind]) -> Result<Vec<u8>, MetricRunError> {
+        let mut query = self.client.query(sql);
+        for bind in binds {
+            query = bind.bind_onto(query);
+        }
+        let mut cursor = query.fetch_bytes("JSON")?;
+
+        let fetch = async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = cursor.next().await? {
+                let next_len = bytes.len().saturating_add(chunk.len());
+                if next_len > MAX_RESULT_BYTES {
+                    return Err(MetricRunError::ResultTooLarge);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok::<_, MetricRunError>(bytes)
+        };
+
+        tokio::time::timeout(self.fetch_timeout, fetch)
+            .await
+            .map_err(|_| MetricRunError::Timeout)?
     }
 }
 
@@ -883,6 +1166,9 @@ impl From<clickhouse::error::Error> for MetricRunError {
 mod tests {
     use serde_json::json;
 
+    use crate::catalog::TableEngine;
+    use crate::time_window::RequestedRange;
+
     use super::*;
 
     fn query(value: serde_json::Value) -> MetricQuery {
@@ -913,6 +1199,208 @@ mod tests {
         );
     }
 
+    fn window(token: &str, bucketed: bool) -> crate::time_window::Window {
+        let anchor = chrono::DateTime::parse_from_rfc3339("2026-09-10T15:00:00Z")
+            .unwrap_or_else(|error| panic!("the synthetic anchor parses: {error}"))
+            .to_utc();
+        let resolved = RequestedRange::parse(token)
+            .and_then(|range| range.resolve(Some(anchor)))
+            .unwrap_or_else(|error| panic!("`{token}` resolves: {error}"));
+
+        if bucketed {
+            resolved
+        } else {
+            resolved.unbucketed()
+        }
+    }
+
+    fn timed_metric(time: &serde_json::Value) -> MetricQuery {
+        query(json!({
+            "table": "events",
+            "time": time,
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }],
+            "filters": []
+        }))
+    }
+
+    fn compiled(
+        metric: &MetricQuery,
+        token: &str,
+        bucketed: bool,
+        engine: TableEngine,
+    ) -> CompiledQuery {
+        metric
+            .compile_window(&people(), &window(token, bucketed), engine)
+            .unwrap_or_else(|error| panic!("`{token}` compiles: {error}"))
+    }
+
+    #[test]
+    fn json_and_column_clocks_compile_as_datetime_sources() {
+        let json_clock = timed_metric(&json!({ "json": "occurred_at" }));
+        let column_clock = timed_metric(&json!({ "column": "occurred_at", "type": "datetime" }));
+
+        let json_sql = compiled(&json_clock, "P7D", true, TableEngine::MergeTree).sql;
+        let column_sql = compiled(&column_clock, "P7D", true, TableEngine::MergeTree).sql;
+
+        assert!(
+            json_sql.contains(
+                "parseDateTimeBestEffortOrNull(JSONExtractString(raw_data, 'occurred_at'))"
+            ),
+            "{json_sql}"
+        );
+        assert!(
+            column_sql.contains("toStartOfDay(`occurred_at`, 'UTC') AS `bucket`"),
+            "{column_sql}"
+        );
+    }
+
+    #[test]
+    fn malformed_or_non_datetime_clocks_are_refused() {
+        for time in [
+            json!({}),
+            json!({ "json": "at", "column": "at" }),
+            json!({ "column": "not-safe`", "type": "datetime" }),
+            json!({ "column": "at", "type": "string" }),
+        ] {
+            let metric = timed_metric(&time);
+            assert!(
+                metric
+                    .compile_window(&people(), &window("P7D", true), TableEngine::MergeTree)
+                    .is_err(),
+                "should reject {time}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bucket_is_injected_into_select_grouping_and_default_order() {
+        let metric = timed_metric(&json!({ "column": "occurred_at" }));
+        let compiled = compiled(&metric, "PQC", true, TableEngine::MergeTree);
+
+        assert!(
+            compiled.sql.starts_with(
+                "SELECT toStartOfWeek(`occurred_at`, 1, 'UTC') AS `bucket`, count() AS `total`"
+            ),
+            "{}",
+            compiled.sql
+        );
+        assert!(
+            compiled.sql.contains("GROUP BY `bucket` ORDER BY `bucket`"),
+            "{}",
+            compiled.sql
+        );
+        assert_eq!(compiled.binds.len(), 2);
+    }
+
+    #[test]
+    fn an_unbucketed_window_keeps_its_half_open_predicates() {
+        let metric = timed_metric(&json!({ "column": "occurred_at" }));
+        let compiled = compiled(&metric, "P30D", false, TableEngine::MergeTree);
+
+        assert!(!compiled.sql.contains(" AS `bucket`"), "{}", compiled.sql);
+        assert!(
+            compiled.sql.contains(
+                "WHERE `occurred_at` >= fromUnixTimestamp64Milli(?, 'UTC') AND `occurred_at` < fromUnixTimestamp64Milli(?, 'UTC')"
+            ),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_clock_cannot_also_be_a_filter_and_bucket_is_reserved() {
+        let filtered = query(json!({
+            "table": "events",
+            "time": { "json": "occurred_at" },
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }],
+            "filters": [{ "json": "occurred_at", "type": "string", "op": "gte", "value": "synthetic" }]
+        }));
+        let colliding = query(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "fields": [{ "column": "kind", "type": "string", "as_name": "bucket" }],
+            "filters": []
+        }));
+
+        assert!(matches!(
+            filtered.compile_window(&people(), &window("P7D", true), TableEngine::MergeTree),
+            Err(MetricQueryError::ClockFilter(_))
+        ));
+        assert!(matches!(
+            colliding.compile_window(&people(), &window("P7D", true), TableEngine::MergeTree),
+            Err(MetricQueryError::BucketAlias)
+        ));
+    }
+
+    #[test]
+    fn a_clock_cannot_be_reused_by_an_aggregate_condition() {
+        let metric = query(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "fields": [{
+                "agg": "count", "type": "int", "as_name": "total",
+                "when": [{ "column": "occurred_at", "type": "string", "op": "gte", "value": "synthetic" }]
+            }]
+        }));
+
+        assert!(matches!(
+            metric.compile_window(&people(), &window("P7D", true), TableEngine::MergeTree),
+            Err(MetricQueryError::ClockFilter(_))
+        ));
+    }
+
+    #[test]
+    fn a_direct_window_on_a_clockless_metric_is_refused() {
+        let metric = query(json!({
+            "table": "events",
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }]
+        }));
+
+        assert!(matches!(
+            metric.compile_window(&people(), &window("P7D", false), TableEngine::MergeTree),
+            Err(MetricQueryError::ClocklessWindow)
+        ));
+        assert!(metric.compile(&people()).is_ok());
+    }
+
+    #[test]
+    fn finite_metric_caps_reject_wider_and_unbounded_windows() {
+        let metric = query(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "max_range": "P30D",
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }]
+        }));
+
+        assert!(
+            metric
+                .compile_window(&people(), &window("P30D", false), TableEngine::MergeTree)
+                .is_ok()
+        );
+        assert!(matches!(
+            metric.compile_window(&people(), &window("P1Y", false), TableEngine::MergeTree),
+            Err(MetricQueryError::RangeExceedsMaximum(_))
+        ));
+        assert!(matches!(
+            metric.compile_window(&people(), &window("inf", false), TableEngine::MergeTree),
+            Err(MetricQueryError::RangeExceedsMaximum(_))
+        ));
+    }
+
+    #[test]
+    fn replacing_engines_alone_compile_with_final() {
+        let metric = timed_metric(&json!({ "column": "occurred_at" }));
+        let plain = compiled(&metric, "P7D", false, TableEngine::MergeTree);
+        let replacing = compiled(&metric, "P7D", false, TableEngine::ReplacingMergeTree);
+
+        assert!(plain.sql.contains("FROM `events` WHERE"), "{}", plain.sql);
+        assert!(
+            replacing.sql.contains("FROM `events` FINAL WHERE"),
+            "{}",
+            replacing.sql
+        );
+    }
+
     #[test]
     fn a_ratio_over_two_aggregates_needs_no_group_by_of_its_own() {
         let rate = query(json!({
@@ -927,6 +1415,114 @@ mod tests {
         }));
 
         assert!(rate.compile(&people()).is_ok());
+    }
+
+    #[test]
+    fn final_follows_the_fact_alias_when_identity_joins_require_one() {
+        let metric = query(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "fields": [
+                { "column": "actor", "type": "string", "as_name": "actor", "person": "email" },
+                { "agg": "count", "type": "int", "as_name": "total" }
+            ],
+            "group_by": ["actor"]
+        }));
+
+        let compiled = compiled(&metric, "P7D", true, TableEngine::ReplacingMergeTree);
+
+        assert!(
+            compiled
+                .sql
+                .contains("FROM `events` AS `__f` FINAL LEFT JOIN"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn an_anchor_query_reads_the_newest_clock_and_the_rows_without_one() {
+        let metric = timed_metric(&json!({ "column": "occurred_at" }));
+
+        let anchor = metric
+            .anchor_query(TableEngine::MergeTree)
+            .unwrap_or_else(|error| panic!("the anchor compiles: {error}"))
+            .unwrap_or_else(|| panic!("a clocked metric has an anchor"));
+
+        assert_eq!(
+            anchor.sql,
+            "SELECT toUnixTimestamp64Milli(toDateTime64(maxOrNull(`occurred_at`), 3, 'UTC')) AS newest, countIf(isNull(`occurred_at`)) AS undated FROM `events`"
+        );
+    }
+
+    #[test]
+    fn an_anchor_query_reads_the_same_rows_the_metric_does() {
+        let metric = query(json!({
+            "table": "events",
+            "time": { "column": "occurred_at" },
+            "fields": [{ "agg": "count", "type": "int", "as_name": "total" }],
+            "filters": [{ "column": "repo", "type": "string", "op": "eq", "value": "one" }]
+        }));
+
+        let anchor = metric
+            .anchor_query(TableEngine::ReplacingMergeTree)
+            .unwrap_or_else(|error| panic!("the anchor compiles: {error}"))
+            .unwrap_or_else(|| panic!("a clocked metric has an anchor"));
+
+        assert!(
+            anchor.sql.contains("FROM `events` FINAL WHERE `repo` = ?"),
+            "{}",
+            anchor.sql
+        );
+        assert_eq!(anchor.binds.len(), 1);
+    }
+
+    #[test]
+    fn a_clockless_metric_has_nothing_to_anchor_to() {
+        let metric = timed_metric(&serde_json::Value::Null);
+
+        let anchor = metric
+            .anchor_query(TableEngine::MergeTree)
+            .unwrap_or_else(|error| panic!("a clockless metric is not an error: {error}"));
+
+        assert!(anchor.is_none());
+    }
+
+    #[test]
+    fn an_all_time_window_leaves_out_the_rows_with_no_clock() {
+        let metric = timed_metric(&json!({ "column": "occurred_at" }));
+
+        let compiled = compiled(&metric, "inf", true, TableEngine::MergeTree);
+
+        assert!(
+            compiled.sql.contains("WHERE `occurred_at` IS NOT NULL"),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn a_json_clock_reads_a_missing_key_as_no_clock_rather_than_a_failure() {
+        let metric = timed_metric(&json!({ "json": "occurred_at" }));
+
+        let compiled = compiled(&metric, "P7D", true, TableEngine::MergeTree);
+
+        assert!(
+            compiled.sql.contains(
+                "parseDateTimeBestEffortOrNull(JSONExtractString(raw_data, 'occurred_at'))"
+            ),
+            "{}",
+            compiled.sql
+        );
+    }
+
+    #[test]
+    fn only_a_clocked_metric_exposes_the_injected_bucket_column() {
+        let clocked = timed_metric(&json!({ "column": "occurred_at" }));
+        let clockless = timed_metric(&serde_json::Value::Null);
+
+        assert_eq!(clocked.column_names(), ["bucket", "total"]);
+        assert_eq!(clockless.column_names(), ["total"]);
     }
 
     fn merged_by_author(person: &str) -> MetricQuery {
