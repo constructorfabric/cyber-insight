@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS bronze_gitlab.commits
     `committed_date` Nullable(String),
     `author_name` Nullable(String),
     `author_email` Nullable(String),
+    `author_account_id` Nullable(Int64),
     `committer_name` Nullable(String),
     `committer_email` Nullable(String),
     `parent_hashes` Nullable(String),
@@ -106,7 +107,6 @@ CREATE TABLE IF NOT EXISTS bronze_gitlab.deployments
     `status` Nullable(String),
     `environment_id` Nullable(Int64),
     `environment_name` Nullable(String),
-    `environment_tier` Nullable(String),
     `deployable_id` Nullable(Int64),
     `deployable_name` Nullable(String),
     `deployable_stage` Nullable(String),
@@ -114,6 +114,33 @@ CREATE TABLE IF NOT EXISTS bronze_gitlab.deployments
     `user_id` Nullable(Int64),
     `user_username` Nullable(String),
     `user_name` Nullable(String),
+    `created_at` Nullable(String),
+    `updated_at` Nullable(String)
+)
+ENGINE = ReplacingMergeTree(_airbyte_extracted_at)
+ORDER BY unique_key
+SETTINGS allow_nullable_key = 1, index_granularity = 8192
+;
+
+CREATE TABLE IF NOT EXISTS bronze_gitlab.environments
+(
+    `_airbyte_raw_id` String,
+    `_airbyte_extracted_at` DateTime64(3),
+    `_airbyte_meta` String,
+    `_airbyte_generation_id` UInt32,
+    `unique_key` Nullable(String),
+    `tenant_id` Nullable(String),
+    `source_id` Nullable(String),
+    `data_source` Nullable(String),
+    `collected_at` Nullable(String),
+    `project_id` Nullable(Int64),
+    `repo_path` Nullable(String),
+    `id` Nullable(Int64),
+    `name` Nullable(String),
+    `slug` Nullable(String),
+    `state` Nullable(String),
+    `tier` Nullable(String),
+    `external_url` Nullable(String),
     `created_at` Nullable(String),
     `updated_at` Nullable(String)
 )
@@ -239,6 +266,7 @@ CREATE TABLE IF NOT EXISTS bronze_gitlab.pull_request_commits
     `message` Nullable(String),
     `author_name` Nullable(String),
     `author_email` Nullable(String),
+    `author_account_id` Nullable(Int64),
     `authored_date` Nullable(String),
     `committer_name` Nullable(String),
     `committer_email` Nullable(String),

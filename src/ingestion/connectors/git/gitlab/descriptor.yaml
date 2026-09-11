@@ -2,7 +2,7 @@
 # replaces the CDK source. Every stream, column and key changes shape, so the
 # major bump dispatches the scoped `dbt --full-refresh` that rebuilds the
 # staging models; bronze tables the CDK connector wrote carry a different
-# contract and are dropped before the first sync (README, "Upgrading").
+# contract and are dropped before the first sync.
 name: gitlab
 version: "4.0.0"
 schedule: "0 2 * * *"

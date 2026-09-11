@@ -30,6 +30,8 @@ sources:
         freshness: null
       - name: pipelines
         freshness: null
+      - name: environments
+        freshness: null
       - name: deployments
         freshness: null
       - name: group_members

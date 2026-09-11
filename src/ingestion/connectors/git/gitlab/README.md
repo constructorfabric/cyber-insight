@@ -95,6 +95,7 @@ kubectl apply -f src/ingestion/secrets/connectors/gitlab.yaml
 | `pull_request_state_events` | `/merge_requests/{iid}/resource_state_events` | windowed MR parent | `created_at` |
 | `pull_request_label_events` | `/merge_requests/{iid}/resource_label_events` | windowed MR parent | `created_at` |
 | `pipelines` | GraphQL `project.pipelines` | incremental, per project | `updatedAt` |
+| `environments` | `/projects/{id}/environments` | full refresh, per project | — |
 | `deployments` | `/projects/{id}/deployments` | incremental, per project | `updated_at` |
 | `group_members` | `/groups/{g}/members/all`, `/projects/{p}/members/all` | full refresh, per configured scope | — |
 | `users` | `/users` (keyset) | full refresh, on by default | — |
@@ -198,11 +199,13 @@ type-for-type.
 | `pull_request_notes` | `gitlab__pr_review_events` | `class_git_pr_review_events` |
 | `pull_request_state_events` + `pull_request_label_events` | `gitlab__item_events` | `class_git_item_events` |
 | `pipelines` | `gitlab__ci_runs` | `class_git_ci_runs` |
-| `deployments` | `gitlab__deployments`, `gitlab__deployment_events` | `class_git_deployments`, `class_git_deployment_events` |
+| `deployments`, `environments` | `gitlab__deployments`, `gitlab__deployment_events` | `class_git_deployments`, `class_git_deployment_events` |
 
 Identity: `gitlab__account_emails` collects every (account, e-mail) pair from
 the author lookup, the user directory, the rosters and the
-`{id}-{username}@users.noreply.<host>` address form; `gitlab__account_names`
+`{id}-{username}@users.noreply.<host>` address form on the instance's own
+host (`gitlab_commit_email_hostname` when the administrator changed it);
+`gitlab__account_names`
 the display name per account; `gitlab__unowned_commit_emails` the addresses no
 account claims. `gitlab__identity_inputs` publishes them into
 `silver.identity_inputs`, keyed on the numeric user id — the same key

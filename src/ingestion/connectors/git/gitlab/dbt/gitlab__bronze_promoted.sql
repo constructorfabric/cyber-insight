@@ -25,6 +25,7 @@
 {% do promote_bronze_to_rmt(table='bronze_gitlab.pull_request_state_events', order_by='unique_key') %}
 {% do promote_bronze_to_rmt(table='bronze_gitlab.pull_request_label_events', order_by='unique_key') %}
 {% do promote_bronze_to_rmt(table='bronze_gitlab.pipelines',                 order_by='unique_key') %}
+{% do promote_bronze_to_rmt(table='bronze_gitlab.environments',              order_by='unique_key') %}
 {% do promote_bronze_to_rmt(table='bronze_gitlab.deployments',               order_by='unique_key') %}
 {% do promote_bronze_to_rmt(table='bronze_gitlab.group_members',             order_by='unique_key') %}
 {% do promote_bronze_to_rmt(table='bronze_gitlab.users',                     order_by='unique_key') %}

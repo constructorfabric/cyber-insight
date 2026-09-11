@@ -752,7 +752,7 @@ def test_deployments_keep_one_row_per_status(http_mocker: HttpMocker) -> None:
         "ref": "main",
         "sha": "f" * 40,
         "status": "running",
-        "environment": {"id": 2, "name": "production", "tier": "production"},
+        "environment": {"id": 2, "name": "production"},
         "deployable": {"id": 77, "name": "deploy", "stage": "deploy", "pipeline": {"id": 9001}},
         "user": {"id": 11, "username": "alice", "name": "Alice"},
         "created_at": "2026-06-20T10:00:00.000+00:00",
@@ -769,9 +769,9 @@ def test_deployments_keep_one_row_per_status(http_mocker: HttpMocker) -> None:
     keys = [r.record.data["unique_key"] for r in output.records]
     assert keys == ["test-tenant:test-source:7:300:running", "test-tenant:test-source:7:300:success"]
     rec = output.records[0].record.data
-    assert (rec["environment_name"], rec["environment_tier"], rec["pipeline_id"], rec["user_username"]) == (
+    assert (rec["environment_name"], rec["environment_id"], rec["pipeline_id"], rec["user_username"]) == (
         "production",
-        "production",
+        2,
         9001,
         "alice",
     )
@@ -779,6 +779,55 @@ def test_deployments_keep_one_row_per_status(http_mocker: HttpMocker) -> None:
     assert "order_by=id" in listing and "updated_after=2026-06-01" in listing
     _no_literal_none(output.records)
     assert_records_conform(output.records, _CONNECTOR, "deployments", strict=True)
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_environments_carry_the_tier_the_deployment_listing_omits(http_mocker: HttpMocker) -> None:
+    """A deployment embeds its environment without a tier; the environment
+    listing is where production is told apart from the rest."""
+    config = GitlabConfigBuilder().build()
+    _mock_roster(http_mocker)
+    stamp = "2026-06-20T10:00:00.000+00:00"
+    http_mocker.get(
+        HttpRequest(f"{API_URL}/projects/7/environments", query_params=ANY_QUERY_PARAMS),
+        _ok(
+            [
+                {
+                    "id": 2,
+                    "name": "production",
+                    "slug": "production",
+                    "state": "available",
+                    "tier": "production",
+                    "external_url": "https://app.example.com",
+                    "created_at": stamp,
+                    "updated_at": stamp,
+                    "project": {"id": 7},
+                },
+                {
+                    "id": 3,
+                    "name": "review/feat",
+                    "slug": "review-feat-abc",
+                    "state": "stopped",
+                    "tier": None,
+                    "external_url": None,
+                    "created_at": stamp,
+                    "updated_at": stamp,
+                    "project": {"id": 7},
+                },
+            ]
+        ),
+    )
+
+    output = read_stream(_CONNECTOR, "environments", config)
+
+    assert not output.errors
+    by_id = {r.record.data["id"]: r.record.data for r in output.records}
+    assert (by_id[2]["tier"], by_id[2]["state"], by_id[2]["project_id"]) == ("production", "available", 7)
+    assert by_id[2]["repo_path"] == _project()["path_with_namespace"]
+    assert by_id[3]["tier"] == "" and "project" not in by_id[3]
+    assert by_id[2]["unique_key"] == "test-tenant:test-source:7:2"
+    _no_literal_none(output.records)
+    assert_records_conform(output.records, _CONNECTOR, "environments", strict=True)
 
 
 def test_a_402_on_one_project_deployments_skips_it_not_the_stream(http_mocker: HttpMocker) -> None:

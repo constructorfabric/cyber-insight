@@ -129,6 +129,71 @@ def test_a_resumed_commits_sync_clones_no_project_idle_since_the_stored_cursor(h
 
 
 @freezegun.freeze_time(_FROZEN)
+def test_a_resumed_sync_re_admits_a_project_active_inside_the_day_before_the_cursor(http_mocker: HttpMocker) -> None:
+    """GitLab moves last_activity_at at most once an hour, so a push soon
+    after the previous sync can leave its project below the stored cursor;
+    the roster re-lists a day back so the project is still walked."""
+    config = GitlabConfigBuilder().build()
+    recent = _project(
+        id=8,
+        path="api",
+        path_with_namespace="acme/api",
+        http_url_to_repo=f"{GITLAB_URL}/acme/api.git",
+        last_activity_at="2026-06-19T20:00:00.000+00:00",
+    )
+    http_mocker.get(
+        HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS),
+        [_projects_page(), _projects_page(_project(), recent)],
+    )
+    http_mocker.get(HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS), _page([_commit("a" * 40)]))
+
+    first = read_stream(_CONNECTOR, "commits", config)
+    assert not first.errors
+    resumed = read_stream(_CONNECTOR, "commits", config, state=[m.state for m in first.state_messages][-1:])
+    assert not resumed.errors, f"a resumed sync must not fail: {resumed.errors}"
+
+    cloned = _proxy_calls(http_mocker, "commits")
+    assert any("acme%2Fapi.git" in url or "acme/api.git" in url for url in cloned), cloned
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_private_commit_address_names_its_account_only_on_this_instance(http_mocker: HttpMocker) -> None:
+    """`{id}-{username}@users.noreply.<host>` states the account id, but the
+    same form minted by another GitLab names an account there, not here."""
+    config = GitlabConfigBuilder().build()
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    ours = {**_commit("a" * 40), "author_email": "42-Ada@users.noreply.gitlab.example.com"}
+    foreign = {**_commit("b" * 40), "author_email": "42-ada@users.noreply.gitlab.com"}
+    http_mocker.get(
+        HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS), _page([ours, foreign, _commit("c" * 40)])
+    )
+
+    output = read_stream(_CONNECTOR, "commits", config)
+
+    assert not output.errors
+    by_sha = {r.record.data["sha"]: r.record.data.get("author_account_id") for r in output.records}
+    assert by_sha == {"a" * 40: 42, "b" * 40: None, "c" * 40: None}, by_sha
+    assert_records_conform(output.records, _CONNECTOR, "commits", strict=True)
+
+
+@freezegun.freeze_time(_FROZEN)
+def test_a_changed_commit_email_hostname_is_the_one_matched(http_mocker: HttpMocker) -> None:
+    """An administrator can move the private address form to another host;
+    then that host names accounts and the default form no longer does."""
+    config = {**GitlabConfigBuilder().build(), "gitlab_commit_email_hostname": "noreply.corp.example"}
+    http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())
+    moved = {**_commit("a" * 40), "author_email": "9-bob@noreply.corp.example"}
+    default_form = {**_commit("b" * 40), "author_email": "42-ada@users.noreply.gitlab.example.com"}
+    http_mocker.get(HttpRequest(f"{PROXY_URL}/v1/commits", query_params=ANY_QUERY_PARAMS), _page([moved, default_form]))
+
+    output = read_stream(_CONNECTOR, "commits", config)
+
+    assert not output.errors
+    by_sha = {r.record.data["sha"]: r.record.data.get("author_account_id") for r in output.records}
+    assert by_sha == {"a" * 40: 9, "b" * 40: None}, by_sha
+
+
+@freezegun.freeze_time(_FROZEN)
 def test_a_proxy_401_is_the_proxy_token_and_fails_as_a_config_error(http_mocker: HttpMocker) -> None:
     config = GitlabConfigBuilder().build()
     http_mocker.get(HttpRequest(_PROJECTS_URL, query_params=ANY_QUERY_PARAMS), _projects_page())

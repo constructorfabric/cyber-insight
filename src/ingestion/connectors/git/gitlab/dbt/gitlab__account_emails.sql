@@ -16,8 +16,9 @@
 --      for an administrator, `public_email` and `commit_email` for anyone
 --   3. the group and project rosters, which carry an address on the editions
 --      and tokens that expose one
---   4. the noreply address `{id}-{username}@users.noreply.<host>`, which
---      states the numeric account id itself
+--   4. the private commit address `{id}-{username}@<commit-email host>`, which
+--      states the numeric account id itself; the connector stamps that id only
+--      when the host is this instance's own
 --
 -- Several e-mails per account is normal and every one of them is kept: a
 -- person who changes address still owns what they committed under the old one.
@@ -94,32 +95,32 @@ roster_emails AS (
     GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 
--- `{id}-{username}@users.noreply.<host>` states the numeric account id it was
--- issued to, no lookup needed. Matched on the noreply label rather than a
--- host, which the model does not know.
+-- The private commit address states the account id it was issued to. The
+-- connector stamps author_account_id from it only for this instance's own
+-- commit-email host, so an address minted elsewhere claims nothing here.
 noreply_commits AS (
     SELECT
-        extract(COALESCE(author_email, ''), '^([0-9]+)-[^@]+@users\\.noreply\\.') AS account_id,
+        toString(author_account_id) AS account_id,
         lower(trimBoth(COALESCE(author_email, ''))) AS email,
         tenant_id,
         source_id,
         'bronze_gitlab.commits.author_email' AS observed_in,
         max(parseDateTimeBestEffortOrNull(authored_date)) AS seen_at
     FROM {{ source('bronze_gitlab', 'commits') }} FINAL
-    WHERE author_email LIKE '%@users.noreply.%'
+    WHERE COALESCE(author_account_id, 0) > 0
     GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 
 noreply_request_commits AS (
     SELECT
-        extract(COALESCE(author_email, ''), '^([0-9]+)-[^@]+@users\\.noreply\\.') AS account_id,
+        toString(author_account_id) AS account_id,
         lower(trimBoth(COALESCE(author_email, ''))) AS email,
         tenant_id,
         source_id,
         'bronze_gitlab.pull_request_commits.author_email' AS observed_in,
         max(parseDateTimeBestEffortOrNull(authored_date)) AS seen_at
     FROM {{ source('bronze_gitlab', 'pull_request_commits') }} FINAL
-    WHERE author_email LIKE '%@users.noreply.%'
+    WHERE COALESCE(author_account_id, 0) > 0
     GROUP BY account_id, email, tenant_id, source_id, observed_in
 ),
 

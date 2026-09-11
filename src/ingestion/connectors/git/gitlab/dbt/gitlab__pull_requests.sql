@@ -15,9 +15,9 @@
 -- admitted, and those must not reach the class.
 --
 -- Line totals come from the GraphQL diff-stats stream; REST carries only a
--- capped `changes_count` string. An unmatched join partner and an empty merge
--- request both read as 0 through COALESCE, so the marker keeps "not collected
--- yet" apart from "changed nothing" and the class columns stay nullable.
+-- capped `changes_count` string. The class columns stay NULL until the stats
+-- row exists and GitLab has computed it, so "not collected yet" never reads as
+-- "changed nothing".
 WITH projects AS (
     SELECT
         tenant_id,
@@ -38,8 +38,7 @@ diff_stats AS (
         additions,
         deletions,
         files_changed,
-        _airbyte_extracted_at,
-        1 AS matched
+        _airbyte_extracted_at
     FROM {{ source('bronze_gitlab', 'pull_request_diff_stats') }} FINAL
 ),
 
@@ -88,9 +87,11 @@ SELECT
     -- A squash merge lands as squash_commit_sha and leaves merge_commit_sha
     -- empty; either is the commit the target branch received.
     COALESCE(NULLIF(mr.merge_commit_sha, ''), mr.squash_commit_sha, '') AS merge_commit_hash,
-    if(ds.matched = 1, toNullable(toInt64(COALESCE(ds.files_changed, 0))), NULL) AS files_changed,
-    if(ds.matched = 1, toNullable(toInt64(COALESCE(ds.additions, 0))), NULL) AS lines_added,
-    if(ds.matched = 1, toNullable(toInt64(COALESCE(ds.deletions, 0))), NULL) AS lines_removed,
+    -- NULL until GitLab has computed the stats; a pending summary is not a
+    -- zero-line change.
+    toNullable(toInt64(ds.files_changed)) AS files_changed,
+    toNullable(toInt64(ds.additions)) AS lines_added,
+    toNullable(toInt64(ds.deletions)) AS lines_removed,
     'insight_gitlab' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version,
     -- Diff stats are their own stream: a late arrival must re-trigger the

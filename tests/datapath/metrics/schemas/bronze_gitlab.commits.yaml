@@ -21,6 +21,7 @@ schemas:
       committed_date: { type: [string, "null"] }
       author_name: { type: [string, "null"] }
       author_email: { type: [string, "null"] }
+      author_account_id: { type: [integer, "null"] }
       committer_name: { type: [string, "null"] }
       committer_email: { type: [string, "null"] }
       parent_hashes: { type: [string, "null"] }

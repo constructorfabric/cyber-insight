@@ -368,7 +368,11 @@ definitions:
   # patterns are `search`-matched against path_with_namespace, wrapped in one
   # group because `regex_search` returns the first capture group or '' when
   # the pattern has none. `$^` is the unmatchable default that keeps an empty
-  # list collecting everything.
+  # list collecting everything. The last clause is the activity gate of the
+  # incremental roster: the listing has no server-side date filter, so a
+  # project is admitted when its last activity reaches the slice start, which
+  # already sits one lookback window before the stored cursor. A full-refresh
+  # roster has no slice start and admits every project.
   projects_selector: &projects_selector
     type: RecordSelector
     extractor:
@@ -379,12 +383,13 @@ definitions:
       condition: >-
         {{ not record.get('archived')
            and (config.get('gitlab_include_forks') == 'true' or not record.get('forked_from_project'))
-           and not (record['path_with_namespace'] | regex_search('(' ~ ((config.get('gitlab_exclude_projects') or ['$^']) | join('|')) ~ ')')) }}
+           and not (record['path_with_namespace'] | regex_search('(' ~ ((config.get('gitlab_exclude_projects') or ['$^']) | join('|')) ~ ')'))
+           and (not stream_interval.get('start_time') or timestamp(record['last_activity_at']) >= timestamp(stream_interval['start_time'])) }}
 
-  # Slim project roster the proxy streams partition over. Client-side
-  # incremental on last_activity_at (the group listing has no server-side
-  # date filter), so with incremental_dependency only projects active since
-  # the last sync are visited. The CDK caches a parent by name, so streams sharing this exact
+  # Slim project roster the proxy streams partition over. Incremental on
+  # last_activity_at through the selector's activity gate, so with
+  # incremental_dependency only projects active since the last sync are
+  # visited. The CDK caches a parent by name, so streams sharing this exact
   # definition share one HTTP pass per sync.
   projects_active_parent: &projects_active_parent
     type: DeclarativeStream
@@ -419,7 +424,10 @@ definitions:
       cursor_datetime_formats:
         - "%Y-%m-%dT%H:%M:%S.%f%z"
         - "%Y-%m-%dT%H:%M:%S%z"
-      is_client_side_incremental: true
+      # WORKAROUND: GitLab moves last_activity_at at most once an hour, so a
+      # push inside that hour can leave a project below the stored cursor.
+      # Admitting a day back re-admits it; it re-walks from its own cursors.
+      lookback_window: P1D
       # A project whose last activity predates the start date has no commit,
       # file change or author inside the window, so it is never worth the
       # clone the proxy streams would spend on it.
@@ -691,6 +699,7 @@ streams:
           committed_date: {type: [string, "null"]}
           author_name: {type: [string, "null"]}
           author_email: {type: [string, "null"]}
+          author_account_id: {type: [integer, "null"]}
           committer_name: {type: [string, "null"]}
           committer_email: {type: [string, "null"]}
           parent_hashes: {type: [array, "null"], items: {type: string}}
@@ -780,6 +789,13 @@ streams:
             path: [message]
             value: "{{ (record.get('message') or '')[:2048] }}"
             value_type: string
+          # The private commit address names its account outright, but only
+          # on this instance's own host: another GitLab's address form names an
+          # account there.
+          - type: AddedFieldDefinition
+            path: [author_account_id]
+            value: >-
+              {{ ((record.get('author_email') or '') | lower | regex_search('^([0-9]+)-[^@]+@' ~ (((config.get('gitlab_commit_email_hostname') or ('users.noreply.' ~ config['gitlab_url'].split('://')[-1].split('/')[0].split(':')[0])) | lower | replace('.', '\\.'))) ~ '$')) or none }}
           # Project identity is REQUIRED in the key: forks share commit SHAs,
           # so tenant+source+sha alone would let the ReplacingMergeTree
           # collapse commits from different projects into one row. The
@@ -1500,6 +1516,7 @@ streams:
           message: {type: [string, "null"]}
           author_name: {type: [string, "null"]}
           author_email: {type: [string, "null"]}
+          author_account_id: {type: [integer, "null"]}
           authored_date: {type: [string, "null"]}
           committer_name: {type: [string, "null"]}
           committer_email: {type: [string, "null"]}
@@ -1580,6 +1597,10 @@ streams:
             path: [parent_ids]
             value: "{{ (record.get('parent_ids') or []) | tojson }}"
             value_type: string
+          - type: AddedFieldDefinition
+            path: [author_account_id]
+            value: >-
+              {{ ((record.get('author_email') or '') | lower | regex_search('^([0-9]+)-[^@]+@' ~ (((config.get('gitlab_commit_email_hostname') or ('users.noreply.' ~ config['gitlab_url'].split('://')[-1].split('/')[0].split(':')[0])) | lower | replace('.', '\\.'))) ~ '$')) or none }}
           - type: AddedFieldDefinition
             path: [unique_key]
             value: >-
@@ -2084,6 +2105,90 @@ streams:
           - [finishedAt]
           - [queuedDuration]
 
+  # ── Environments (GitLab API) ───────────────────────────────────────────
+  # The deployment listing embeds its environment without the tier; the
+  # environment listing carries it. Full refresh: a tier or name can change,
+  # and the listing is a page or two per project.
+  - type: DeclarativeStream
+    name: environments
+    primary_key:
+      - unique_key
+    schema_loader:
+      type: InlineSchemaLoader
+      schema:
+        type: object
+        $schema: http://json-schema.org/schema#
+        properties:
+          unique_key: {type: string}
+          tenant_id: {type: [string, "null"]}
+          source_id: {type: [string, "null"]}
+          data_source: {type: [string, "null"]}
+          collected_at: {type: [string, "null"]}
+          project_id: {type: [integer, "null"]}
+          repo_path: {type: [string, "null"]}
+          id: {type: [integer, "null"]}
+          name: {type: [string, "null"]}
+          slug: {type: [string, "null"]}
+          state: {type: [string, "null"]}
+          tier: {type: [string, "null"]}
+          external_url: {type: [string, "null"]}
+          created_at: {type: [string, "null"]}
+          updated_at: {type: [string, "null"]}
+        required:
+          - unique_key
+        additionalProperties: true
+    retriever:
+      type: SimpleRetriever
+      requester:
+        <<: *vendor_requester
+        path: "/projects/{{ stream_partition.project_id }}/environments"
+        request_parameters:
+          per_page: "100"
+        error_handler: *project_scoped_error_handler
+      record_selector:
+        type: RecordSelector
+        extractor:
+          type: DpathExtractor
+          field_path: []
+      paginator: *link_paginator
+      partition_router:
+        type: SubstreamPartitionRouter
+        parent_stream_configs:
+          - type: ParentStreamConfig
+            parent_key: id
+            partition_field: project_id
+            extra_fields:
+              - [path_with_namespace]
+            stream: *projects_all_parent
+    transformations:
+      - type: AddFields
+        fields: *standard_fields
+      - type: AddFields
+        fields:
+          - type: AddedFieldDefinition
+            path: [project_id]
+            value: "{{ stream_partition.project_id }}"
+          - type: AddedFieldDefinition
+            path: [repo_path]
+            value: "{{ stream_slice.extra_fields['path_with_namespace'] or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [state]
+            value: "{{ record.get('state') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [tier]
+            value: "{{ record.get('tier') or '' }}"
+            value_type: string
+          - type: AddedFieldDefinition
+            path: [unique_key]
+            value: >-
+              {{ config['insight_tenant_id'] }}:{{ config['insight_source_id'] }}:{{ stream_partition.project_id }}:{{ record['id'] }}
+      - type: RemoveFields
+        field_pointers:
+          - [project]
+          - [last_deployment]
+
   # ── Deployments (GitLab API) ────────────────────────────────────────────
   # One row per deployment PER STATUS: a deployment moves created -> running
   # -> success/failed/canceled, and `updated_at` advances with each. Keeping
@@ -2114,7 +2219,6 @@ streams:
           status: {type: [string, "null"]}
           environment_id: {type: [integer, "null"]}
           environment_name: {type: [string, "null"]}
-          environment_tier: {type: [string, "null"]}
           deployable_id: {type: [integer, "null"]}
           deployable_name: {type: [string, "null"]}
           deployable_stage: {type: [string, "null"]}
@@ -2193,10 +2297,6 @@ streams:
           - type: AddedFieldDefinition
             path: [environment_name]
             value: "{{ (record.get('environment') or {}).get('name') or '' }}"
-            value_type: string
-          - type: AddedFieldDefinition
-            path: [environment_tier]
-            value: "{{ (record.get('environment') or {}).get('tier') or '' }}"
             value_type: string
           - type: AddedFieldDefinition
             path: [deployable_id]
@@ -2787,6 +2887,16 @@ spec:
           does not speed them up.
         title: Concurrency
         order: 12
+      gitlab_commit_email_hostname:
+        type: string
+        description: >-
+          Host of the instance's private commit addresses,
+          `{id}-{username}@<host>`, when the administrator changed it from
+          the default `users.noreply.<GitLab host>`. A commit authored under
+          that form names its account outright; the same form on any other
+          host names an account elsewhere and is left unmatched.
+        title: Commit e-mail hostname
+        order: 13
     # On gitlab.com the instance-wide listing is every public project on the
     # platform and the user directory every account on it; the spec refuses
     # both outright, the directory by demanding an explicit "false".
@@ -2825,6 +2935,7 @@ metadata:
     pull_request_state_events: false
     pull_request_label_events: false
     pipelines: false
+    environments: false
     deployments: false
     group_members: false
     users: false
