@@ -293,7 +293,6 @@ async fn running_a_metric_that_was_never_stored_says_so() {
         .run_metric(Parameters(RunRequest {
             name: "absent".to_owned(),
             range: None,
-            tz: None,
             bucket: None,
         }))
         .await;
@@ -307,26 +306,11 @@ async fn a_range_the_server_does_not_know_is_refused_by_the_tool() {
         .run_metric(Parameters(RunRequest {
             name: "absent".to_owned(),
             range: Some("P14D".to_owned()),
-            tz: None,
             bucket: None,
         }))
         .await;
 
     assert_refused(&result, "P14D");
-}
-
-#[tokio::test]
-async fn a_zone_the_server_does_not_know_is_refused_by_the_tool() {
-    let result = surfaces()
-        .run_metric(Parameters(RunRequest {
-            name: "absent".to_owned(),
-            range: Some("P7D".to_owned()),
-            tz: Some("Mars/Olympus".to_owned()),
-            bucket: None,
-        }))
-        .await;
-
-    assert_refused(&result, "Mars/Olympus");
 }
 
 #[tokio::test]

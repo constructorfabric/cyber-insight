@@ -136,7 +136,6 @@ describe("runMetric", () => {
 
     await runMetric("commits", {
       range: "P30D",
-      tz: "Europe/Belgrade",
       bucket: false,
     });
 
@@ -145,7 +144,6 @@ describe("runMetric", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         range: "P30D",
-        tz: "Europe/Belgrade",
         bucket: false,
       }),
     });

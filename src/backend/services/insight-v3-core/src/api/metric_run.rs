@@ -58,8 +58,6 @@ struct RunBody {
     #[serde(default)]
     range: Option<String>,
     #[serde(default)]
-    tz: Option<String>,
-    #[serde(default)]
     bucket: Option<bool>,
 }
 
@@ -84,7 +82,7 @@ async fn run_metric(
         None => RunBody::default(),
     };
 
-    let requested = WindowRequest::parse(asked.range.as_deref(), asked.tz.as_deref(), asked.bucket)
+    let requested = WindowRequest::parse(asked.range.as_deref(), asked.bucket)
         .map_err(|error| window_error(&error))?;
 
     let result = state
@@ -110,11 +108,7 @@ fn window_error(error: &WindowError) -> CanonicalError {
 
 fn window_field(error: &WindowError) -> &'static str {
     match error {
-        WindowError::Timezone(_) => "tz",
-        WindowError::Range(_)
-        | WindowError::Maximum(_)
-        | WindowError::Overflow
-        | WindowError::LocalTime => "range",
+        WindowError::Range(_) | WindowError::Maximum(_) | WindowError::Overflow => "range",
     }
 }
 

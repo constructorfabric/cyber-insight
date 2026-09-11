@@ -37,12 +37,12 @@ impl Fixture {
 }
 
 fn legacy() -> crate::time_window::WindowRequest {
-    crate::time_window::WindowRequest::parse(None, None, None)
+    crate::time_window::WindowRequest::parse(None, None)
         .unwrap_or_else(|error| panic!("an empty request parses: {error}"))
 }
 
 fn ranged(token: &str) -> crate::time_window::WindowRequest {
-    crate::time_window::WindowRequest::parse(Some(token), None, None)
+    crate::time_window::WindowRequest::parse(Some(token), None)
         .unwrap_or_else(|error| panic!("`{token}` parses: {error}"))
 }
 

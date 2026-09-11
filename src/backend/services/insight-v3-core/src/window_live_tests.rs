@@ -45,11 +45,16 @@ async fn stand_or_skip(schema: &str) -> Option<Stand> {
             database
         },
     );
-    if let (Ok(user), Ok(password)) = (
-        std::env::var("INTEGRATION_TESTS_CLICKHOUSE_USER"),
-        std::env::var("INTEGRATION_TESTS_CLICKHOUSE_PASSWORD"),
-    ) && !user.is_empty()
-    {
+    let user = std::env::var("INTEGRATION_TESTS_CLICKHOUSE_USER").unwrap_or_default();
+    let password = std::env::var("INTEGRATION_TESTS_CLICKHOUSE_PASSWORD").unwrap_or_default();
+    // Half a credential would silently connect as nobody and read an empty
+    // stand, which passes every assertion below for the wrong reason.
+    assert_eq!(
+        user.is_empty(),
+        password.is_empty(),
+        "set both INTEGRATION_TESTS_CLICKHOUSE_USER and _PASSWORD, or neither"
+    );
+    if !user.is_empty() {
         config = config.with_auth(user, password);
     }
 
@@ -142,8 +147,8 @@ fn counted(metric: &Value) -> Value {
     metric
 }
 
-fn request(range: &str, timezone: Option<&str>, bucketed: Option<bool>) -> WindowRequest {
-    WindowRequest::parse(Some(range), timezone, bucketed)
+fn request(range: &str, bucketed: Option<bool>) -> WindowRequest {
+    WindowRequest::parse(Some(range), bucketed)
         .unwrap_or_else(|error| panic!("`{range}` parses: {error}"))
 }
 
@@ -197,7 +202,7 @@ async fn a_day_bucket_holds_the_rows_of_its_own_day() {
     let (result, _) = stand
         .answer(
             &metric,
-            &request("2026-09-01/2026-09-03", None, None),
+            &request("2026-09-01/2026-09-03", None),
             TableEngine::MergeTree,
         )
         .await;
@@ -231,59 +236,20 @@ async fn a_row_on_the_boundary_belongs_to_the_window_that_starts_there() {
     let (first, _) = stand
         .answer(
             &metric,
-            &request("2026-09-01/2026-09-02", None, Some(false)),
+            &request("2026-09-01/2026-09-02", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
     let (second, _) = stand
         .answer(
             &metric,
-            &request("2026-09-02/2026-09-03", None, Some(false)),
+            &request("2026-09-02/2026-09-03", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
 
     assert_eq!(totals(&first), vec!["1".to_owned()]);
     assert_eq!(totals(&second), vec!["1".to_owned()]);
-
-    stand.drop_table().await;
-}
-
-#[tokio::test]
-async fn a_zone_decides_which_day_a_late_evening_row_counts_in() {
-    let Some(stand) =
-        stand_or_skip("(occurred_at DateTime) ENGINE = MergeTree ORDER BY occurred_at").await
-    else {
-        return;
-    };
-    stand
-        .insert("occurred_at", &["('2026-09-01 23:30:00')"])
-        .await;
-
-    let metric = stand.metric(&counted(&json!({ "time": { "column": "occurred_at" } })));
-    let (utc, _) = stand
-        .answer(
-            &metric,
-            &request("2026-09-01/2026-09-03", None, None),
-            TableEngine::MergeTree,
-        )
-        .await;
-    let (belgrade, _) = stand
-        .answer(
-            &metric,
-            &request("2026-09-01/2026-09-03", Some("Europe/Belgrade"), None),
-            TableEngine::MergeTree,
-        )
-        .await;
-
-    assert_eq!(
-        pairs(&utc),
-        vec![("2026-09-01 00:00:00".to_owned(), "1".to_owned())]
-    );
-    assert_eq!(
-        pairs(&belgrade),
-        vec![("2026-09-02 00:00:00".to_owned(), "1".to_owned())]
-    );
 
     stand.drop_table().await;
 }
@@ -311,7 +277,7 @@ async fn rows_carrying_no_clock_are_left_out_of_the_window_and_counted() {
     let (result, anchor) = stand
         .answer(
             &metric,
-            &request("inf", None, Some(false)),
+            &request("inf", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
@@ -332,7 +298,7 @@ async fn an_empty_source_answers_no_rows_rather_than_a_window_at_the_epoch() {
 
     let metric = stand.metric(&counted(&json!({ "time": { "column": "occurred_at" } })));
     let (result, anchor) = stand
-        .answer(&metric, &request("P7D", None, None), TableEngine::MergeTree)
+        .answer(&metric, &request("P7D", None), TableEngine::MergeTree)
         .await;
 
     assert_eq!(anchor.newest(), None);
@@ -378,14 +344,14 @@ async fn a_replacing_table_counts_each_key_once() {
     let (deduplicated, _) = stand
         .answer(
             &metric,
-            &request("inf", None, Some(false)),
+            &request("inf", Some(false)),
             TableEngine::ReplacingMergeTree,
         )
         .await;
     let (raw, _) = stand
         .answer(
             &metric,
-            &request("inf", None, Some(false)),
+            &request("inf", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
@@ -414,7 +380,7 @@ async fn a_millisecond_short_of_the_end_is_still_inside_the_window() {
     let (result, anchor) = stand
         .answer(
             &metric,
-            &request("2026-09-01/2026-09-02", None, Some(false)),
+            &request("2026-09-01/2026-09-02", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
@@ -449,7 +415,7 @@ async fn a_clock_inside_an_ingested_payload_windows_the_same_way() {
     let (result, anchor) = stand
         .answer(
             &metric,
-            &request("2026-09-01/2026-09-02", None, Some(false)),
+            &request("2026-09-01/2026-09-02", Some(false)),
             TableEngine::MergeTree,
         )
         .await;
@@ -484,13 +450,75 @@ async fn a_filtered_metric_anchors_to_the_rows_it_actually_reads() {
         "filters": [{ "column": "repo", "type": "string", "op": "eq", "value": "one" }]
     })));
     let (_, anchor) = stand
-        .answer(&metric, &request("P7D", None, None), TableEngine::MergeTree)
+        .answer(&metric, &request("P7D", None), TableEngine::MergeTree)
         .await;
 
     assert_eq!(
         anchor.newest().map(|newest| newest.to_rfc3339()),
         Some("2026-09-01T10:00:00+00:00".to_owned())
     );
+
+    stand.drop_table().await;
+}
+
+#[tokio::test]
+async fn a_rolling_window_counts_the_newest_row_it_anchors_to() {
+    let Some(stand) =
+        stand_or_skip("(occurred_at DateTime) ENGINE = MergeTree ORDER BY occurred_at").await
+    else {
+        return;
+    };
+    stand
+        .insert(
+            "occurred_at",
+            &["('2026-09-01 10:00:00')", "('2026-09-07 15:45:00')"],
+        )
+        .await;
+
+    let metric = stand.metric(&counted(&json!({ "time": { "column": "occurred_at" } })));
+    let (result, _) = stand
+        .answer(
+            &metric,
+            &request("P7D", Some(false)),
+            TableEngine::MergeTree,
+        )
+        .await;
+
+    // The anchor IS a row. A window that ends strictly before it never counts
+    // the newest thing that happened, which is the row a reader came for.
+    assert_eq!(totals(&result), vec!["2".to_owned()]);
+
+    stand.drop_table().await;
+}
+
+#[tokio::test]
+async fn a_window_bound_keeps_the_millisecond_it_was_cut_on() {
+    let Some(stand) =
+        stand_or_skip("(occurred_at DateTime64(3)) ENGINE = MergeTree ORDER BY occurred_at").await
+    else {
+        return;
+    };
+    stand
+        .insert(
+            "occurred_at",
+            &[
+                "('2026-09-01 00:00:00.000')",
+                "('2026-09-01 00:00:00.500')",
+                "('2026-09-08 00:00:00.000')",
+            ],
+        )
+        .await;
+
+    let metric = stand.metric(&counted(&json!({ "time": { "column": "occurred_at" } })));
+    let (result, _) = stand
+        .answer(
+            &metric,
+            &request("2026-09-01/2026-09-08", Some(false)),
+            TableEngine::MergeTree,
+        )
+        .await;
+
+    assert_eq!(totals(&result), vec!["2".to_owned()]);
 
     stand.drop_table().await;
 }

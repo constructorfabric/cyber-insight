@@ -270,7 +270,6 @@ export async function fetchWidget(name: string): Promise<Widget> {
  */
 export interface RunOptions {
   range?: string;
-  tz?: string;
   bucket?: boolean;
 }
 

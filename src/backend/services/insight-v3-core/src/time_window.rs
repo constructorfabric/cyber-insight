@@ -1,5 +1,4 @@
-use chrono::{DateTime, Datelike as _, Days, Months, NaiveDate, TimeZone as _, Utc};
-use chrono_tz::Tz;
+use chrono::{DateTime, Datelike as _, Days, Months, NaiveDate, Utc};
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,7 +30,6 @@ pub(crate) enum Window {
     Requested {
         bounds: Bounds,
         grain: Option<Grain>,
-        timezone: RequestedTimeZone,
     },
 }
 
@@ -43,12 +41,9 @@ impl Window {
     pub(crate) fn unbucketed(self) -> Self {
         match self {
             Self::Unwindowed => Self::Unwindowed,
-            Self::Requested {
-                bounds, timezone, ..
-            } => Self::Requested {
+            Self::Requested { bounds, .. } => Self::Requested {
                 bounds,
                 grain: None,
-                timezone,
             },
         }
     }
@@ -58,37 +53,6 @@ impl Window {
             Self::Unwindowed => None,
             Self::Requested { grain, .. } => *grain,
         }
-    }
-
-    pub(crate) fn timezone(&self) -> &str {
-        match self {
-            Self::Unwindowed => RequestedTimeZone::UTC_NAME,
-            Self::Requested { timezone, .. } => timezone.as_str(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RequestedTimeZone(Tz);
-
-impl RequestedTimeZone {
-    pub(crate) const UTC_NAME: &'static str = "UTC";
-
-    pub(crate) fn parse(value: &str) -> Result<Self, WindowError> {
-        value
-            .parse::<Tz>()
-            .map(Self)
-            .map_err(|_| WindowError::Timezone(value.to_owned()))
-    }
-
-    fn as_str(&self) -> &str {
-        self.0.name()
-    }
-}
-
-impl Default for RequestedTimeZone {
-    fn default() -> Self {
-        Self(chrono_tz::UTC)
     }
 }
 
@@ -142,31 +106,22 @@ impl RequestedRange {
         Ok(Self::Interval { from, to })
     }
 
-    pub(crate) fn resolve(
-        &self,
-        anchor: Option<DateTime<Utc>>,
-        timezone: &RequestedTimeZone,
-    ) -> Result<Window, WindowError> {
+    pub(crate) fn resolve(&self, anchor: Option<DateTime<Utc>>) -> Result<Window, WindowError> {
         Ok(Window::Requested {
-            bounds: self.bounds(anchor, timezone)?,
+            bounds: self.bounds(anchor)?,
             grain: Some(self.grain()),
-            timezone: timezone.clone(),
         })
     }
 
-    fn bounds(
-        &self,
-        anchor: Option<DateTime<Utc>>,
-        timezone: &RequestedTimeZone,
-    ) -> Result<Bounds, WindowError> {
+    fn bounds(&self, anchor: Option<DateTime<Utc>>) -> Result<Bounds, WindowError> {
         if *self == Self::AllTime {
             return Ok(Bounds::Unbounded);
         }
 
         if let Self::Interval { from, to } = self {
             return Ok(Bounds::Finite {
-                from: local_midnight(*from, timezone.0)?,
-                to: local_midnight(*to, timezone.0)?,
+                from: midnight(*from)?,
+                to: midnight(*to)?,
             });
         }
 
@@ -175,25 +130,27 @@ impl RequestedRange {
         let Some(anchor) = anchor else {
             return Ok(Bounds::Empty);
         };
-        let local_anchor = anchor.with_timezone(&timezone.0);
+        let local_anchor = anchor.naive_utc();
         let (from, to) = match *self {
             Self::PreviousDay => {
-                let to = local_anchor.date_naive();
+                let to = local_anchor.date();
                 let from = to
                     .checked_sub_days(Days::new(1))
                     .ok_or(WindowError::Overflow)?;
-                (
-                    local_midnight(from, timezone.0)?,
-                    local_midnight(to, timezone.0)?,
-                )
+                (midnight(from)?, midnight(to)?)
             }
             Self::RollingDays { days, .. } => {
                 let from_naive = local_anchor
-                    .naive_local()
                     .checked_sub_days(Days::new(days))
                     .ok_or(WindowError::Overflow)?;
-                let from = local_datetime(from_naive, timezone.0)?;
-                (from, anchor)
+                let from = from_naive.and_utc();
+                // The anchor IS a row: the newest one. A half-open window has
+                // to end at the next representable instant, or the row the
+                // window was cut from never appears in it.
+                let to = anchor
+                    .checked_add_signed(chrono::TimeDelta::milliseconds(1))
+                    .ok_or(WindowError::Overflow)?;
+                (from, to)
             }
             Self::PreviousMonth => {
                 let this_month =
@@ -202,10 +159,7 @@ impl RequestedRange {
                 let previous = this_month
                     .checked_sub_months(Months::new(1))
                     .ok_or(WindowError::Overflow)?;
-                (
-                    local_midnight(previous, timezone.0)?,
-                    local_midnight(this_month, timezone.0)?,
-                )
+                (midnight(previous)?, midnight(this_month)?)
             }
             Self::PreviousQuarter => {
                 let quarter_month = ((local_anchor.month() - 1) / 3) * 3 + 1;
@@ -214,10 +168,7 @@ impl RequestedRange {
                 let previous = this_quarter
                     .checked_sub_months(Months::new(3))
                     .ok_or(WindowError::Overflow)?;
-                (
-                    local_midnight(previous, timezone.0)?,
-                    local_midnight(this_quarter, timezone.0)?,
-                )
+                (midnight(previous)?, midnight(this_quarter)?)
             }
             // Both answered above, before an anchor was needed.
             Self::AllTime | Self::Interval { .. } => return Ok(Bounds::Unbounded),
@@ -255,22 +206,11 @@ fn grain_for_days(days: i64) -> Grain {
     }
 }
 
-fn local_midnight(date: NaiveDate, timezone: Tz) -> Result<DateTime<Utc>, WindowError> {
-    local_datetime(
-        date.and_hms_opt(0, 0, 0).ok_or(WindowError::Overflow)?,
-        timezone,
-    )
-}
-
-fn local_datetime(
-    value: chrono::NaiveDateTime,
-    timezone: Tz,
-) -> Result<DateTime<Utc>, WindowError> {
-    timezone
-        .from_local_datetime(&value)
-        .earliest()
-        .map(|value| value.with_timezone(&Utc))
-        .ok_or(WindowError::LocalTime)
+fn midnight(date: NaiveDate) -> Result<DateTime<Utc>, WindowError> {
+    Ok(date
+        .and_hms_opt(0, 0, 0)
+        .ok_or(WindowError::Overflow)?
+        .and_utc())
 }
 
 /// What a caller asked a run for, before any data is read. Naming no
@@ -278,22 +218,13 @@ fn local_datetime(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WindowRequest {
     range: Option<RequestedRange>,
-    timezone: RequestedTimeZone,
     bucketed: bool,
 }
 
 impl WindowRequest {
-    pub(crate) fn parse(
-        range: Option<&str>,
-        timezone: Option<&str>,
-        bucketed: Option<bool>,
-    ) -> Result<Self, WindowError> {
+    pub(crate) fn parse(range: Option<&str>, bucketed: Option<bool>) -> Result<Self, WindowError> {
         Ok(Self {
             range: range.map(RequestedRange::parse).transpose()?,
-            timezone: timezone
-                .map(RequestedTimeZone::parse)
-                .transpose()?
-                .unwrap_or_default(),
             bucketed: bucketed.unwrap_or(true),
         })
     }
@@ -307,7 +238,7 @@ impl WindowRequest {
             return Ok(Window::legacy());
         };
 
-        let window = range.resolve(anchor, &self.timezone)?;
+        let window = range.resolve(anchor)?;
 
         Ok(if self.bucketed {
             window
@@ -349,10 +280,7 @@ impl MaximumRange {
     /// Whether this cap admits the window. A run that named no range is
     /// not capped.
     pub(crate) fn allows(self, window: &Window) -> bool {
-        let Window::Requested {
-            bounds, timezone, ..
-        } = window
-        else {
+        let Window::Requested { bounds, .. } = window else {
             return true;
         };
         let (from, to) = match *bounds {
@@ -361,8 +289,8 @@ impl MaximumRange {
             Bounds::Finite { from, to } => (from, to),
         };
 
-        let from = from.with_timezone(&timezone.0).date_naive();
-        let to = to.with_timezone(&timezone.0).date_naive();
+        let from = from.date_naive();
+        let to = to.date_naive();
         let earliest = match self {
             Self::Days(days) => to.checked_sub_days(Days::new(u64::from(days))),
             Self::Months(months) => to.checked_sub_months(Months::new(months)),
@@ -379,14 +307,10 @@ impl MaximumRange {
 pub(crate) enum WindowError {
     #[error("unsupported or malformed time range `{0}`")]
     Range(String),
-    #[error("invalid timezone `{0}`")]
-    Timezone(String),
     #[error("maximum range `{0}` must be a positive day, month or year duration")]
     Maximum(String),
     #[error("time range arithmetic overflowed")]
     Overflow,
-    #[error("a requested local time does not exist")]
-    LocalTime,
 }
 
 #[cfg(test)]

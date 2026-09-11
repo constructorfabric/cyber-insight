@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { CustomApiError, type Dashboard, type RunOptions } from "@/api/custom-client";
 import { RangePicker } from "@/components/custom/range-picker";
 import { selectedRange } from "@/lib/custom/board-range";
+import { drawsBucket } from "@/lib/custom/draws-bucket";
 import { useSetPortalSearch, usePortalSearch } from "@/lib/portal/portal-search";
 import { dashboardItems } from "@/lib/custom/dashboard-items";
 import { CustomWidget } from "@/components/custom/custom-widget";
@@ -189,8 +190,8 @@ function DashboardWidgetSlot({
   const clocked = Boolean(definitionState.data?.time);
   const known = !range || definitionState.isSuccess;
   const options: RunOptions | undefined =
-    range && clocked
-      ? { range, bucket: widgetState.data?.type !== "stat" }
+    range && clocked && widgetState.data
+      ? { range, bucket: drawsBucket(widgetState.data) }
       : undefined;
 
   const resultState = useQuery({
@@ -203,6 +204,22 @@ function DashboardWidgetSlot({
       <Card>
         <CardContent>
           <CenteredSpinner className="min-h-40" />
+        </CardContent>
+      </Card>
+    );
+  }
+  // A definition that cannot be read leaves the card unable to say whether its
+  // metric is windowed, so it says that rather than running something.
+  if (range && definitionState.isError) {
+    return (
+      <Card>
+        <CardContent>
+          <ComingSoon
+            variant="card"
+            state="error"
+            label={`Couldn't read the metric behind ${name}.`}
+            onRetry={() => void definitionState.refetch()}
+          />
         </CardContent>
       </Card>
     );

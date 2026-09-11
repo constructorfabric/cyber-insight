@@ -51,7 +51,7 @@ cleanup() {
       "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
     curl --silent --show-error --connect-timeout 2 --max-time 10 \
       --user "$clickhouse_user:$clickhouse_password" \
-      --data-binary "ALTER TABLE widgets DELETE WHERE name IN ('$widget_table_name', '$widget_graph_name', '$opened_widget_name', '$merged_widget_name', '$by_repo_widget_name')" \
+      --data-binary "ALTER TABLE widgets DELETE WHERE name IN ('$widget_table_name', '$widget_graph_name', '$opened_widget_name', '$merged_widget_name', '$by_repo_widget_name', '${by_repo_widget_name}_line')" \
       "$clickhouse_url/?database=$clickhouse_database" >/dev/null 2>&1 || true
     curl --silent --show-error --connect-timeout 2 --max-time 10 \
       --user "$clickhouse_user:$clickhouse_password" \
@@ -215,6 +215,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     --data-binary "$request_body")"
   expect_equal "204" "$status" "pull-request insertion (line $pull_count)"
 done <"$pulls_fixture_file"
+expected_pulls="$(grep -c '[^[:space:]]' "$pulls_fixture_file")"
+expect_equal "$expected_pulls" "$pull_count" "pull-request fixture line count"
 echo "-> ingested $pull_count pull requests"
 
 step 11 "PUT /v1/metrics/$opened_metric_name — a clock on when a PR was opened"

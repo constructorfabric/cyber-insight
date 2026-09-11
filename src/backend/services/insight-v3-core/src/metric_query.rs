@@ -812,10 +812,7 @@ impl MetricQuery {
         if let Some((grain, clock)) = bucket {
             parts.insert(
                 0,
-                format!(
-                    "{} AS `bucket`",
-                    bucket_expression(grain, clock, window.timezone())
-                ),
+                format!("{} AS `bucket`", bucket_expression(grain, clock)),
             );
         }
 
@@ -959,12 +956,12 @@ impl MetricQuery {
     }
 }
 
-fn bucket_expression(grain: Grain, clock: &str, timezone: &str) -> String {
+fn bucket_expression(grain: Grain, clock: &str) -> String {
     match grain {
-        Grain::Hour => format!("toStartOfHour({clock}, '{timezone}')"),
-        Grain::Day => format!("toStartOfDay({clock}, '{timezone}')"),
-        Grain::Week => format!("toStartOfWeek({clock}, 1, '{timezone}')"),
-        Grain::Month => format!("toStartOfMonth({clock}, '{timezone}')"),
+        Grain::Hour => format!("toStartOfHour({clock}, 'UTC')"),
+        Grain::Day => format!("toStartOfDay({clock}, 'UTC')"),
+        Grain::Week => format!("toStartOfWeek({clock}, 1, 'UTC')"),
+        Grain::Month => format!("toStartOfMonth({clock}, 'UTC')"),
     }
 }
 
@@ -983,10 +980,10 @@ fn add_window_predicates(
 
     match *bounds {
         Bounds::Finite { from, to } => {
-            where_parts.push(format!("{clock} >= toDateTime64(?, 3, 'UTC')"));
-            where_parts.push(format!("{clock} < toDateTime64(?, 3, 'UTC')"));
-            binds.push(FilterBind::Int(from.timestamp()));
-            binds.push(FilterBind::Int(to.timestamp()));
+            where_parts.push(format!("{clock} >= fromUnixTimestamp64Milli(?, 'UTC')"));
+            where_parts.push(format!("{clock} < fromUnixTimestamp64Milli(?, 'UTC')"));
+            binds.push(FilterBind::Int(from.timestamp_millis()));
+            binds.push(FilterBind::Int(to.timestamp_millis()));
         }
         Bounds::Empty => where_parts.push("0".to_owned()),
         Bounds::Unbounded => where_parts.push(format!("{clock} IS NOT NULL")),
@@ -1170,7 +1167,7 @@ mod tests {
     use serde_json::json;
 
     use crate::catalog::TableEngine;
-    use crate::time_window::{RequestedRange, RequestedTimeZone};
+    use crate::time_window::RequestedRange;
 
     use super::*;
 
@@ -1207,7 +1204,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("the synthetic anchor parses: {error}"))
             .to_utc();
         let resolved = RequestedRange::parse(token)
-            .and_then(|range| range.resolve(Some(anchor), &RequestedTimeZone::default()))
+            .and_then(|range| range.resolve(Some(anchor)))
             .unwrap_or_else(|error| panic!("`{token}` resolves: {error}"));
 
         if bucketed {
@@ -1301,7 +1298,13 @@ mod tests {
         let compiled = compiled(&metric, "P30D", false, TableEngine::MergeTree);
 
         assert!(!compiled.sql.contains(" AS `bucket`"), "{}", compiled.sql);
-        assert!(compiled.sql.contains("WHERE `occurred_at` >= toDateTime64(?, 3, 'UTC') AND `occurred_at` < toDateTime64(?, 3, 'UTC')"), "{}", compiled.sql);
+        assert!(
+            compiled.sql.contains(
+                "WHERE `occurred_at` >= fromUnixTimestamp64Milli(?, 'UTC') AND `occurred_at` < fromUnixTimestamp64Milli(?, 'UTC')"
+            ),
+            "{}",
+            compiled.sql
+        );
     }
 
     #[test]

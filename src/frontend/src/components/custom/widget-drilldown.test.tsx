@@ -59,7 +59,7 @@ describe("<WidgetDrilldown>", () => {
         label="Merged in this window"
         open
         onOpenChange={vi.fn()}
-        options={{ range: "P30D", tz: "UTC", bucket: false }}
+        options={{ range: "P30D", bucket: false }}
       />,
       { wrapper },
     );
@@ -67,7 +67,6 @@ describe("<WidgetDrilldown>", () => {
     await vi.waitFor(() => {
       expect(customClient.runMetric).toHaveBeenCalledWith("merged", {
         range: "P30D",
-        tz: "UTC",
         bucket: false,
       });
     });
@@ -92,7 +91,7 @@ describe("<WidgetDrilldown>", () => {
         label="Pull requests ever opened"
         open
         onOpenChange={vi.fn()}
-        options={{ range: "P30D", tz: "UTC", bucket: false }}
+        options={{ range: "P30D", bucket: false }}
       />,
       { wrapper },
     );

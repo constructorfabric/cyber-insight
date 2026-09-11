@@ -108,7 +108,6 @@ export function metricResultQuery(name: string, options?: RunOptions) {
       "metric-result",
       name,
       options?.range ?? null,
-      options?.tz ?? null,
       options?.bucket ?? null,
     ],
     queryFn: () => runMetric(name, options),

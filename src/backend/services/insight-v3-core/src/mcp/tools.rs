@@ -79,9 +79,6 @@ pub(crate) struct RunRequest {
     /// the metric can see, not from now. Omit it to read every row, as a
     /// run with no options always has.
     pub(crate) range: Option<String>,
-    /// The IANA zone whose day, week and month boundaries the window is cut
-    /// on, `UTC` by default.
-    pub(crate) tz: Option<String>,
     /// Whether the answer comes one row per time bucket. `false` answers one
     /// row for the whole window, which is what a total is. `true` by
     /// default.
@@ -302,7 +299,6 @@ impl CustomSurfaces {
         Parameters(RunRequest {
             name,
             range,
-            tz,
             bucket,
         }): Parameters<RunRequest>,
     ) -> CallToolResult {
@@ -311,7 +307,7 @@ impl CustomSurfaces {
             Err(refusal) => return refusal,
         };
 
-        let requested = match WindowRequest::parse(range.as_deref(), tz.as_deref(), bucket) {
+        let requested = match WindowRequest::parse(range.as_deref(), bucket) {
             Ok(requested) => requested,
             Err(error) => return refuse(&error.to_string()),
         };

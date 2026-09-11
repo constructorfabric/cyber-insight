@@ -432,28 +432,6 @@ async fn a_run_that_wants_a_total_asks_for_the_window_without_a_bucket() -> R {
 }
 
 #[tokio::test]
-async fn a_zone_moves_the_day_boundary_the_window_is_cut_on() -> R {
-    let (address, server, seen) = recording_upstream().await;
-    let harness = TestHarness::new(&address).await;
-
-    let response = harness
-        .ask(
-            "opened",
-            Some(clocked_metric()),
-            Some(json!({"range": "PDC", "tz": "Europe/Belgrade"})),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let sql = only_read(&seen);
-    assert!(sql.contains("'Europe/Belgrade'"), "{sql}");
-    assert!(!sql.contains("1757376000"), "{sql}");
-
-    server.abort();
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_window_wider_than_the_metric_allows_is_a_bad_request() -> R {
     let (address, server) = clocked_upstream().await;
     let harness = TestHarness::new(&address).await;

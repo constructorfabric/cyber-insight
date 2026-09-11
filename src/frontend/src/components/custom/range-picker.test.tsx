@@ -122,3 +122,28 @@ describe("<RangePicker> custom interval", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 });
+
+describe("<RangePicker> reopened after the selection moved", () => {
+  it("applies the interval it is showing now, not the one it opened with", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <RangePicker
+        offered={["P30D"]}
+        selected="2026-08-01/2026-09-01"
+        onSelect={onSelect}
+      />,
+    );
+
+    rerender(
+      <RangePicker
+        offered={["P30D"]}
+        selected="2026-06-01/2026-07-01"
+        onSelect={onSelect}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /2026-06-01/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(onSelect).toHaveBeenCalledWith("2026-06-01/2026-07-01");
+  });
+});

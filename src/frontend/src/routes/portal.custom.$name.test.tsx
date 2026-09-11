@@ -287,3 +287,29 @@ describe("/portal/custom/$name — the window it is read over", () => {
     });
   });
 });
+
+describe("/portal/custom/$name — a definition that cannot be read", () => {
+  it("says the metric could not be read and offers a retry", async () => {
+    vi.mocked(customClient.fetchDashboard).mockResolvedValue({
+      title: "Engineering",
+      widgets: ["opened_line"],
+      time_ranges: ["P30D"],
+      default_range: "P30D",
+    });
+    vi.mocked(customClient.fetchWidget).mockResolvedValue({
+      type: "line",
+      metric: "opened",
+      x: "bucket",
+      y: "opened",
+    });
+    vi.mocked(customClient.fetchMetric).mockRejectedValue(new Error("down"));
+    portalRouter.go("/portal/custom/engineering");
+
+    render(<Component />, { wrapper });
+
+    expect(
+      await screen.findByRole("button", { name: /retry/i }),
+    ).toBeVisible();
+    expect(customClient.runMetric).not.toHaveBeenCalled();
+  });
+});

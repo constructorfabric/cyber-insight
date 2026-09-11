@@ -36,14 +36,18 @@ export interface RangePickerProps {
 export function RangePicker({ offered, selected, onSelect }: RangePickerProps) {
   const [open, setOpen] = useState(false);
   const custom = toInterval(selected);
-  const [picked, setPicked] = useState<DayPickerRange | undefined>(
-    custom
+
+  // Keyed on the selection: a `useState` initialiser runs once, so a picker
+  // reopened after the window moved would apply the interval it first saw.
+  const [picked, setPicked] = useState<DayPickerRange | undefined>(undefined);
+  const showing =
+    picked ??
+    (custom
       ? {
           from: new Date(`${custom.from}T00:00:00`),
           to: new Date(`${custom.to}T00:00:00`),
         }
-      : undefined,
-  );
+      : undefined);
 
   const presets = RANGE_PRESETS.filter((preset) =>
     offered.includes(preset.token),
@@ -67,7 +71,14 @@ export function RangePicker({ offered, selected, onSelect }: RangePickerProps) {
           {label}
         </ToggleGroupItem>
       ))}
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          // Opening starts from what is selected now, not from the last draft.
+          if (next) setPicked(undefined);
+          setOpen(next);
+        }}
+      >
         <PopoverTrigger
           render={
             <ToggleGroupItem
@@ -93,9 +104,9 @@ export function RangePicker({ offered, selected, onSelect }: RangePickerProps) {
             mode="range"
             resetOnSelect
             showOutsideDays={false}
-            selected={picked}
+            selected={showing}
             onSelect={(range) => setPicked(range)}
-            defaultMonth={picked?.from}
+            defaultMonth={showing?.from}
             numberOfMonths={
               typeof window !== "undefined" && window.innerWidth < 640 ? 1 : 2
             }
@@ -106,13 +117,13 @@ export function RangePicker({ offered, selected, onSelect }: RangePickerProps) {
             </Button>
             <Button
               size="sm"
-              disabled={!isWholeSpan(picked)}
+              disabled={!isWholeSpan(showing)}
               onClick={() => {
-                if (!isWholeSpan(picked)) return;
+                if (!isWholeSpan(showing)) return;
                 onSelect(
                   toRangeToken({
-                    from: toISODate(picked.from),
-                    to: toISODate(picked.to),
+                    from: toISODate(showing.from),
+                    to: toISODate(showing.to),
                   }),
                 );
                 setOpen(false);

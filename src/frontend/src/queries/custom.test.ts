@@ -132,12 +132,11 @@ describe("metricResultQuery", () => {
 });
 
 describe("metricResultQuery cache identity", () => {
-  it("gives every window, zone and bucket mode an entry of its own", () => {
+  it("gives every window and bucket mode an entry of its own", () => {
     const keys = [
       metricResultQuery("commits"),
       metricResultQuery("commits", { range: "P30D" }),
       metricResultQuery("commits", { range: "P1Y" }),
-      metricResultQuery("commits", { range: "P30D", tz: "Europe/Belgrade" }),
       metricResultQuery("commits", { range: "P30D", bucket: false }),
     ].map((options) => JSON.stringify(options.queryKey));
 
