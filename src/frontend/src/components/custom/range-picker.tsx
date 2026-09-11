@@ -58,7 +58,9 @@ export function RangePicker({ offered, selected, onSelect }: RangePickerProps) {
       }}
       variant="outline"
       size="default"
-      className="flex-wrap"
+      // The group ships `w-fit`, which overflows its container rather than
+      // wrapping; capping it at the container is what lets the wrap engage.
+      className="max-w-full min-w-0 flex-wrap"
     >
       {presets.map(({ token, label }) => (
         <ToggleGroupItem key={token} value={token}>

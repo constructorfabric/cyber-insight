@@ -6,14 +6,22 @@ import { CustomLineChart } from "@/components/custom/custom-line-chart";
 import { CustomPieChart } from "@/components/custom/custom-pie-chart";
 import { CustomStat } from "@/components/custom/custom-stat";
 import { CustomTable } from "@/components/custom/custom-table";
+import { ComingSoon } from "@/components/widgets/coming-soon";
 
 export interface CustomWidgetProps {
   widget: Widget;
   result?: MetricResult;
   error?: Error;
+  /** Whether a time range was asked for, which changes what empty means. */
+  windowed?: boolean;
 }
 
-export function CustomWidget({ widget, result, error }: CustomWidgetProps) {
+export function CustomWidget({
+  widget,
+  result,
+  error,
+  windowed,
+}: CustomWidgetProps) {
   if (error) {
     return (
       <Alert variant="destructive">
@@ -23,7 +31,17 @@ export function CustomWidget({ widget, result, error }: CustomWidgetProps) {
   }
 
   if (!result || result.rows.length === 0) {
-    return <p>No data.</p>;
+    return (
+      <ComingSoon
+        variant="card"
+        state="empty"
+        label={
+          windowed
+            ? "Nothing in this window. Try a wider range."
+            : "No data."
+        }
+      />
+    );
   }
 
   switch (widget.type) {

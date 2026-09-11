@@ -129,7 +129,7 @@ function CustomDashboardBody({
 
   return (
     <>
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <h1 className={cn(TEXT_TITLE, "shrink-0")}>{dashboard.title}</h1>
         {offered && offered.length > 0 && range ? (
           <RangePicker
@@ -285,6 +285,7 @@ function DashboardWidgetSlot({
           widget={widgetState.data}
           result={resultState.data}
           error={resultState.error as Error | undefined}
+          windowed={Boolean(options)}
         />
       </CardContent>
       <WidgetDrilldown
