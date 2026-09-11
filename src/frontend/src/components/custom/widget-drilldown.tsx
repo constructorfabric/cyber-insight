@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
 import { metricQuery, metricResultQuery } from "@/queries/custom";
+import type { RunOptions } from "@/api/custom-client";
 import { TEXT_BODY, TEXT_LABEL } from "@/lib/type-scale";
 import { cn } from "@/lib/utils";
 
@@ -39,12 +40,15 @@ export function WidgetDrilldown({
   label,
   open,
   onOpenChange,
+  options,
 }: {
   widget: Widget;
   name: string;
   label: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The window the card was read over, if it was read over one. */
+  options?: RunOptions;
 }) {
   const [view, setView] = useState<View>({ kind: "rows" });
 
@@ -92,7 +96,7 @@ export function WidgetDrilldown({
 
         {open && view.kind === "rows" ? (
           <>
-            <Rows metric={widget.detail ?? widget.metric} />
+            <Rows metric={widget.detail ?? widget.metric} options={options} />
             <Definitions widget={widget} name={name} onOpen={setView} />
           </>
         ) : null}
@@ -185,11 +189,26 @@ function StoredMetric({ name }: { name: string }) {
   return <MetricSummary definition={definition.data} />;
 }
 
-function Rows({ metric }: { metric: string }) {
+function Rows({
+  metric,
+  options,
+}: {
+  metric: string;
+  options?: RunOptions;
+}) {
   const definition = useQuery(metricQuery(metric));
-  const result = useQuery(metricResultQuery(metric));
 
-  if (result.isPending) return <CenteredSpinner className="min-h-40" />;
+  // The rows have to be the rows behind the number on the card, so they take
+  // the card's own window — and a metric with no clock of its own cannot be
+  // windowed at all.
+  const windowed = options && Boolean(definition.data?.time);
+  const result = useQuery({
+    ...metricResultQuery(metric, windowed ? options : undefined),
+    enabled: definition.isSuccess,
+  });
+
+  if (definition.isPending || result.isPending)
+    return <CenteredSpinner className="min-h-40" />;
   if (result.isError) {
     return (
       <p role="alert" className={cn(TEXT_BODY, "text-destructive")}>
@@ -209,7 +228,11 @@ function Rows({ metric }: { metric: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      {table ? <p className={cn(TEXT_LABEL, "font-mono")}>{table}</p> : null}
+      {table ? (
+        <p className={TEXT_LABEL}>
+          Read from <span className="font-mono">{table}</span>
+        </p>
+      ) : null}
       <div className="max-h-[60vh] min-w-0 overflow-auto">
         <CustomTable result={result.data} />
       </div>

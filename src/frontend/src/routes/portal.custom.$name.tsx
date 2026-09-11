@@ -294,6 +294,7 @@ function DashboardWidgetSlot({
         label={heading ?? name}
         open={drilldown}
         onOpenChange={setDrilldown}
+        options={options}
       />
     </Card>
   );
