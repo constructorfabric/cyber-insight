@@ -108,10 +108,6 @@ pub struct Measurable {
     pub field: String,
 }
 
-#[expect(
-    dead_code,
-    reason = "the query engine reads the registry through these; this crate only declares them until it lands"
-)]
 impl Dataset {
     pub fn dimension(&self, field: &str) -> Option<&Dimension> {
         self.dimensions

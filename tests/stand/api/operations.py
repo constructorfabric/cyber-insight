@@ -105,7 +105,7 @@ def _i(method: str, suffix: str) -> Operation:
     return Operation(method=method, path=identity_path(suffix), service="identity")
 
 
-#: analytics — 28 operations.
+#: analytics — 29 operations.
 ANALYTICS_OPERATIONS: Final[tuple[Operation, ...]] = (
     _a("GET", "/v1/queries"),
     _a("POST", "/v1/queries"),
@@ -115,6 +115,9 @@ ANALYTICS_OPERATIONS: Final[tuple[Operation, ...]] = (
     _a("POST", f"/v1/queries/{SOME_ID}/run"),
     _a("GET", "/v1/metric-definitions"),
     _a("POST", "/v1/metric-results"),
+    # The query contract over the declared datasets. One literal url: it takes a
+    # body and no path parameter, and the dataset it reads is named in the body.
+    _a("POST", "/v1/query"),
     # What a query may be built over. Read-only over the declarations the build
     # loaded at boot, so both are installation-wide reads with no tenant scope.
     _a("GET", "/v1/datasets"),

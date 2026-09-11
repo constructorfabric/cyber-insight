@@ -14,6 +14,11 @@ use toolkit_canonical_errors::resource_error;
 #[resource_error("gts.cf.insight.analytics_api.metric.v1~")]
 pub struct MetricError;
 
+/// Resource namespace for `/v1/query` (the query contract over declared
+/// datasets). Every refusal is an `invalid_argument` naming the request field.
+#[resource_error("gts.cf.insight.analytics_api.query.v1~")]
+pub struct QueryError;
+
 /// Resource namespace for `/v1/datasets*` (what a query may be built over). A
 /// key this build declares no dataset for is a `not_found`, not a refused
 /// request.

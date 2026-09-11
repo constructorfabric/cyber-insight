@@ -28,8 +28,8 @@ from .common import UnzonedDatetime
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 from enum import StrEnum
 from typing import Any
-from uuid import UUID
 from datetime import date as date_aliased
+from uuid import UUID
 
 
 class AiConfigResponse(BaseModel):
@@ -728,6 +728,46 @@ class PutSettingsRequest(BaseModel):
     system_prompt: str
 
 
+class Fn(StrEnum):
+    count = 'count'
+
+
+class Fn1(StrEnum):
+    sum = 'sum'
+
+
+class Fn2(StrEnum):
+    avg = 'avg'
+
+
+class Fn3(StrEnum):
+    min = 'min'
+
+
+class Fn4(StrEnum):
+    max = 'max'
+
+
+class QueryAnswerFlags(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    truncated: bool = Field(..., description="More groups matched than the limit admits; the rows are the first\n`limit` of them in the answer's order.")
+
+
+class QueryColumnKind(StrEnum):
+    dimension = 'dimension'
+    label = 'label'
+    bucket = 'bucket'
+    aggregate = 'aggregate'
+
+
+class QueryColumnType(StrEnum):
+    text = 'text'
+    number = 'number'
+    date = 'date'
+
+
 class QueryDatasetDimension(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -750,6 +790,158 @@ class QueryDatasetTimeField(BaseModel):
     )
     default: bool = Field(..., description="The field a query's window binds to when it names none.")
     field: str
+
+
+class QueryDirection(StrEnum):
+    asc = 'asc'
+    desc = 'desc'
+
+
+class Op(StrEnum):
+    eq = 'eq'
+
+
+class Op1(StrEnum):
+    in_ = 'in'
+
+
+class Op2(StrEnum):
+    gt = 'gt'
+
+
+class Op3(StrEnum):
+    gte = 'gte'
+
+
+class Op4(StrEnum):
+    lt = 'lt'
+
+
+class Op5(StrEnum):
+    lte = 'lte'
+
+
+class Op6(StrEnum):
+    between = 'between'
+
+
+class Op7(StrEnum):
+    not_null = 'not_null'
+
+
+class QueryFilter8(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared dimension or measurable of the dataset.')
+    op: Op7
+
+
+class Op8(StrEnum):
+    like = 'like'
+
+
+class QueryFilter9(BaseModel):
+    """
+    SQL `LIKE`: `%` matches any run, `_` one character.
+    """
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared dimension of the dataset.')
+    op: Op8
+    value: str = Field(..., max_length=256)
+
+
+class Op9(StrEnum):
+    match = 'match'
+
+
+class QueryFilter10(BaseModel):
+    """
+    An RE2 regular expression, unanchored.
+    """
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared dimension of the dataset.')
+    op: Op9
+    value: str = Field(..., max_length=256)
+
+
+class QueryFilterValue(RootModel[str | float | bool]):
+    root: str | float | bool = Field(..., description='A filter value: text, a number, or a boolean')
+
+
+class QueryGrain(StrEnum):
+    day = 'day'
+    week = 'week'
+    month = 'month'
+
+
+class Axis(StrEnum):
+    dimension = 'dimension'
+
+
+class QueryGroupAxis1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    axis: Axis
+    field: str = Field(..., description='A declared dimension of the dataset.')
+
+
+class Axis1(StrEnum):
+    time = 'time'
+
+
+class QueryGroupAxis2(BaseModel):
+    """
+    The time bucket as a group axis; its width is `time.grain`.
+    """
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    axis: Axis1
+
+
+class QueryGroupAxis(RootModel[QueryGroupAxis1 | QueryGroupAxis2]):
+    root: QueryGroupAxis1 | QueryGroupAxis2
+
+
+class QueryLimits(BaseModel):
+    """
+    The contract's request bounds, identical for every dataset.
+    """
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    default_limit: int = Field(..., description='Rows a query gets when it sets no ceiling of its own.', ge=0)
+    max_aggregates: int = Field(..., ge=0)
+    max_filter_values: int = Field(..., ge=0)
+    max_filters: int = Field(..., ge=0)
+    max_group_axes: int = Field(..., ge=0)
+    max_limit: int = Field(..., description='Rows a query may ask for at most; over it the query is refused, not clipped.', ge=0)
+    max_name_chars: int = Field(..., description="Longest an aggregate's name may be, in characters.", ge=0)
+    max_order_terms: int = Field(..., ge=0)
+
+
+class QueryOrder(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    by: str = Field(..., description='A column the answer reports: a grouped dimension, `time`, or an aggregate name.')
+    dir: QueryDirection | None = None
+
+
+class QueryTime(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str | None = Field(None, description="A declared time field; the dataset's default when omitted.")
+    from_: date_aliased = Field(..., alias='from', description='Inclusive first day, UTC.')
+    grain: QueryGrain | None = None
+    to: date_aliased = Field(..., description='Inclusive last day, UTC.')
 
 
 class ReportCell(RootModel[str | float]):
@@ -1352,12 +1544,22 @@ class MetricSnapshot(BaseModel):
     value: str = Field(..., description='The formatted value the tile shows.')
 
 
+class QueryAnswerColumn(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    kind: QueryColumnKind
+    name: str
+    type: QueryColumnType
+
+
 class QueryDataset(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
     dimensions: list[QueryDatasetDimension] = Field(..., description='The axes a query may group by, and filter on beside the measurables.')
     key: str
+    limits: QueryLimits = Field(..., description='The bounds a request against this dataset must stay inside.')
     measurables: list[QueryDatasetMeasurable] = Field(..., description='The columns an aggregate may fold.')
     time_fields: list[QueryDatasetTimeField] = Field(..., description='The columns a query may bound its window by, and bucket on.')
 
@@ -1367,6 +1569,74 @@ class QueryDatasetList(BaseModel):
         extra='forbid',
     )
     datasets: list[QueryDataset]
+
+
+class QueryFilter1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared dimension or measurable of the dataset.')
+    op: Op
+    value: QueryFilterValue
+
+
+class QueryFilter2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared dimension or measurable of the dataset.')
+    op: Op1
+    values: list[QueryFilterValue] = Field(..., description="At least one value, and at most the contract's cap.", max_length=256, min_length=1)
+
+
+class QueryFilter3(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    op: Op2
+    value: QueryFilterValue
+
+
+class QueryFilter4(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    op: Op3
+    value: QueryFilterValue
+
+
+class QueryFilter5(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    op: Op4
+    value: QueryFilterValue
+
+
+class QueryFilter6(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    op: Op5
+    value: QueryFilterValue
+
+
+class QueryFilter7(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    high: QueryFilterValue = Field(..., description='Inclusive upper bound.')
+    low: QueryFilterValue = Field(..., description='Inclusive lower bound.')
+    op: Op6
+
+
+class QueryFilter(RootModel[QueryFilter1 | QueryFilter2 | QueryFilter3 | QueryFilter4 | QueryFilter5 | QueryFilter6 | QueryFilter7 | QueryFilter8 | QueryFilter9 | QueryFilter10]):
+    root: QueryFilter1 | QueryFilter2 | QueryFilter3 | QueryFilter4 | QueryFilter5 | QueryFilter6 | QueryFilter7 | QueryFilter8 | QueryFilter9 | QueryFilter10
 
 
 class ReportExportRequest(BaseModel):
@@ -1571,6 +1841,68 @@ class MetricResultViewDto(RootModel[MetricResultViewDto1 | MetricResultViewDto2 
     root: MetricResultViewDto1 | MetricResultViewDto2 | MetricResultViewDto3 | MetricResultViewDto4 | MetricResultViewDto5 | MetricResultViewDto6 | MetricResultViewDto7
 
 
+class QueryAggregate1(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    filter: QueryFilter | None = None
+    fn: Fn
+    name: str = Field(..., description='What the answer column is called.')
+
+
+class QueryAggregate2(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    filter: QueryFilter | None = None
+    fn: Fn1
+    name: str = Field(..., description='What the answer column is called.')
+
+
+class QueryAggregate3(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    filter: QueryFilter | None = None
+    fn: Fn2
+    name: str = Field(..., description='What the answer column is called.')
+
+
+class QueryAggregate4(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    filter: QueryFilter | None = None
+    fn: Fn3
+    name: str = Field(..., description='What the answer column is called.')
+
+
+class QueryAggregate5(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    field: str = Field(..., description='A declared measurable of the dataset.')
+    filter: QueryFilter | None = None
+    fn: Fn4
+    name: str = Field(..., description='What the answer column is called.')
+
+
+class QueryAggregate(RootModel[QueryAggregate1 | QueryAggregate2 | QueryAggregate3 | QueryAggregate4 | QueryAggregate5]):
+    root: QueryAggregate1 | QueryAggregate2 | QueryAggregate3 | QueryAggregate4 | QueryAggregate5
+
+
+class QueryAnswer(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    columns: list[QueryAnswerColumn]
+    flags: QueryAnswerFlags
+    rows: list[list[Any]]
+
+
 class MetricDrilldownResponse(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -1643,3 +1975,16 @@ class MetricResultsResponse(BaseModel):
         extra='forbid',
     )
     metrics: list[MetricResultDto]
+
+
+class Query(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    aggregates: list[QueryAggregate]
+    dataset: str
+    filters: list[QueryFilter] | None = Field(None, description='Row filters, narrowing the scan before aggregation.')
+    group_by: list[QueryGroupAxis] | None = None
+    limit: int | None = Field(None, description='Row ceiling; a query over the cap is refused rather than clipped.', ge=0)
+    order: list[QueryOrder] | None = None
+    time: QueryTime = Field(..., description='The window every scan is bounded by, and the width of its buckets.')

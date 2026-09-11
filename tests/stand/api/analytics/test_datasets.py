@@ -66,6 +66,9 @@ def test_the_listing_describes_every_dataset_a_query_may_name(api: ApiClient) ->
             f"{dataset.key}: a window binds to exactly one default time field: "
             f"{dataset.time_fields}"
         )
+        assert dataset.limits.max_limit >= dataset.limits.default_limit, (
+            f"{dataset.key}: the default row ceiling is above the maximum: {dataset.limits}"
+        )
         for dimension in dataset.dimensions:
             if dimension.label is not None:
                 assert dimension.label == f"{dimension.field}_label", (
