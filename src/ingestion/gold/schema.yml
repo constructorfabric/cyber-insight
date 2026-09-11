@@ -94,8 +94,11 @@ models:
     description: >
       One row per authored commit that reaches a git measure: the surviving row
       of the commit-hash collapse, with branch scope, repository, project and
-      source dimensions already resolved. Materialized so the commit class read
-      and the collapse run once per build in their own query budget.
+      source dimensions already resolved. Branch scope belongs to the commit,
+      not to the copy: a hash held by several repositories lands if any copy
+      did, and a copy whose own repository shows the landing is the one that
+      survives. Materialized so the commit class read and the collapse run
+      once per build in their own query budget.
     columns:
       - name: commit_hash
         description: "Commit identifier; one row per tenant, data source and hash"
@@ -162,11 +165,15 @@ models:
       content when the commit was written: one row per
       tenant/source/project/repo/commit.
       Materialized so the membership joins run once per build in their own
-      query budget; the git evidence build reads it as a semi-join set
-      alongside the sync-time is_default_branch flag.
+      query budget; the commit collapse reads it by tenant, data source and
+      hash alongside the sync-time is_default_branch flag.
     columns:
       - name: commit_hash
         description: "Commit identifier within the repository"
+        tests:
+          - not_null
+      - name: data_source
+        description: "Git source discriminator (insight_github, insight_gitlab, ...)"
         tests:
           - not_null
 
