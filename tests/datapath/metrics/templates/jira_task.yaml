@@ -304,7 +304,7 @@ templates:
   jira_issuetype:
     unique_key: null
     source_id: jira-test
-    tenant_id: "00000000-0000-0000-0000-000000000000"
+    tenant_id: "{{ tenant }}"
     id: null
     name: null
     untranslatedName: null
@@ -369,6 +369,26 @@ templates:
     id: "10005"
     name: "Ошибка"
     untranslatedName: Bug
+
+  # ── Operator value map (config.task_value_map) ───────────────────────────
+  # Binds a type NAME to a canonical issue kind. Jira mints a distinct type id
+  # per project, so the map keys on the normalized name — lower/trim of
+  # lower(trimBoth(coalesce(nullIf(untranslatedName, ''), name))) — the form jira__task_issuetypes joins on.
+  jira_value_type:
+    tenant_id: "{{ tenant }}"
+    insight_source_id: jira-test
+    data_source: jira
+    field_id: type
+    value_id: null
+    valid_from: "1970-01-01 00:00:00.000"
+    recorded_at: "2026-01-01 00:00:00.000"
+    unique_key: null
+    canonical_value: null
+    value_display: ""
+    is_deleted: 0
+    note: ""
+    recorded_by: fixture
+    _version: "2026-01-01 00:00:00.000"
 
   # ── Deletion / visibility censuses (specs/DELETION-AND-VISIBILITY.md) ────
   # jira_census: one row per issue observed alive by the id-only sweep. An
