@@ -54,6 +54,13 @@ export type Widget = TableWidget | SeriesWidget | StatWidget | PieWidget;
 export interface MetricDefinition {
   database?: string;
   table: string;
+  /**
+   * The timestamp a reader may window and bucket by. A metric without one
+   * answers every row, whatever the board's picker is set to.
+   */
+  time?: { json?: string; column?: string; type?: string };
+  /** The widest window this metric will answer, as an ISO duration. */
+  max_range?: string;
   fields: {
     json?: string;
     column?: string;
@@ -96,6 +103,9 @@ export interface Dashboard {
   items?: DashboardItem[];
   /** The older shorthand: a list of nothing but widgets. */
   widgets?: string[];
+  /** The windows this board offers, as server tokens. None means no picker. */
+  time_ranges?: string[];
+  default_range?: string;
 }
 
 
@@ -254,10 +264,27 @@ export async function fetchWidget(name: string): Promise<Widget> {
   return readJson<Widget>(res);
 }
 
-export async function runMetric(name: string): Promise<MetricResult> {
+/**
+ * What a reader asked one run for. Every field is optional and an absent one
+ * means the server's own default: no window, UTC, bucketed.
+ */
+export interface RunOptions {
+  range?: string;
+  bucket?: boolean;
+}
+
+export async function runMetric(
+  name: string,
+  options?: RunOptions
+): Promise<MetricResult> {
   const res = await fetchWithAuth(
     `${BASE}/metrics/${encodeURIComponent(name)}/run`,
-    { method: "POST" }
+    {
+      method: "POST",
+      ...(options
+        ? { headers: JSON_HEADERS, body: JSON.stringify(options) }
+        : {}),
+    }
   );
   return readJson<MetricResult>(res);
 }

@@ -13,10 +13,11 @@ const SILVER_DATABASE: &str = "silver";
 const IDENTITY_DATABASE: &str = "identity";
 // INVARIANT: mirrors the ingest schema in `tables::CREATE_TABLE`.
 const INGEST_COLUMNS: [&str; 4] = ["id", "table_name", "raw_data", "received_at"];
-const LIST_COLUMNS: &str = "SELECT database, table, name, type
-FROM system.columns
-WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', 'default')
-ORDER BY database, table, position";
+const LIST_COLUMNS: &str = "SELECT c.database AS database, c.table AS table, c.name AS name, c.type AS type, t.engine AS engine
+FROM system.columns AS c
+INNER JOIN system.tables AS t ON t.database = c.database AND t.name = c.table
+WHERE c.database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA', 'default')
+ORDER BY c.database, c.table, c.position";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Layer {
@@ -28,11 +29,36 @@ pub(crate) enum Layer {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableEngine {
+    MergeTree,
+    ReplacingMergeTree,
+    Other,
+}
+
+impl TableEngine {
+    fn parse(value: &str) -> Self {
+        if value.ends_with("ReplacingMergeTree") {
+            return Self::ReplacingMergeTree;
+        }
+        if value.ends_with("MergeTree") {
+            return Self::MergeTree;
+        }
+
+        Self::Other
+    }
+
+    pub(crate) fn requires_final(self) -> bool {
+        self == Self::ReplacingMergeTree
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TableSchema {
     pub(crate) database: String,
     pub(crate) table: String,
     pub(crate) layer: Layer,
+    pub(crate) engine: TableEngine,
     /// (column, `ClickHouse` type), in the table's own order.
     pub(crate) columns: Vec<(String, String)>,
 }
@@ -52,12 +78,31 @@ struct ColumnRow {
     table: String,
     name: String,
     r#type: String,
+    engine: String,
 }
 
 pub(crate) struct Catalog {
     client: insight_clickhouse::Client,
     gold_database: String,
     cached: RwLock<Option<Cached>>,
+}
+
+#[cfg(test)]
+impl Catalog {
+    /// A catalogue that already holds these tables and never reloads.
+    pub(crate) fn fixed(tables: Vec<TableSchema>) -> Self {
+        Self {
+            client: insight_clickhouse::Client::new(insight_clickhouse::Config::new(
+                "http://catalogue.invalid",
+                "insight",
+            )),
+            gold_database: "insight".to_owned(),
+            cached: RwLock::new(Some(Cached {
+                at: Instant::now(),
+                tables,
+            })),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -77,24 +122,7 @@ impl Catalog {
 
     /// Every table the connected user can see, cached for `CACHE_TTL`.
     pub(crate) async fn tables(&self) -> Result<Vec<TableSchema>, CatalogError> {
-        let fresh = self
-            .cached
-            .read()
-            .await
-            .as_ref()
-            .filter(|cached| cached.at.elapsed() < CACHE_TTL)
-            .map(|cached| cached.tables.clone());
-        if let Some(tables) = fresh {
-            return Ok(tables);
-        }
-
-        let tables = self.load().await?;
-        *self.cached.write().await = Some(Cached {
-            at: Instant::now(),
-            tables: tables.clone(),
-        });
-
-        Ok(tables)
+        self.read(<[TableSchema]>::to_vec).await
     }
 
     /// The named tables only, for a schema lookup. `database.table` or a bare
@@ -103,12 +131,49 @@ impl Catalog {
         &self,
         names: &[String],
     ) -> Result<Vec<TableSchema>, CatalogError> {
-        Ok(self
-            .tables()
-            .await?
-            .into_iter()
-            .filter(|schema| names.iter().any(|name| schema.is_named(name)))
-            .collect())
+        self.read(|tables| {
+            tables
+                .iter()
+                .filter(|schema| names.iter().any(|name| schema.is_named(name)))
+                .cloned()
+                .collect()
+        })
+        .await
+    }
+
+    /// Which engine holds one table, and `Other` for a table this catalogue
+    /// has never heard of.
+    pub(crate) async fn engine_of(&self, name: &str) -> Result<TableEngine, CatalogError> {
+        self.read(|tables| {
+            tables
+                .iter()
+                .find(|schema| schema.is_named(name))
+                .map_or(TableEngine::Other, |schema| schema.engine)
+        })
+        .await
+    }
+
+    /// Answers `pick` over the cached catalogue, reloading it when the cache
+    /// has aged out. Only what `pick` keeps is copied.
+    async fn read<T>(&self, pick: impl Fn(&[TableSchema]) -> T) -> Result<T, CatalogError> {
+        {
+            let cached = self.cached.read().await;
+            if let Some(cached) = cached
+                .as_ref()
+                .filter(|cached| cached.at.elapsed() < CACHE_TTL)
+            {
+                return Ok(pick(&cached.tables));
+            }
+        }
+
+        let tables = self.load().await?;
+        let picked = pick(&tables);
+        *self.cached.write().await = Some(Cached {
+            at: Instant::now(),
+            tables,
+        });
+
+        Ok(picked)
     }
 
     async fn load(&self) -> Result<Vec<TableSchema>, CatalogError> {
@@ -148,6 +213,7 @@ fn schema_of(columns_of_one_table: &[ColumnRow], gold_database: &str) -> Option<
         database: first.database.clone(),
         table: first.table.clone(),
         layer: classify(&first.database, gold_database, &columns),
+        engine: TableEngine::parse(&first.engine),
         columns,
     })
 }
@@ -193,6 +259,7 @@ mod tests {
         table: String,
         name: String,
         r#type: String,
+        engine: String,
     }
 
     fn column(database: &str, table: &str, name: &str, kind: &str) -> ColumnFixture {
@@ -201,6 +268,7 @@ mod tests {
             table: table.to_owned(),
             name: name.to_owned(),
             r#type: kind.to_owned(),
+            engine: "MergeTree".to_owned(),
         }
     }
 
@@ -243,7 +311,7 @@ mod tests {
             );
         }
 
-        assert!(LIST_COLUMNS.contains("ORDER BY database, table, position"));
+        assert!(LIST_COLUMNS.contains("ORDER BY c.database, c.table, c.position"));
     }
 
     #[test]
@@ -301,6 +369,7 @@ mod tests {
                     database: "silver".to_owned(),
                     table: "git_commits".to_owned(),
                     layer: Layer::Silver,
+                    engine: TableEngine::MergeTree,
                     columns: vec![
                         ("sha".to_owned(), "String".to_owned()),
                         ("lines_changed".to_owned(), "UInt32".to_owned()),
@@ -310,6 +379,7 @@ mod tests {
                     database: "silver".to_owned(),
                     table: "git_reviews".to_owned(),
                     layer: Layer::Silver,
+                    engine: TableEngine::MergeTree,
                     columns: vec![("reviewer".to_owned(), "String".to_owned())],
                 },
             ]
@@ -359,5 +429,18 @@ mod tests {
             .unwrap_or_else(|error| panic!("the cached listing should not query again: {error}"));
 
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn a_schema_carries_the_engine_loaded_with_its_columns() {
+        let mut replacing = column("silver", "events", "id", "UInt64");
+        replacing.engine = "ReplicatedReplacingMergeTree".to_owned();
+        let (_mock, catalog) = catalog_over(vec![replacing]);
+
+        let tables = listing(&catalog).await;
+
+        assert_eq!(tables[0].engine, TableEngine::ReplacingMergeTree);
+        assert!(tables[0].engine.requires_final());
+        assert!(!TableEngine::MergeTree.requires_final());
     }
 }

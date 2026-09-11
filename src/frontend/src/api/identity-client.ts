@@ -32,7 +32,6 @@ export interface MeResponse {
   /** Absent from an older service; readers treat that as `org_chart`. */
   visibility_policy?: VisibilityPolicy;
 }
-
 /**
  * The caller's identity and active roles. Live on every call: granting or
  * revoking a role is visible on the next fetch, no re-login needed.

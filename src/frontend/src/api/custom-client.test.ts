@@ -119,3 +119,33 @@ describe("runMetric", () => {
     await expect(runMetric("broken")).rejects.toBeInstanceOf(CustomApiError);
   });
 });
+
+describe("runMetric", () => {
+  it("sends no body at all when nothing was picked", async () => {
+    mockFetch.mockResolvedValueOnce(response({ columns: [], rows: [] }));
+
+    await runMetric("commits");
+
+    expect(mockFetch).toHaveBeenCalledWith("/api/v3/v1/metrics/commits/run", {
+      method: "POST",
+    });
+  });
+
+  it("sends the range, the zone and the bucket the reader asked for", async () => {
+    mockFetch.mockResolvedValueOnce(response({ columns: [], rows: [] }));
+
+    await runMetric("commits", {
+      range: "P30D",
+      bucket: false,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith("/api/v3/v1/metrics/commits/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        range: "P30D",
+        bucket: false,
+      }),
+    });
+  });
+});
