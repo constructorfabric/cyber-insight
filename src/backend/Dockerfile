@@ -81,6 +81,7 @@ COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
 RUN useradd -U -u 1000 -m appuser && chown -R 1000:1000 /app
+USER 1000
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
@@ -98,6 +99,7 @@ COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
 RUN useradd -U -u 1000 -m appuser && chown -R 1000:1000 /app
+USER 1000
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
@@ -108,41 +110,35 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 FROM runtime AS analytics
 COPY --from=build-analytics --chown=1000:1000 /build/target/release/analytics /app/analytics
 COPY --from=build-analytics --chown=1000:1000 /build/services/analytics/config/ /app/config/
-USER 1000
 EXPOSE 8081
 CMD ["/app/analytics", "--", "/app/analytics", "-c", "/app/config/insight.yaml", "run"]
 
 FROM runtime AS authenticator
 COPY --from=build-authenticator --chown=1000:1000 /build/target/release/authenticator /app/authenticator
 COPY --from=build-authenticator --chown=1000:1000 /build/services/authenticator/config/ /app/config/
-USER 1000
 EXPOSE 8083
 CMD ["/app/authenticator", "--", "/app/authenticator", "-c", "/app/config/insight.yaml", "run"]
 
 FROM runtime AS identity-resolution
 COPY --from=build-identity-resolution --chown=1000:1000 /build/target/release/identity-resolution /app/identity-resolution
 COPY --from=build-identity-resolution --chown=1000:1000 /build/services/identity-resolution/config/ /app/config/
-USER 1000
 EXPOSE 8082
 CMD ["/app/identity-resolution", "--", "/app/identity-resolution", "-c", "/app/config/insight.yaml"]
 
 FROM runtime AS insight-v3-core
 COPY --from=build-insight-v3-core --chown=1000:1000 /build/target/release/insight-v3-core /app/insight-v3-core
 COPY --from=build-insight-v3-core --chown=1000:1000 /build/services/insight-v3-core/config/ /app/config/
-USER 1000
 EXPOSE 8086
 CMD ["/app/insight-v3-core", "--", "/app/insight-v3-core", "-c", "/app/config/insight.yaml", "run"]
 
 FROM runtime-git AS git-cli-proxy
 COPY --from=build-git-cli-proxy --chown=1000:1000 /build/target/release/git-cli-proxy /app/git-cli-proxy
 COPY --from=build-git-cli-proxy --chown=1000:1000 /build/services/git-cli-proxy/config/ /app/config/
-USER 1000
 EXPOSE 8084
 CMD ["/app/git-cli-proxy", "--", "/app/git-cli-proxy", "-c", "/app/config/insight.yaml"]
 
 FROM runtime AS previews
 COPY --from=build-previews --chown=1000:1000 /build/target/release/previews /app/previews
 COPY --from=build-previews --chown=1000:1000 /build/services/previews/config/ /app/config/
-USER 1000
 EXPOSE 8085
 CMD ["/app/previews", "--", "/app/previews", "-c", "/app/config/insight.yaml"]
