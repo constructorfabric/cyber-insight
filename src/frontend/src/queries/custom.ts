@@ -24,6 +24,7 @@ import {
   runMetric,
   sendChat,
 } from "@/api/custom-client";
+import type { RunOptions } from "@/api/custom-client";
 
 const WIDGET_QUERY_PREFIX = ["custom", "widget"] as const;
 const NAME_PAGES_PREFIX = ["custom", "names"] as const;
@@ -93,10 +94,24 @@ export function widgetQuery(name: string) {
   });
 }
 
-export function metricResultQuery(name: string) {
+/**
+ * One metric read over one window.
+ *
+ * The window, the zone and the bucket mode are all in the key: without them
+ * switching from a year to yesterday serves the year's rows out of cache,
+ * which is a wrong number rather than an error.
+ */
+export function metricResultQuery(name: string, options?: RunOptions) {
   return queryOptions({
-    queryKey: ["custom", "metric-result", name],
-    queryFn: () => runMetric(name),
+    queryKey: [
+      "custom",
+      "metric-result",
+      name,
+      options?.range ?? null,
+      options?.tz ?? null,
+      options?.bucket ?? null,
+    ],
+    queryFn: () => runMetric(name, options),
   });
 }
 

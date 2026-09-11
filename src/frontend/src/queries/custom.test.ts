@@ -124,6 +124,39 @@ describe("metricResultQuery", () => {
     await expect(options.queryFn?.(undefined as never)).resolves.toEqual(
       result,
     );
-    expect(customClient.runMetric).toHaveBeenCalledWith("commits_per_day");
+    expect(customClient.runMetric).toHaveBeenCalledWith(
+      "commits_per_day",
+      undefined,
+    );
+  });
+});
+
+describe("metricResultQuery cache identity", () => {
+  it("gives every window, zone and bucket mode an entry of its own", () => {
+    const keys = [
+      metricResultQuery("commits"),
+      metricResultQuery("commits", { range: "P30D" }),
+      metricResultQuery("commits", { range: "P1Y" }),
+      metricResultQuery("commits", { range: "P30D", tz: "Europe/Belgrade" }),
+      metricResultQuery("commits", { range: "P30D", bucket: false }),
+    ].map((options) => JSON.stringify(options.queryKey));
+
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("asks the transport for exactly what the key says", async () => {
+    const result = { columns: ["total"], rows: [[2]] };
+    vi.mocked(customClient.runMetric).mockResolvedValue(result);
+
+    const options = metricResultQuery("commits", {
+      range: "P30D",
+      bucket: false,
+    });
+    await options.queryFn?.(undefined as never);
+
+    expect(customClient.runMetric).toHaveBeenCalledWith("commits", {
+      range: "P30D",
+      bucket: false,
+    });
   });
 });

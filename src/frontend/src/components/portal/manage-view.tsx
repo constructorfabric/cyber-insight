@@ -2,6 +2,7 @@ import { Suspense, lazy, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CenteredSpinner } from "@/components/widgets/centered-spinner";
+import { ProfileView } from "@/components/portal/profile-view";
 import { ComingSoon } from "@/components/widgets/coming-soon";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -86,6 +87,7 @@ export function ManageView({ item }: { item: string | null }) {
     );
   if (item === "ai-assistant") return <AiAssistantBody />;
   if (item === "whats-new") return <WhatsNewBody />;
+  if (item === "profile") return <ProfileView />;
   // PreviewsBody carries its own gate, so no wrapper.
   if (item === "previews") return <PreviewsBody />;
   return (
