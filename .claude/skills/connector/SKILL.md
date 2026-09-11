@@ -32,7 +32,7 @@ mode does not show up on the PR, so it cannot be caught by review alone.
 | A data test reading the connector's own tables carries `tags=['connector_quality', '<connector-name>']` | dbt test | No cluster runs a bare `dbt test`, so an UNTAGGED check runs nowhere and the condition it watches goes unreported indefinitely. Tagged `data_quality` instead, it joins the install-wide scheduled catalog and errors on every tenant that lacks the connector. The connector slug is the second half of an INTERSECTION selector — omit it and the check matches nothing. |
 
 ALWAYS run the guard before opening a PR — it is the only one of these that
-fails *before* merge (CI job `connector-wiring-guard`):
+fails *before* merge (the `Guards` job in CI):
 
 ```bash
 python3 scripts/ci/connector_wiring.py

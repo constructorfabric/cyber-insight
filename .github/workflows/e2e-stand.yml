@@ -1,4 +1,4 @@
-name: E2E — Compose stand
+name: E2E compose stand
 
 # The deployed-stand suite (tests/stand) run against a real compose stack: ghcr
 # images pinned to each component's chart appVersion, a real Keycloak login, and
@@ -22,10 +22,10 @@ name: E2E — Compose stand
 #                what executes.
 #
 # The two lane names are stable required contexts. The workflow starts on every
-# pull request so those contexts report as skipped, but the stand runs only for
-# merge groups, nightly runs, and manual dispatches. Superseded PR runs are
-# cancelled by the concurrency group. Wall-clock and flake history are in
-# .cf-studio/.plans/stage1-compose-e2e-suite/out/ci-wiring.md.
+# pull request so those contexts exist there; every job is skipped on a pull
+# request, a skipped required check counts as passed, and the stand runs only
+# for merge groups, nightly runs, and manual dispatches. Wall-clock and flake
+# history are in .cf-studio/.plans/stage1-compose-e2e-suite/out/ci-wiring.md.
 #
 # Every stand operation goes through ./dev-compose.sh test-stand — never the
 # bare up/down/seed a human developer uses. The pinned frontend, Keycloak auth
@@ -36,9 +36,9 @@ name: E2E — Compose stand
 on:
   pull_request:
     branches: [main]
-    # Deliberately NO `paths:` filter. This workflow emits the required
-    # `Stand E2E` check, and GitHub leaves a required check whose workflow never
-    # ran pending forever. Relevance is decided by the cheap `changes` job.
+    # Deliberately NO `paths:` filter. This workflow emits the required lane
+    # checks, and GitHub leaves a required check whose workflow never ran
+    # pending forever; a skipped job reports and passes.
   # Merge-queue builds: the queue's gh-readonly-queue/* branches emit
   # merge_group, and a required check must report there or every queued PR
   # times out and is evicted.
@@ -76,16 +76,16 @@ jobs:
   # Stages 2 (CI stand) and 3 (E2E stand) are meant to add a target to
   # `resolve-target` below rather than copy this file.
   # ─── changes ──────────────────────────────────────────────────────────────
-  # What an `on: paths:` filter would have done, moved into a job so the
-  # workflow always runs and the required umbrella below always reports. The
-  # same filter also covers events such as merge_group that support no paths.
+  # What an `on: paths:` filter would have done, moved into a job because
+  # events such as merge_group support no paths.
   #
   # `src/backend/**` is in the list, and its absence was the reason making this
   # required would have gated nothing that matters: the endpoint contracts this
   # suite asserts are implemented there, so a PR changing an analytics handler
   # has to run the stand or the gate is decorative.
   changes:
-    name: changes
+    name: Detect changes
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -198,7 +198,7 @@ jobs:
           emit
 
   build-pr-images:
-    name: Build PR images
+    name: Build images
     needs: changes
     if: github.event_name == 'merge_group'
     permissions:
@@ -225,7 +225,7 @@ jobs:
       authenticator_changed: ${{ needs.changes.outputs.authenticator == 'true' }}
 
   resolve-target:
-    name: resolve-target
+    name: Resolve target
     needs: changes
     if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.relevant == 'true' }}
     runs-on: ubuntu-latest
@@ -255,7 +255,7 @@ jobs:
   # passes `tests/stand` to pytest and forwards this on top, so naming a
   # subdirectory would ADD to the full collection instead of narrowing it.
   stand-runner:
-    name: shared stand runner
+    name: Stand runner
     needs: [changes, resolve-target, build-pr-images]
     if: |
       !cancelled()
@@ -596,7 +596,7 @@ jobs:
 
   # ─── aggregate result ─────────────────────────────────────────────────────
   # Merge groups and explicit stand runs get one aggregate result in addition
-  # to the stable lane contexts. Pull requests defer the aggregate with them.
+  # to the stable lane contexts.
   #
   # A skipped lane passes only when `changes` reported the diff irrelevant.
   stand-suite:
