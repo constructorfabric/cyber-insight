@@ -39,11 +39,14 @@ only under `dbt build` for build integrity.
 
 ## Adding a check
 
-Create `tests/<domain>/assert_<subject>_<rule>.sql`:
+Create `tests/<domain>/assert_<subject>_<rule>.sql`. Pick the catalog first, per
+the section above: `['data_quality']` for a check that reads silver or gold, and
+`['connector_quality', '<connector-slug>']` for one that needs a connector's own
+bronze or staging. The rest of the block is the same either way.
 
 ```sql
 {{ config(
-    tags=['data_quality'],
+    tags=['data_quality'],           -- or ['connector_quality', '<connector-slug>']
     severity='warn',
     store_failures=true,
     meta={
