@@ -32,6 +32,7 @@ mod m20260817_000015_drop_account_person_map;
 mod m20260817_000016_drop_dbup_ledger;
 mod m20260831_000017_previews_admin_role;
 mod m20260901_000018_people;
+mod m20260910_000019_user_preferences;
 
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;
@@ -60,6 +61,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260817_000016_drop_dbup_ledger::Migration),
             Box::new(m20260831_000017_previews_admin_role::Migration),
             Box::new(m20260901_000018_people::Migration),
+            Box::new(m20260910_000019_user_preferences::Migration),
         ]
     }
 }

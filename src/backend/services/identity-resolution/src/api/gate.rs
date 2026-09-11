@@ -80,6 +80,23 @@ pub(crate) async fn require_admin(
     Ok(caller)
 }
 
+/// Require a HUMAN caller: identified, and not a service principal. Backs
+/// the endpoints that write something belonging to the person who signed in.
+///
+/// # Errors
+///
+/// 401 if the JWT carries no person subject, 403 for a service principal.
+pub(crate) fn require_person(ctx: &SecurityContext) -> Result<Uuid, CanonicalError> {
+    let caller = require_caller(ctx)?;
+    if ctx.subject_type() == Some("service") {
+        return Err(AccessError::permission_denied()
+            .with_reason("this endpoint is restricted to signed-in people")
+            .create());
+    }
+
+    Ok(caller)
+}
+
 /// Require a SERVICE principal (gateway JWT `sub_type=service`). Used by the
 /// internal S2S endpoints that run before a tenant/caller identity exists (the
 /// login-bootstrap and `__override` resolve lookups). 403 for any non-service
@@ -114,6 +131,16 @@ mod tests {
     fn require_service_allows_only_service_principals() -> anyhow::Result<()> {
         assert!(require_service(&ctx("service")?).is_ok(), "service allowed");
         assert!(require_service(&ctx("user")?).is_err(), "user rejected");
+        Ok(())
+    }
+
+    #[test]
+    fn require_person_allows_only_people() -> anyhow::Result<()> {
+        assert!(require_person(&ctx("user")?).is_ok(), "user allowed");
+        assert!(
+            require_person(&ctx("service")?).is_err(),
+            "service rejected"
+        );
         Ok(())
     }
 }

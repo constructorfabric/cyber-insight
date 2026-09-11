@@ -310,6 +310,17 @@ class PersonsSyncOperationResponse(BaseModel):
     summary: dict[str, Any] | None = Field(None, description='On completion: the [`SyncSummary`] — rows copied, `max_id` /\n`max_created_at` watermarks, `synced_at`.\n\n[`SyncSummary`]: crate::domain::sync_service::SyncSummary')
 
 
+class PreferencesResponse(BaseModel):
+    """
+    The settings this person chose, with the default filled in for whatever
+    they have not.
+    """
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    timezone: str = Field(..., description='The IANA zone their dashboard days are cut on.')
+
+
 class Problem(BaseModel):
     """
     RFC 9457 problem+json. `context` varies by error category.

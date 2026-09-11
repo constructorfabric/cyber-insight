@@ -53,6 +53,7 @@ sea-orm-migration = { workspace = true }
 uuid = { workspace = true }
 # Timestamps: `now` for the in-memory 202 body + the zombie-sweep cutoff.
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 # Opaque page cursors for the list endpoints (URL-safe, no padding).
 base64 = { workspace = true }
 

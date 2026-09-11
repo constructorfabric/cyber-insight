@@ -20,6 +20,10 @@ pub struct PersonsSyncError;
 #[resource_error("gts.cf.insight.identity_resolution.access.v1~")]
 pub struct AccessError;
 
+/// The caller's own settings (`/v1/me/preferences`).
+#[resource_error("gts.cf.insight.identity_resolution.preference.v1~")]
+pub struct PreferenceError;
+
 #[resource_error("gts.cf.insight.identity_resolution.role.v1~")]
 pub struct RoleError;
 

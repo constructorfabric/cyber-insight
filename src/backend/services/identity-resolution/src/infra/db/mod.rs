@@ -27,6 +27,7 @@ pub mod person_listing;
 pub mod person_roles_repo;
 pub mod persons_log_repo;
 pub mod persons_repo;
+pub mod preferences_repo;
 pub mod resolution_repo;
 pub mod roles_repo;
 pub mod seed_repo;
@@ -41,6 +42,8 @@ mod binding_reads_live_tests;
 mod email_map_live_tests;
 #[cfg(test)]
 mod person_listing_live_tests;
+#[cfg(test)]
+mod preferences_live_tests;
 #[cfg(test)]
 mod profile_resolve_live_tests;
 #[cfg(test)]

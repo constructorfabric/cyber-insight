@@ -42,6 +42,7 @@ type TestResult = anyhow::Result<()>;
 struct Caller {
     person_id: Uuid,
     tenant: Uuid,
+    subject_type: &'static str,
 }
 
 fn app(f: &Fixture, caller: Uuid) -> Router {
@@ -65,8 +66,22 @@ fn app_with(f: &Fixture, caller: Uuid, config: GearConfig) -> Router {
         Caller {
             person_id: caller,
             tenant: f.tenant,
+            subject_type: "user",
         },
         config,
+    )
+}
+
+/// The same route table, reached by a machine.
+fn service_app(f: &Fixture, caller: Uuid) -> Router {
+    app_for(
+        f,
+        Caller {
+            person_id: caller,
+            tenant: f.tenant,
+            subject_type: "service",
+        },
+        GearConfig::default(),
     )
 }
 
@@ -90,7 +105,7 @@ async fn inject_host_context(
 ) -> Response {
     let Ok(ctx) = SecurityContext::builder()
         .subject_id(caller.person_id)
-        .subject_type("user")
+        .subject_type(caller.subject_type)
         .subject_tenant_id(caller.tenant)
         .build()
     else {
@@ -100,20 +115,30 @@ async fn inject_host_context(
     next.run(req).await
 }
 
-fn json_req(uri: &str, body: &Value) -> anyhow::Result<Request<Body>> {
+fn json_req(method: &str, uri: &str, body: &Value) -> anyhow::Result<Request<Body>> {
     Ok(Request::builder()
-        .method("POST")
+        .method(method)
         .uri(uri)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))?)
 }
 
 async fn post(app: Router, uri: &str, body: &Value) -> anyhow::Result<(StatusCode, Value)> {
-    let resp = app.oneshot(json_req(uri, body)?).await?;
+    answered(app.oneshot(json_req("POST", uri, body)?).await?).await
+}
+
+async fn put(app: Router, uri: &str, body: &Value) -> anyhow::Result<(StatusCode, Value)> {
+    answered(app.oneshot(json_req("PUT", uri, body)?).await?).await
+}
+
+async fn answered(resp: Response) -> anyhow::Result<(StatusCode, Value)> {
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await?;
-    let payload = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    Ok((status, payload))
+
+    Ok((
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    ))
 }
 
 async fn get(app: Router, uri: &str) -> anyhow::Result<(StatusCode, Value)> {
@@ -545,6 +570,163 @@ async fn batch_profiles_reject_duplicate_and_unknown_request_fields() -> TestRes
         let (status, _) = post(app(&f, caller), "/v1/profiles/batch", &body).await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "should reject: {body}");
     }
+    Ok(())
+}
+
+// ── GET/PUT /v1/me/preferences ──────────────────────────────
+
+#[tokio::test]
+async fn a_caller_who_never_chose_a_zone_reads_utc() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let caller = f.person("prefs-default@http-live.test").await?;
+
+    let (status, body) = get(app(&f, caller), "/v1/me/preferences").await?;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["timezone"], "UTC");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_plain_signed_in_caller_saves_their_own_zone_and_reads_it_back() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let caller = f.person("prefs-save@http-live.test").await?;
+
+    let (saved, body) = put(
+        app(&f, caller),
+        "/v1/me/preferences",
+        &json!({"timezone": "Europe/Belgrade"}),
+    )
+    .await?;
+    let (read, reread) = get(app(&f, caller), "/v1/me/preferences").await?;
+
+    assert_eq!(saved, StatusCode::OK, "{body}");
+    assert_eq!(body["timezone"], "Europe/Belgrade");
+    assert_eq!(read, StatusCode::OK);
+    assert_eq!(reread["timezone"], "Europe/Belgrade");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_zone_that_is_not_a_zone_is_refused_and_leaves_the_last_one_standing() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let caller = f.person("prefs-refuse@http-live.test").await?;
+    put(
+        app(&f, caller),
+        "/v1/me/preferences",
+        &json!({"timezone": "Asia/Tokyo"}),
+    )
+    .await?;
+
+    for refused in ["", "utc", "Mars/Olympus", "UTC' OR 1=1", &"A".repeat(300)] {
+        let (status, body) = put(
+            app(&f, caller),
+            "/v1/me/preferences",
+            &json!({ "timezone": refused }),
+        )
+        .await?;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {refused:?}");
+        assert!(
+            body.to_string().contains("timezone"),
+            "the refusal must name the field: {body}"
+        );
+    }
+
+    let (_, still) = get(app(&f, caller), "/v1/me/preferences").await?;
+    assert_eq!(still["timezone"], "Asia/Tokyo");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_body_naming_a_setting_that_does_not_exist_is_not_a_silent_success() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let caller = f.person("prefs-unknown@http-live.test").await?;
+
+    let (status, _) = put(
+        app(&f, caller),
+        "/v1/me/preferences",
+        &json!({"timezone": "Asia/Tokyo", "theme": "dark"}),
+    )
+    .await?;
+    let (_, read) = get(app(&f, caller), "/v1/me/preferences").await?;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(read["timezone"], "UTC");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_caller_the_gateway_did_not_identify_cannot_read_or_write_a_preference() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+
+    let (read, _) = get(app(&f, Uuid::nil()), "/v1/me/preferences").await?;
+    let (write, _) = put(
+        app(&f, Uuid::nil()),
+        "/v1/me/preferences",
+        &json!({"timezone": "Asia/Tokyo"}),
+    )
+    .await?;
+
+    assert_eq!(read, StatusCode::UNAUTHORIZED);
+    assert_eq!(write, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_service_principal_cannot_write_a_persons_preference() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let person = f.person("prefs-machine@http-live.test").await?;
+    put(
+        app(&f, person),
+        "/v1/me/preferences",
+        &json!({"timezone": "Asia/Tokyo"}),
+    )
+    .await?;
+
+    let (status, _) = put(
+        service_app(&f, person),
+        "/v1/me/preferences",
+        &json!({"timezone": "Europe/Belgrade"}),
+    )
+    .await?;
+    let (_, still) = get(app(&f, person), "/v1/me/preferences").await?;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(still["timezone"], "Asia/Tokyo");
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_callers_in_one_tenant_do_not_share_a_preference() -> TestResult {
+    let Some(f) = fixture_or_skip().await? else {
+        return Ok(());
+    };
+    let one = f.person("prefs-one@http-live.test").await?;
+    let other = f.person("prefs-other@http-live.test").await?;
+
+    put(
+        app(&f, one),
+        "/v1/me/preferences",
+        &json!({"timezone": "Europe/Belgrade"}),
+    )
+    .await?;
+
+    let (_, theirs) = get(app(&f, other), "/v1/me/preferences").await?;
+
+    assert_eq!(theirs["timezone"], "UTC");
     Ok(())
 }
 
