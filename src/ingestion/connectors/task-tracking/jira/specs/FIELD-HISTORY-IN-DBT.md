@@ -809,7 +809,7 @@ The output table is consumed by `silver.class_task_field_history` through
     initial row of an issue is stamped with the creation timestamp, so this
     happens to every issue whose first event landed on its own creation — and
     the newest state of that field then reads as the empty state it had before
-    the event. The kind is what orders them (`jira_event_rank`): an initial row
+    the event. The kind is what orders them (`task_event_rank`): an initial row
     is by definition the state before any event, and a `retired_field` row is
     stamped at or after every event.
 

@@ -54,6 +54,9 @@ history AS (
         fh.value_ids                                                          AS value_ids,
         fh.value_displays                                                     AS value_displays,
         fh._version                                                           AS _version,
+        -- Part of the ordering key below, not payload: see `task_event_rank`.
+        fh._seq                                                               AS _seq,
+        fh.event_id                                                           AS event_id,
         -- Null-proof under EITHER join_use_nulls setting: an unbound field must
         -- read as "no role", never as NULL propagating through the filter.
         -- `availability` is a contract sentinel (the jira deletion spec), not a
@@ -81,23 +84,23 @@ issue_pivot AS (
     SELECT
         insight_source_id,
         issue_id,
-        argMaxIf(value_ids[1], (event_at, _version),
+        argMaxIf(value_ids[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'status' AND delta_action = 'set')               AS status_id,
-        argMaxIf(value_ids[1], (event_at, _version),
+        argMaxIf(value_ids[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'assignee' AND delta_action = 'set')             AS assignee_account_id,
-        argMaxIf(value_displays[1], (event_at, _version),
+        argMaxIf(value_displays[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'issuetype' AND delta_action = 'set')            AS issue_type,
-        argMaxIf(value_ids[1], (event_at, _version),
+        argMaxIf(value_ids[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'issuetype' AND delta_action = 'set')            AS issue_type_id,
-        argMaxIf(value_displays[1], (event_at, _version),
+        argMaxIf(value_displays[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'duedate' AND delta_action = 'set')              AS due_date_str,
-        toFloat64OrNull(argMaxIf(value_displays[1], (event_at, _version),
+        toFloat64OrNull(argMaxIf(value_displays[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'estimate' AND delta_action = 'set'))
-            * argMaxIf(unit_multiplier, (event_at, _version),
+            * argMaxIf(unit_multiplier, (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'estimate' AND delta_action = 'set')                 AS time_estimate_seconds,
-        toFloat64OrNull(argMaxIf(value_displays[1], (event_at, _version),
+        toFloat64OrNull(argMaxIf(value_displays[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'spent' AND delta_action = 'set'))
-            * argMaxIf(unit_multiplier, (event_at, _version),
+            * argMaxIf(unit_multiplier, (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'spent' AND delta_action = 'set')                    AS time_spent_seconds,
         minIf(event_at, event_kind = 'synthetic_initial')                    AS created_at,
         -- The key the tracker itself shows a human ('owner/repo#12', 'PROJ-7');
@@ -105,7 +108,7 @@ issue_pivot AS (
         -- INVARIANT: argMax, never any() — `id_readable` is part of `unique_key`,
         -- so a renamed repository or an issue moved between projects leaves rows
         -- under BOTH keys and FINAL collapses neither. The latest event wins.
-        argMax(id_readable, (event_at, _version))                            AS id_readable,
+        argMax(id_readable, (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)))                            AS id_readable,
         -- The role first, the denormalized column as the fallback.
         --
         -- The role is where the title belongs: an ordinary field, so a source
@@ -120,14 +123,14 @@ issue_pivot AS (
         -- the result `Nullable(String)`: `argMaxIf` returns '' when nothing
         -- matches, and this is a serving table whose type the backend reads.
         coalesce(
-            nullIf(argMaxIf(value_displays[1], (event_at, _version),
+            nullIf(argMaxIf(value_displays[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                             role = 'title'), ''),
-            argMax(title, (event_at, _version))
+            argMax(title, (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)))
         )                                                                    AS title,
         maxIf(event_at, role = 'status' AND delta_action = 'set')        AS last_status_event_at,
         -- Availability lives in the same history as every other field
         -- (synthetic 'availability' events; see the jira deletion spec).
-        argMaxIf(value_ids[1], (event_at, _version),
+        argMaxIf(value_ids[1], (event_at, {{ task_event_rank('event_kind') }}, _seq, toUInt64OrZero(event_id)),
                  role = 'availability')                                      AS availability,
         any(data_source)                                                     AS data_source
     FROM history

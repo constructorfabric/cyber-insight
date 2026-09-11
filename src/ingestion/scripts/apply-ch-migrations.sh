@@ -67,6 +67,9 @@ SQL
 echo "=== Provisioning presentation access (role + grant-less user) (#1963/#1964) ==="
 bash "$SCRIPT_DIR/bootstrap-db/provision-presentation-access.sh"
 
+echo "=== Provisioning insight-v3-core query access (grant-less reader) ==="
+bash "$SCRIPT_DIR/bootstrap-db/provision-v3-access.sh"
+
 if [[ "${MCP_ENABLED:-false}" == "true" || "${SQL_API_ENABLED:-false}" == "true" ]]; then
   echo "=== Provisioning MCP SQL explorer access ==="
   bash "$SCRIPT_DIR/bootstrap-db/provision-mcp-access.sh"

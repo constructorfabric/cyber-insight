@@ -34,7 +34,25 @@ name: jira
 # re-deriving, the column is simply no longer produced. It must be removed from
 # bronze in this order, or the destination recreates it: bump and deploy, let a
 # sync complete, then the ALTER migration.
-version: "5.4.0"
+# 6.0.0 (major): key jira_issue and jira_issue_keys on the issue's immutable
+# numeric id instead of its "PROJ-123" key. Jira changes that key when an issue
+# moves between projects, and bronze replaces rows by `unique_key` — so a moved
+# issue stopped replacing itself: the new key inserted a second row and the old
+# one stayed behind with a stale payload, leaving the issue present twice
+# downstream, once with its real history and once as a ghost.
+#
+# Rows written before this keep their old key: `unique_key` is the table's sort
+# key and ClickHouse refuses to UPDATE one, so there is no migration to rewrite
+# them in place, and rebuilding a table this size to change a column nothing
+# reads afterwards would not earn its cost. The readers stop depending on it
+# instead — every dedup over jira_issue now picks its winner by
+# (source_id, jira_id) — so the stale row is simply never chosen.
+#
+# MAJOR because the key an existing row is stored under changes, which is what
+# a major means here; the full refresh it dispatches also clears anything
+# derived while the two copies were both visible. `id_readable` keeps the
+# mutable key — the rename is a fact about the issue.
+version: "6.0.0"
 schedule: "0 3 * * *"
 workflow: sync
 # CI build metadata + runtime image refs (ADR-0016). The `images:` block is

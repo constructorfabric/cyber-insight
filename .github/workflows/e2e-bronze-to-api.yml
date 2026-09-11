@@ -1,4 +1,4 @@
-name: E2E — Bronze to API
+name: E2E bronze to API
 
 # End-to-end data-path tests: a spec seeds bronze, dbt builds staging, silver
 # and gold on a ClickHouse the stand raised, identity mints the spec's people
@@ -32,12 +32,12 @@ name: E2E — Bronze to API
 on:
   # Merge-queue builds: the queue's gh-readonly-queue/* branches emit merge_group,
   # and the required "Run E2E suite" check must report there or every queued PR
-  # times out and is evicted. On a pull request the umbrella below emits the same
-  # check as a deferral to the queue, so one workflow owns the name in both places.
+  # times out and is evicted.
   merge_group:
-  # No `paths:` filter: GitHub leaves a required check whose workflow never ran
-  # pending forever, so every pull request runs the cheap `changes` job and the
-  # umbrella, which defers the suite itself to the queue.
+  # The suite runs in the queue, not on the pull request. The trigger stays, with
+  # no `paths:` filter, so the required check exists on every PR: every job is
+  # skipped there, and a skipped required check counts as passed. A workflow
+  # that never ran would leave the check pending forever.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -57,8 +57,7 @@ permissions:
   actions: read
 
 jobs:
-  # `e2e-suite` is the aggregate that emits the stable "Run E2E suite" check:
-  # a deferral on a pull request, the verdict in the merge queue.
+  # `e2e-suite` is the aggregate that emits the stable "Run E2E suite" check.
   #
   # Skipping cascades by default `needs` semantics: `changes` says irrelevant →
   # `e2e-datapath` skips → `metric-coverage-gate` skips. The umbrella tells that
@@ -87,7 +86,8 @@ jobs:
   #
   # src/frontend/ and docs/ are absent on purpose: nothing here loads them.
   changes:
-    name: changes
+    name: Detect changes
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -128,16 +128,31 @@ jobs:
           fi
           changed="$(git diff --name-only "$base_point" "$HEAD")"
           echo "$changed" | sed 's/^/  /'
-          if echo "$changed" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|\.env\.compose\.example|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
+
+          # Ignored because nothing in this suite reads these paths.
+          # INVARIANT: services/*/helm/Chart.yaml is NOT ignored — dev-compose.sh
+          # takes the image the stand pulls from its appVersion.
+          IGNORED_PATHS='^src/backend/services/[^/]+/helm/|^src/ingestion/tests/|^src/ingestion/tools/seed/tests/|^(src/backend|tests)/.*\.md$'
+          IMAGE_PIN_PATHS='^src/backend/services/[^/]+/helm/Chart\.yaml$'
+          # `|| true`: a grep selecting nothing exits 1 — set -e fails the step.
+          changes_to_test="$(printf '%s\n' "$changed" | grep -vE "$IGNORED_PATHS" || true)"
+          image_pins="$(printf '%s\n' "$changed" | grep -E "$IMAGE_PIN_PATHS" || true)"
+          changes_to_test="$(printf '%s\n%s\n' "$changes_to_test" "$image_pins" | grep -v '^$' || true)"
+          if [ -n "$changes_to_test" ]; then
+            printf '%s\n' "$changes_to_test" | sed 's/^/  affects this run: /'
+          else
+            echo "  affects this run: nothing — no changed file can reach this suite"
+          fi
+
+          if echo "$changes_to_test" | grep -qE '^(src/ingestion/|src/backend/|tests/datapath/|tests/lib/|tests/pyproject\.toml|tests/uv\.lock|dev-compose\.sh|docker-compose\.yml|\.env\.compose\.example|deploy/compose/|\.github/workflows/e2e-bronze-to-api\.yml)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed"
           fi
           # A backend change means the pinned images no longer describe this
-          # tree, so the stand compiles the backend instead of pulling it. A
-          # service's own test tree is not in its image, so it does not count.
-          if echo "$changed" | grep -vE '^src/backend/services/[^/]+/tests/' | grep -qE '^src/backend/'; then
+          # tree, so the stand compiles the backend instead of pulling it.
+          if echo "$changes_to_test" | grep -qE '^src/backend/'; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
@@ -149,9 +164,9 @@ jobs:
   # compiling the same workspace. Five identical compiles per queue entry is
   # what pushed backend-touching entries past the merge queue's check timeout.
   build-backend:
-    name: Build backend binaries
+    name: Build backend
     needs: changes
-    if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' && github.event_name != 'pull_request' }}
+    if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -170,12 +185,12 @@ jobs:
           if-no-files-found: error
 
   e2e-datapath:
-    name: data path (shard ${{ matrix.shard }})
+    name: Data path (${{ matrix.shard }})
     needs: [changes, build-backend]
     # `!cancelled()` so a skipped build-backend (backend untouched → pinned
     # images) does not skip the shards along with it; the result check keeps a
     # FAILED build from letting them run against stale binaries.
-    if: ${{ !cancelled() && needs.changes.outputs.relevant == 'true' && github.event_name != 'pull_request' && (needs.build-backend.result == 'success' || needs.build-backend.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.changes.outputs.relevant == 'true' && (needs.build-backend.result == 'success' || needs.build-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -249,7 +264,7 @@ jobs:
 
       # `test-stand test` picks the suite's own dependency group for a tree
       # under tests/datapath and aims it at the stand it just raised.
-      - name: Data-path suite — shard
+      - name: Run the data-path shard
         id: suite
         env:
           SHARD: ${{ matrix.shard }}
@@ -377,7 +392,7 @@ jobs:
       - build-backend
       - e2e-datapath
       - metric-coverage-gate
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -389,7 +404,6 @@ jobs:
       # two apart, and it would also fold in `changes`'s own result.
       - name: Require every data-path shard and the gate to have succeeded
         env:
-          EVENT: ${{ github.event_name }}
           CHANGES: ${{ needs.changes.result }}
           RELEVANT: ${{ needs.changes.outputs.relevant }}
           BACKEND: ${{ needs.changes.outputs.backend }}
@@ -401,7 +415,7 @@ jobs:
           GATE: ${{ needs.metric-coverage-gate.result }}
         run: |
           set -euo pipefail
-          echo "event=$EVENT changes=$CHANGES relevant=$RELEVANT backend=$BACKEND build=$BUILD suite=$SUITE gate=$GATE"
+          echo "changes=$CHANGES relevant=$RELEVANT backend=$BACKEND build=$BUILD suite=$SUITE gate=$GATE"
 
           # Fail closed. A `changes` job that did not succeed leaves `relevant`
           # empty, which would otherwise read as "irrelevant" and green a
@@ -411,9 +425,7 @@ jobs:
             exit 1
           fi
 
-          if [ "$EVENT" = "pull_request" ]; then
-            echo "the data-path suite runs in the merge queue; deferred there."
-          elif [ "$RELEVANT" != "true" ]; then
+          if [ "$RELEVANT" != "true" ]; then
             echo "nothing on the bronze → dbt → ClickHouse → analytics path changed — nothing to prove."
           else
             if [ "$BACKEND" = "true" ] && [ "$BUILD" != "success" ]; then

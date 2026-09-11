@@ -77,6 +77,14 @@ def test_each_merge_lands_on_the_day_its_own_evidence_names(spec: SpecRun) -> No
                         "views": [{"view": "period"}, {"view": "timeseries", "bucket": "day"}],
                     },
                     {"metric_key": "git.prs_created", "views": [{"view": "period"}]},
+                    {
+                        "metric_key": "git.non_default_branch_prs_merged",
+                        "views": [{"view": "period"}],
+                    },
+                    {
+                        "metric_key": "git.default_branch_prs_merged",
+                        "views": [{"view": "period"}],
+                    },
                 ],
             },
         }
@@ -85,6 +93,12 @@ def test_each_merge_lands_on_the_day_its_own_evidence_names(spec: SpecRun) -> No
 
     r.row("git.prs_created", "period", entity_id=HEIDI).equals(value=9)
     r.row("git.prs_merged", "period", entity_id=HEIDI).equals(value=6)
+    # The branch-scoped halves read the same close time. This repository reported
+    # no branches, so every request lands on the other side of the split — the
+    # agreed reading for an absent signal — and the two requests with no close
+    # time reach neither.
+    r.row("git.non_default_branch_prs_merged", "period", entity_id=HEIDI).equals(value=6)
+    r.row("git.default_branch_prs_merged", "period", entity_id=HEIDI).equals(value=None)
 
     series = r.row("git.prs_merged", "timeseries", entity_id=HEIDI)
     for day in LANDED:
@@ -113,13 +127,20 @@ def test_a_merge_with_no_usable_evidence_is_dropped_not_dated_at_the_epoch(
             "body": {
                 "entity": {"type": "person", "ids": [HEIDI]},
                 "period": {"from": "1970-01-01", "to": "1970-12-31"},
-                "metrics": [{"metric_key": "git.prs_merged", "views": [{"view": "period"}]}],
+                "metrics": [
+                    {"metric_key": "git.prs_merged", "views": [{"view": "period"}]},
+                    {
+                        "metric_key": "git.non_default_branch_prs_merged",
+                        "views": [{"view": "period"}],
+                    },
+                ],
             },
         }
     )
     assert r.status == 200
 
     r.row("git.prs_merged", "period", entity_id=HEIDI).equals(value=None)
+    r.row("git.non_default_branch_prs_merged", "period", entity_id=HEIDI).equals(value=None)
 
 
 def test_a_recovered_close_time_is_usable_and_not_merely_countable(spec: SpecRun) -> None:
