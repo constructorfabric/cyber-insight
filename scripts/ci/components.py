@@ -195,13 +195,6 @@ COMPONENTS = [
     },
     # Python CDK connectors
     {
-        "name": "gitlab",
-        "lang": "python",
-        "root": "src/ingestion/connectors/git/gitlab",
-        "cov_package": "source_gitlab",
-        "paths": ["src/ingestion/connectors/git/gitlab"],
-    },
-    {
         "name": "hubspot",
         "lang": "python",
         "root": "src/ingestion/connectors/crm/hubspot",
@@ -270,12 +263,13 @@ COMPONENTS = [
         "triggered_by": ["connector-tests-harness"],
         # Every nocode connector that ships a tests/ suite belongs here, or a
         # change to that connector does not re-run its own mock tests. CDK
-        # connectors with suites (hubspot, gitlab, bamboohr, …) are covered by
+        # connectors with suites (hubspot, bamboohr, …) are covered by
         # their own components instead.
         "paths": [
             "src/ingestion/connectors/task-tracking/jira",
             "src/ingestion/connectors/git/github",
             "src/ingestion/connectors/git/bitbucket-cloud",
+            "src/ingestion/connectors/git/gitlab",
             "src/ingestion/connectors/git/github-directory",
             "src/ingestion/connectors/collaboration/zoom",
             "src/ingestion/connectors/dev-portal/compass",

@@ -2,7 +2,7 @@
 # land in bronze as JSON strings (the staging models toString() them), so they
 # are typed string here.
 schemas:
-  bronze_gitlab.commits:
+  bronze_gitlab.commit_authors:
     $schema: http://json-schema.org/draft-07/schema#
     type: object
     additionalProperties: false
@@ -13,24 +13,14 @@ schemas:
       data_source: { type: [string, "null"] }
       collected_at: { type: [string, "null"] }
       project_id: { type: [integer, "null"] }
-      repository: { type: [string, "null"] }
       repo_path: { type: [string, "null"] }
-      sha: { type: [string, "null"] }
-      message: { type: [string, "null"] }
-      authored_date: { type: [string, "null"] }
-      committed_date: { type: [string, "null"] }
-      author_name: { type: [string, "null"] }
       author_email: { type: [string, "null"] }
       author_account_id: { type: [integer, "null"] }
-      committer_name: { type: [string, "null"] }
-      committer_email: { type: [string, "null"] }
-      parent_hashes: { type: [string, "null"] }
-      is_merge: { type: [boolean, "null"] }
-      additions: { type: [integer, "null"] }
-      deletions: { type: [integer, "null"] }
-      changed_files: { type: [integer, "null"] }
-      is_in_default_branch: { type: [boolean, "null"] }
-      patch_id: { type: [string, "null"] }
+      author_username: { type: [string, "null"] }
+      author_name: { type: [string, "null"] }
+      author_state: { type: [string, "null"] }
+      matched_field: { type: [string, "null"] }
+      sample_sha: { type: [string, "null"] }
       _airbyte_raw_id: { type: string }
       _airbyte_extracted_at: { type: string, format: date-time }
       _airbyte_meta: { type: string }

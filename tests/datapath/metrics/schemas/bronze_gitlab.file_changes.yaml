@@ -2,7 +2,7 @@
 # land in bronze as JSON strings (the staging models toString() them), so they
 # are typed string here.
 schemas:
-  bronze_gitlab.commits:
+  bronze_gitlab.file_changes:
     $schema: http://json-schema.org/draft-07/schema#
     type: object
     additionalProperties: false
@@ -16,21 +16,18 @@ schemas:
       repository: { type: [string, "null"] }
       repo_path: { type: [string, "null"] }
       sha: { type: [string, "null"] }
-      message: { type: [string, "null"] }
-      authored_date: { type: [string, "null"] }
       committed_date: { type: [string, "null"] }
-      author_name: { type: [string, "null"] }
-      author_email: { type: [string, "null"] }
-      author_account_id: { type: [integer, "null"] }
-      committer_name: { type: [string, "null"] }
-      committer_email: { type: [string, "null"] }
-      parent_hashes: { type: [string, "null"] }
-      is_merge: { type: [boolean, "null"] }
+      filename: { type: [string, "null"] }
+      previous_filename: { type: [string, "null"] }
+      status: { type: [string, "null"] }
       additions: { type: [integer, "null"] }
       deletions: { type: [integer, "null"] }
-      changed_files: { type: [integer, "null"] }
-      is_in_default_branch: { type: [boolean, "null"] }
-      patch_id: { type: [string, "null"] }
+      changes: { type: [integer, "null"] }
+      is_binary: { type: [boolean, "null"] }
+      patch: { type: [string, "null"] }
+      patch_truncated: { type: [boolean, "null"] }
+      pre_image_oid: { type: [string, "null"] }
+      post_image_oid: { type: [string, "null"] }
       _airbyte_raw_id: { type: string }
       _airbyte_extracted_at: { type: string, format: date-time }
       _airbyte_meta: { type: string }
