@@ -4,6 +4,7 @@ members = [
     "libs/insight-http-metrics",
     "libs/insight-log-context",
     "libs/insight-migration",
+    "libs/insight-openapi",
     "libs/authenticator-sdk",
     "services/analytics",
     "services/git-cli-proxy",
@@ -166,6 +167,7 @@ insight-clickhouse = { path = "libs/insight-clickhouse" }
 insight-http-metrics = { path = "libs/insight-http-metrics" }
 insight-log-context = { path = "libs/insight-log-context" }
 insight-migration = { path = "libs/insight-migration" }
+insight-openapi = { path = "libs/insight-openapi" }
 authenticator-sdk = { path = "libs/authenticator-sdk" }
 
 # CI rebuild marker — bumped to retrigger the analytics

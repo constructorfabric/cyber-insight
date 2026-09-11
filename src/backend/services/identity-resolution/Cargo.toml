@@ -62,6 +62,7 @@ base64 = { workspace = true }
 insight-clickhouse = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }
+insight-openapi = { workspace = true }
 insight-migration = { workspace = true }
 clickhouse = { workspace = true }
 

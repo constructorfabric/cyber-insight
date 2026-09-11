@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         // drift gate to read.
         Commands::Openapi => {
             let document = api::openapi_document()?;
-            println!("{}", serde_json::to_string_pretty(&document)?);
+            print!("{}", insight_openapi::canonical_json(&document)?);
             Ok(())
         }
     }
@@ -93,4 +93,14 @@ fn init_subcommand_logging() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn committed_openapi_document_is_current() -> anyhow::Result<()> {
+        let doc = super::api::openapi_document()?;
+        insight_openapi::check_committed(&doc, env!("CARGO_MANIFEST_DIR"), "insight-v3-core")?;
+        Ok(())
+    }
 }

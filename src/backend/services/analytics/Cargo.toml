@@ -15,6 +15,7 @@ workspace = true
 insight-clickhouse = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }
+insight-openapi = { workspace = true }
 insight-migration = { workspace = true }
 # Direct `clickhouse` dep is for the `Row` derive on `system.columns` probe
 # rows (Refs #521 schema-validator). `insight-clickhouse` wraps the client

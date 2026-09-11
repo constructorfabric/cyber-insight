@@ -15,6 +15,7 @@ workspace = true
 authenticator-sdk = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }
+insight-openapi = { workspace = true }
 
 # ToolKit host runtime. The authenticator runs as a gears-rust host: routes are
 # declared via `OperationBuilder` and served by the `api-gateway` system gear

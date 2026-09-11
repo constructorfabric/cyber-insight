@@ -26,6 +26,7 @@ utoipa = { version = "5.5" }
 chrono = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }
+insight-openapi = { workspace = true }
 opentelemetry = { workspace = true }
 # statvfs: the volume is the ground truth the per-entry accounting cannot
 # see. rustix rather than libc — the workspace forbids unsafe code.
