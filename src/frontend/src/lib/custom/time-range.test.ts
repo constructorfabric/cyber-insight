@@ -36,6 +36,8 @@ describe("rangeLabel", () => {
   it("reads a preset as a person would say it", () => {
     expect(rangeLabel("P30D")).toBe("Last 30 days");
     expect(rangeLabel("inf")).toBe("All time");
+    // P1Y is 365 rolling days, not a calendar year — the label says which.
+    expect(rangeLabel("P1Y")).toBe("Last 365 days");
   });
 
   it("reads an interval as its two dates", () => {

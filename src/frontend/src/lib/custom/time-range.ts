@@ -20,7 +20,7 @@ export const RANGE_PRESETS: readonly RangePreset[] = [
   { token: "P30D", label: "Last 30 days" },
   { token: "PMC", label: "Last month" },
   { token: "PQC", label: "Last quarter" },
-  { token: "P1Y", label: "Last year" },
+  { token: "P1Y", label: "Last 365 days" },
   { token: "inf", label: "All time" },
 ] as const;
 

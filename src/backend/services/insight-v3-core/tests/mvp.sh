@@ -322,7 +322,7 @@ status="$(http PUT "/v1/dashboards/$pulls_dashboard_name" \
     --arg all "$by_repo_widget_name" \
     '{
       title: "Pull requests",
-      time_ranges: ["P7D", "P30D"],
+      time_ranges: ["P7D", "P30D", "P1Y"],
       default_range: "P30D",
       items: [{widget: $line}, {widget: $stat}, {widget: $all}]
     }')")"

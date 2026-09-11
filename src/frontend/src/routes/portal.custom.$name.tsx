@@ -129,7 +129,7 @@ function CustomDashboardBody({
 
   return (
     <>
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pe-10 md:pe-12">
         <h1 className={cn(TEXT_TITLE, "shrink-0")}>{dashboard.title}</h1>
         {offered && offered.length > 0 && range ? (
           <RangePicker
