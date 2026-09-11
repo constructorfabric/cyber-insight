@@ -22,7 +22,8 @@ WITH environment_tiers AS (
         source_id,
         project_id,
         id AS environment_id,
-        tier
+        tier,
+        _airbyte_extracted_at
     FROM {{ source('bronze_gitlab', 'environments') }} FINAL
 ),
 
@@ -61,7 +62,12 @@ SELECT
     parseDateTimeBestEffortOrNull(ls.created_at) AS created_at,
     'insight_gitlab' AS data_source,
     toUnixTimestamp64Milli(now64()) AS _version,
-    ls._airbyte_extracted_at
+    -- The tier arrives on its own stream and can change later; either side
+    -- moving must re-emit the deployment row.
+    greatest(
+        ls._airbyte_extracted_at,
+        COALESCE(et._airbyte_extracted_at, ls._airbyte_extracted_at)
+    ) AS _airbyte_extracted_at
 FROM latest_status AS ls
 LEFT JOIN environment_tiers AS et
     ON et.tenant_id = ls.tenant_id
@@ -69,5 +75,8 @@ LEFT JOIN environment_tiers AS et
     AND et.project_id = ls.project_id
     AND et.environment_id = ls.environment_id
 {% if is_incremental() %}
-WHERE ls._airbyte_extracted_at > (SELECT max(_airbyte_extracted_at) FROM {{ this }})
+WHERE greatest(
+    ls._airbyte_extracted_at,
+    COALESCE(et._airbyte_extracted_at, ls._airbyte_extracted_at)
+) > (SELECT max(_airbyte_extracted_at) FROM {{ this }})
 {% endif %}
