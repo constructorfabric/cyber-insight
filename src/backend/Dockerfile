@@ -57,16 +57,19 @@ FROM debian:bookworm-slim AS watchexec
 ARG TARGETARCH
 ARG WATCHEXEC_VERSION=2.3.2
 
+# SAFETY: the archive comes from a GitHub release over the network; the build
+# fails unless its SHA-256 matches the pinned value for this version and arch.
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) WX_ARCH=x86_64-unknown-linux-musl ;; \
-      arm64) WX_ARCH=aarch64-unknown-linux-musl ;; \
+      amd64) WX_ARCH=x86_64-unknown-linux-musl; WX_SHA256=2e72e56f722212558ce53d71c13d069f469c8113396da09d8ebf122ce6a655a5 ;; \
+      arm64) WX_ARCH=aarch64-unknown-linux-musl; WX_SHA256=4e39391a2b75048cccfb7ab85e53241a8a8c9f88259dac0ee612b13d04e0e7e2 ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl xz-utils; \
-    curl -fsSL "https://github.com/watchexec/watchexec/releases/download/v${WATCHEXEC_VERSION}/watchexec-${WATCHEXEC_VERSION}-${WX_ARCH}.tar.xz" \
-        | tar -xJ -C /tmp; \
+    curl -fsSL -o /tmp/watchexec.tar.xz "https://github.com/watchexec/watchexec/releases/download/v${WATCHEXEC_VERSION}/watchexec-${WATCHEXEC_VERSION}-${WX_ARCH}.tar.xz"; \
+    echo "${WX_SHA256}  /tmp/watchexec.tar.xz" | sha256sum -c -; \
+    tar -xJ -C /tmp -f /tmp/watchexec.tar.xz; \
     install -m 0755 "/tmp/watchexec-${WATCHEXEC_VERSION}-${WX_ARCH}/watchexec" /usr/local/bin/watchexec
 
 # ─── runtime bases ──────────────────────────────────────────────────────────

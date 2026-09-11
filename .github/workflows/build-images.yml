@@ -150,6 +150,7 @@ jobs:
               - '.github/workflows/build-images.yml'
               - '.github/workflows/e2e-stand.yml'
               - 'src/backend/services/gateway/**'
+              - 'src/backend/.dockerignore'
               - 'src/backend/tools/routegen/**'
               - 'src/backend/Cargo.toml'
               - 'src/backend/Cargo.lock'
