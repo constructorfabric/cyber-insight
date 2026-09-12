@@ -304,7 +304,8 @@ jobs:
             --image "insight-analytics:${ANALYTICS_POLICY}" \
             --image "insight-authenticator:${AUTHENTICATOR_POLICY}" \
             --image "insight-identity-resolution:${IDENTITY_POLICY}" \
-            --image "insight-gateway:${GATEWAY_POLICY}"
+            --image "insight-gateway:${GATEWAY_POLICY}" \
+            --image "insight-v3-core:unchanged" # build-images exports no insight-v3-core artifact — always the published image
 
       # Restore-only warm start for the --build-backend fallback: the cache is
       # saved by e2e-bronze-to-api.yml's push-to-main run; nothing here saves.
@@ -348,6 +349,7 @@ jobs:
           AUTHENTICATOR_IMAGE: ${{ needs.changes.outputs.backend_artifacts == 'true' && 'insight-authenticator:e2e-prebuilt' || '' }}
           IDENTITY_RESOLUTION_IMAGE: ${{ needs.changes.outputs.backend_artifacts == 'true' && 'insight-identity-resolution:e2e-prebuilt' || '' }}
           GATEWAY_IMAGE: ${{ needs.changes.outputs.backend_artifacts == 'true' && 'insight-gateway:e2e-prebuilt' || '' }}
+          INSIGHT_V3_CORE_IMAGE: ${{ needs.changes.outputs.backend_artifacts == 'true' && 'insight-v3-core:e2e-prebuilt' || '' }}
         run: |
           set -euo pipefail
           # `if` blocks, not `[ … ] && flags+=(…)`: under set -e a false test as
