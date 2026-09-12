@@ -358,6 +358,7 @@ write_watch_override() {
     build:
       context: deploy/compose
       dockerfile: rust-watch.Dockerfile
+      target: !reset null
     entrypoint: !reset null
     working_dir: /workspace
     environment:
@@ -387,6 +388,7 @@ write_watch_override() {
     build:
       context: deploy/compose
       dockerfile: rust-watch.Dockerfile
+      target: !reset null
     entrypoint: !reset null
     working_dir: /workspace
     environment:

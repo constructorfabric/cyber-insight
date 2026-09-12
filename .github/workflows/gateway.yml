@@ -25,6 +25,8 @@ on:
       - "src/backend/services/gateway/**"
       - "src/backend/services/authenticator/**"
       - "src/backend/libs/authenticator-sdk/**"
+      - "src/backend/Dockerfile"
+      - "src/backend/.dockerignore"
       - "src/backend/Cargo.toml"
       - "src/backend/Cargo.lock"
       - "src/ingestion/tools/seed/insight_seed/**"
