@@ -49,10 +49,14 @@ bronze:
   bronze_github.project_fields:
     - $ref: ../templates/github_task.yaml#/templates/project_field_status
 
-  # `project_items` is deliberately absent. Board membership reaches no model
-  # on this path - the journal is built from the timeline - and seeding a card
-  # would have to state a column, which is the one thing a removed card no
-  # longer has.
+  # The card is still here, and that is not an oversight: a ReplacingMergeTree
+  # never drops a key that stops arriving, so Bronze keeps a removed card's row
+  # indefinitely. The journal on this path is built from the timeline and reads
+  # none of it - but `assert_boards_yield_cards` does, and a source holding
+  # board fields and board events with no cards at all is exactly the shape it
+  # exists to catch.
+  bronze_github.project_items:
+    - $ref: ../templates/github_task.yaml#/templates/project_item
 
   bronze_github.issues:
     - { $ref: ../templates/github_task.yaml#/templates/issue, id: 1, number: 1, unique_key: gh-issue-1, _airbyte_raw_id: gh-issue-1,
