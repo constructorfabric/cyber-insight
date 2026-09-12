@@ -102,7 +102,7 @@ def test_a_commit_that_changed_nothing_reports_zero_not_an_absent_value(spec: Sp
 
 def test_commit_that_lost_the_content_dedup_is_not_treated_as_uncollected(spec: SpecRun) -> None:
     """carol's repeat commit lost the content dedup, so no `__unknown__` grain appears for it
-    and Commit size keeps only the 15 lines the dedup did not remove."""
+    and keeps only the 15 lines the dedup did not remove, so her sizes {11, 15} median to 13."""
     r = spec.call(
         {
             "url": "/v1/metric-results",

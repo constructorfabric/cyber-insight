@@ -23,7 +23,7 @@ SOURCE_BITBUCKET = {"key": "source", "value": "bitbucket_cloud"}
 
 def test_bitbucket_git_metrics_resolve_through_the_source_breakdown(spec: SpecRun) -> None:
     """commit-a and commit-b count and the merge commit does not; lines come from the
-    one file-change row; sizes {12, 0} give an upper-middle median of 12."""
+    one file-change row; sizes {12, 0} median to 6, both middles averaged."""
     r = spec.call(
         {
             "url": "/v1/metric-results",

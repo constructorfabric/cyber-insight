@@ -96,7 +96,7 @@ def test_merge_rate_is_zero_when_created_pull_requests_never_merge(spec: SpecRun
 
 
 def test_unified_git_metrics(spec: SpecRun) -> None:
-    """Erin's day: two commits sized 50 and 60 (the median is the upper middle, 60), one merged
+    """Erin's day: two commits sized 50 and 60 (the median averages both middles, 55), one merged
     PR with two reviewers; lines_added counts the fileless second commit, code_lines does not."""
     r = spec.call(
         {
