@@ -1619,10 +1619,11 @@ for dbt-built gold data rather than for containers to report healthy.
           --build            Both.
           --skip-build       With --build-backend: mount binaries already in
                              deploy/compose/build/ instead of compiling, over
-                             runtime images taken from the chart pins (the
-                             gateway and insight-v3-core images still build
-                             from this tree). The caller owns the binaries'
-                             freshness.
+                             runtime images taken from the chart pins. The
+                             gateway and insight-v3-core run a locally loaded
+                             image named by GATEWAY_IMAGE / INSIGHT_V3_CORE_IMAGE,
+                             or bake from this tree when those are unset. The
+                             caller owns the binaries' and images' freshness.
 
           `up` refuses to pin a tree that differs from origin/main and names
           the flag to pass — but only when origin/main is in the checkout. A
@@ -1729,15 +1730,30 @@ test_stand_pull_backends() {
 # With --skip-build the caller supplies the binaries, and compose must not
 # bake the dev images just to produce a compiled-in binary the bind-mount
 # shadows. Tag the chart-pinned images under the compose default names so
-# `up` finds them and skips the build. Gateway and insight-v3-core stay out:
-# routegen bakes routes.yaml into the gateway's nginx.conf at image-build time,
-# and insight-v3-core runs from its image rather than a bind-mounted binary —
-# a source change to either is only exercised by an image built from this tree.
+# `up` finds them and skips the build. Gateway and insight-v3-core run from
+# their images rather than bind-mounted binaries, so a source change to either
+# is only exercised by an image built from this tree: they take a caller-loaded
+# image named by GATEWAY_IMAGE / INSIGHT_V3_CORE_IMAGE, or bake from source.
 test_stand_prime_dev_images() {
   local entry var chart name image local_tag
   for entry in "${TEST_STAND_PINNED_BACKENDS[@]}"; do
     IFS='|' read -r var chart name <<<"$entry"
-    case "$name" in gateway|v3-core) continue ;; esac
+    case "$name" in
+      gateway|v3-core)
+        # INVARIANT: cmd_up sources the env file over the process env, so a
+        # caller-supplied image only reaches compose written into the file.
+        image="${!var:-}"
+        [[ -n "$image" ]] || continue
+        docker image inspect "$image" >/dev/null 2>&1 || {
+          echo "ERROR: $var=$image is not loaded locally." >&2
+          echo "       Load it (docker load), or unset $var to bake ${name} from source." >&2
+          return 1
+        }
+        echo "    ${name}: ${image} (pre-built from this tree)"
+        update_env_var "$TEST_STAND_ENV_FILE" "$var" "$image"
+        continue
+        ;;
+    esac
     local_tag="insight-${name}:dev"
     docker image inspect "$local_tag" >/dev/null 2>&1 && continue
     image="$(test_stand_pinned_image "$chart" "$name")" || return 1
