@@ -21,7 +21,8 @@ name: E2E bronze to API
 # MINIMAL compose stand of its own (`dev-compose.sh test-stand minimal` —
 # identity and the realm seeded, the warehouse empty), pulls the chart-pinned
 # backend images or, when the diff touched the backend, mounts the binaries
-# `build-backend` compiled once for every shard, runs its
+# and loads the gateway/insight-v3-core images `build-backend` produced once
+# for every shard, runs its
 # directories of the suite host-side with uv, and the metric legs upload that
 # session's `.artifacts/` for `metric-coverage-gate`, a pure-Python check over
 # two JSON files: the builtin metric catalogue the run read from analytics, and
@@ -60,6 +61,8 @@ concurrency:
 
 env:
   CI: "true"
+  # Same cache image and tag scheme build-images.yml writes; read-only here.
+  BUILDCACHE: ghcr.io/constructorfabric/insight-buildcache
 
 permissions:
   contents: read
@@ -177,16 +180,20 @@ jobs:
           fi
 
   # ─── Build the backend once, shared by every shard ────────────────────────
-  # One `cargo build` for all three binaries; the shards mount them via
-  # `--prebuilt` semantics (`--build-backend --skip-build`) instead of each
-  # compiling the same workspace. Five identical compiles per queue entry is
-  # what pushed backend-touching entries past the merge queue's check timeout.
+  # One `cargo build` for all three bind-mounted binaries, plus one image build
+  # each for gateway and insight-v3-core — the two services that run from
+  # images; the shards mount/load them (`--build-backend --skip-build`) instead
+  # of each compiling the same workspace and baking the same two images.
   build-backend:
     name: Build backend
     needs: changes
     if: ${{ needs.changes.outputs.relevant == 'true' && needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      # ghcr login for the read-only registry build cache.
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -234,6 +241,54 @@ jobs:
         with:
           name: backend-binaries
           path: deploy/compose/build/
+          retention-days: 1
+          if-no-files-found: error
+
+      # Gateway and insight-v3-core run from images, not bind-mounted binaries,
+      # so the queue entry's code only runs in images built from this tree —
+      # built once here instead of once per shard. cache-from reuses the layer
+      # cache build-images.yml maintains; no cache-to — queue refs are transient
+      # and main's push to build-images owns the cache writes.
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        if: github.event_name != 'push'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: github.event_name != 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare the image export directory
+        if: github.event_name != 'push'
+        run: mkdir -p /tmp/e2e-images
+      - name: Build the gateway image for the shards
+        if: github.event_name != 'push'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src/backend
+          file: src/backend/services/gateway/Dockerfile
+          # The shards run on ubuntu-latest amd64; nothing else loads these tars.
+          platforms: linux/amd64
+          tags: insight-gateway:e2e-prebuilt
+          outputs: type=docker,dest=/tmp/e2e-images/insight-gateway.tar
+          cache-from: type=registry,ref=${{ env.BUILDCACHE }}:gateway-amd64
+      - name: Build the insight-v3-core image for the shards
+        if: github.event_name != 'push'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: src/backend
+          file: src/backend/Dockerfile
+          target: insight-v3-core
+          platforms: linux/amd64
+          tags: insight-v3-core:e2e-prebuilt
+          outputs: type=docker,dest=/tmp/e2e-images/insight-v3-core.tar
+          cache-from: |
+            type=registry,ref=${{ env.BUILDCACHE }}:insight-v3-core-amd64
+            type=registry,ref=${{ env.BUILDCACHE }}:backend-deps-amd64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name != 'push'
+        with:
+          name: backend-images
+          path: /tmp/e2e-images/
           retention-days: 1
           if-no-files-found: error
 
@@ -297,6 +352,18 @@ jobs:
         if: ${{ needs.changes.outputs.backend == 'true' }}
         run: find deploy/compose/build -type f -exec chmod 0755 {} +
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        with:
+          name: backend-images
+          path: /tmp/e2e-images
+
+      - name: Load the pre-built gateway and insight-v3-core images
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        run: |
+          set -euo pipefail
+          for tar in /tmp/e2e-images/*.tar; do docker load --input "$tar"; done
+
       # `minimal` seeds identity and the realm and leaves the warehouse empty:
       # the suite writes its own bronze and clears it between specs, and the
       # guard at its door refuses an instance whose seed shares those tables.
@@ -307,7 +374,13 @@ jobs:
         run: |
           set -euo pipefail
           flags=()
-          if [ "$BUILD_BACKEND" = "true" ]; then flags+=(--build-backend --skip-build); fi
+          if [ "$BUILD_BACKEND" = "true" ]; then
+            flags+=(--build-backend --skip-build)
+            # The two image-run services take the images build-backend built
+            # from this tree instead of baking them here, once per shard.
+            export GATEWAY_IMAGE=insight-gateway:e2e-prebuilt
+            export INSIGHT_V3_CORE_IMAGE=insight-v3-core:e2e-prebuilt
+          fi
           ./dev-compose.sh test-stand minimal "${flags[@]}"
 
       # A reused workspace could carry a previous run's ledger; the gate must
