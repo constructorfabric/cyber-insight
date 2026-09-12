@@ -22,10 +22,11 @@ workspace = true
 toolkit = { workspace = true, features = ["bootstrap"] }
 toolkit-canonical-errors = { workspace = true }
 # Pinned to match the `ToSchema` the toolkit OperationBuilder compiles against.
-utoipa = { version = "5.5" }
+utoipa = { workspace = true }
 chrono = { workspace = true }
 insight-http-metrics = { workspace = true }
 insight-log-context = { workspace = true }
+insight-openapi = { workspace = true }
 opentelemetry = { workspace = true }
 # statvfs: the volume is the ground truth the per-entry accounting cannot
 # see. rustix rather than libc — the workspace forbids unsafe code.

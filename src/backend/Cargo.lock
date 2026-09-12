@@ -138,6 +138,7 @@ dependencies = [
  "insight-http-metrics",
  "insight-log-context",
  "insight-migration",
+ "insight-openapi",
  "jsonwebtoken",
  "opentelemetry",
  "p256 0.14.0",
@@ -548,6 +549,7 @@ dependencies = [
  "futures",
  "insight-http-metrics",
  "insight-log-context",
+ "insight-openapi",
  "jsonwebtoken",
  "openidconnect",
  "opentelemetry",
@@ -3057,6 +3059,7 @@ dependencies = [
  "hex",
  "insight-http-metrics",
  "insight-log-context",
+ "insight-openapi",
  "opentelemetry",
  "reqwest 0.12.28",
  "rustix",
@@ -3618,6 +3621,7 @@ dependencies = [
  "insight-http-metrics",
  "insight-log-context",
  "insight-migration",
+ "insight-openapi",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -3753,6 +3757,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "insight-openapi"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "utoipa",
+]
+
+[[package]]
 name = "insight-v3-core"
 version = "0.1.0"
 dependencies = [
@@ -3779,6 +3793,7 @@ dependencies = [
  "futures",
  "insight-clickhouse",
  "insight-log-context",
+ "insight-openapi",
  "jsonwebtoken",
  "p256 0.14.0",
  "reqwest 0.12.28",
@@ -5212,6 +5227,7 @@ dependencies = [
  "chrono",
  "clap",
  "insight-log-context",
+ "insight-openapi",
  "k8s-openapi",
  "kube",
  "regex-lite",

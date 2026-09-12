@@ -9,7 +9,7 @@
 #
 # Deliberately NOT a required check. A path-filtered required check never
 # reports on a PR outside its filter, so it hangs on "Expected" forever — the
-# same reason e2e-stand.yml and openapi-specs.yml avoid `paths:`. The broad
+# same reason e2e-stand.yml avoids `paths:`. The broad
 # data-path gates stay required; this is the fast, specific one.
 name: Jira field history
 

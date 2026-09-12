@@ -167,7 +167,7 @@ The contract is the OpenAPI spec the service serves and commits, not a list in t
 
 **Technology**: OpenAPI, served by the api-gateway gear
 
-**Location**: `docs/components/backend/insight-v3-core/openapi.json`, drift-checked against the live spec by [scripts/ci/openapi_spec.py](../../../../scripts/ci/openapi_spec.py).
+**Location**: `docs/components/backend/insight-v3-core/openapi.json`, drift-checked against the emitted document by the service's `committed_openapi_document_is_current` test.
 
 ### 3.4 Internal Dependencies
 

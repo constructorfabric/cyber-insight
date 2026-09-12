@@ -14,6 +14,8 @@ on:
     branches: [main]
     paths:
       - "src/backend/**"
+      # Each service's drift test pins its committed OpenAPI contract.
+      - "docs/components/backend/*/openapi.json"
       - "src/frontend/**"
       - "src/ingestion/connectors/**"
       - "scripts/ci/**"
@@ -26,6 +28,8 @@ on:
     branches: [main]
     paths:
       - "src/backend/**"
+      # Each service's drift test pins its committed OpenAPI contract.
+      - "docs/components/backend/*/openapi.json"
       - "src/frontend/**"
       - "src/ingestion/connectors/**"
       - "scripts/ci/**"
