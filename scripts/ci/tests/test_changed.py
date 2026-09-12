@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "ci" / "changed.py"
@@ -41,11 +42,7 @@ class ChangedCliTests(unittest.TestCase):
 
     def test_compare_ref_selects_the_diff_base(self) -> None:
         result = subprocess.run(
-            ["python3", str(SCRIPT), "--compare-ref", "HEAD"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+            ["python3", str(SCRIPT), "--compare-ref", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -53,9 +50,7 @@ class ChangedCliTests(unittest.TestCase):
 
     def test_insight_v3_core_change_schedules_its_rust_job(self) -> None:
         completed = subprocess.CompletedProcess(
-            args=["git", "diff"],
-            returncode=0,
-            stdout="src/backend/services/insight-v3-core/src/gear.rs\n",
+            args=["git", "diff"], returncode=0, stdout="src/backend/services/insight-v3-core/src/gear.rs\n"
         )
 
         with patch.object(changed.subprocess, "run", return_value=completed):
@@ -84,9 +79,7 @@ class ChangedCliTests(unittest.TestCase):
 
     def test_insight_clickhouse_change_runs_insight_v3_core_tests(self) -> None:
         completed = subprocess.CompletedProcess(
-            args=["git", "diff"],
-            returncode=0,
-            stdout="src/backend/libs/insight-clickhouse/src/lib.rs\n",
+            args=["git", "diff"], returncode=0, stdout="src/backend/libs/insight-clickhouse/src/lib.rs\n"
         )
 
         with patch.object(changed.subprocess, "run", return_value=completed):
@@ -95,12 +88,41 @@ class ChangedCliTests(unittest.TestCase):
         core_job = next(job for job in matrix["rust"] if job["name"] == "insight-v3-core")
         self.assertTrue(core_job["test"])
 
-    def test_lockfile_change_runs_every_openapi_drift_test(self) -> None:
+    def test_seed_only_diff_schedules_the_seed_component(self) -> None:
         completed = subprocess.CompletedProcess(
-            args=["git", "diff"],
-            returncode=0,
-            stdout="src/backend/Cargo.lock\n",
+            args=["git", "diff"], returncode=0, stdout="src/ingestion/tools/seed/insight_seed/manifest.py\n"
         )
+
+        with patch.object(changed.subprocess, "run", return_value=completed):
+            matrix = changed.changed_components("origin/main", COMPONENTS)
+
+        self.assertEqual(matrix["rust"], [])
+        self.assertEqual(matrix["js"], [])
+        self.assertEqual([job["name"] for job in matrix["python"]], ["insight-seed"])
+        job = matrix["python"][0]
+        self.assertEqual(job["root"], "src/ingestion/tools/seed")
+        self.assertFalse(job["cover"])
+        self.assertFalse(job["collect"])
+
+    def test_ci_trigger_paths_cover_every_component_path(self) -> None:
+        """A path owned by a registered component must start ci.yml, or a PR
+        touching only that component never schedules its producer job."""
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        globs = re.findall(r'- "([^"]+)"', workflow)
+
+        for comp in COMPONENTS:
+            for owned in comp["paths"]:
+                probe = owned if "." in owned.rsplit("/", 1)[-1] else owned + "/file"
+                self.assertTrue(
+                    any(fnmatch.fnmatch(probe, g) for g in globs), f"ci.yml on.paths misses component path: {owned}"
+                )
+        for glob in set(globs):
+            self.assertEqual(
+                workflow.count(f'"{glob}"'), 2, f"trigger path not mirrored across pull_request and push: {glob}"
+            )
+
+    def test_lockfile_change_runs_every_openapi_drift_test(self) -> None:
+        completed = subprocess.CompletedProcess(args=["git", "diff"], returncode=0, stdout="src/backend/Cargo.lock\n")
 
         with patch.object(changed.subprocess, "run", return_value=completed):
             matrix = changed.changed_components("origin/main", COMPONENTS)
